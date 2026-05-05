@@ -390,6 +390,18 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 		manager->worldSelected  = false;
 	}
 
+	// Drag source for file items in the tree view.
+	if (node.type == 1 && !node.uuid.empty() &&
+		ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+	{
+		ImGui::SetDragDropPayload("PROJECT_ASSET",
+			node.uuid.c_str(), node.uuid.size() + 1);
+		ImGui::Image(node.icon, ImVec2(16, 16));
+		ImGui::SameLine();
+		ImGui::TextUnformatted(node.name.c_str());
+		ImGui::EndDragDropSource();
+	}
+
 	if (ImGui::BeginPopupContextItem("##TreeCtx"))
 	{
 		if (!node.isSelected)
@@ -462,6 +474,8 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 				icon = iconModel;
 			else if (ext == ".prefab" || ext == ".pfb")
 				icon = iconPrefab;
+			else if (ext == ".particle")
+				icon = iconOther; // No dedicated particle icon yet — fallback.
 			else if (ext == ".world")
 				icon = iconWorld;
 			else if (ext == ".mat")
@@ -658,6 +672,19 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 					manager->selectedScene  = nullptr;
 					manager->worldSelected  = false;
 					pendingSelectUuid = "";
+				}
+
+				// Drag source — file items only (folders aren't draggable assets).
+				// Payload is the asset UUID; the receiver looks up type via Manager::fileMap.
+				if (child->type == 1 && !child->uuid.empty() &&
+					ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+				{
+					ImGui::SetDragDropPayload("PROJECT_ASSET",
+						child->uuid.c_str(), child->uuid.size() + 1);
+					ImGui::Image(child->icon, ImVec2(32, 32));
+					ImGui::SameLine();
+					ImGui::TextUnformatted(child->name.c_str());
+					ImGui::EndDragDropSource();
 				}
 
 				// Handle double-click

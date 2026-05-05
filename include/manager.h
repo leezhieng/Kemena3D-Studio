@@ -198,6 +198,57 @@ public:
     kCamera *prefabCamera = nullptr;   ///< Editor camera for the prefab scene.
     kObject *prefabRoot = nullptr;     ///< Root instance of the prefab inside prefabScene.
 
+    // --- Drag-and-drop helpers ----------------------------------------------
+
+    /** @brief Spawns a project-asset (mesh/prefab/audio) into the current scene. */
+    kObject *instantiateAssetFromUuid(const kString &assetUuid, const kVec3 &positionHint = kVec3(0));
+
+    /** @brief Locates the on-disk path of a project asset by its UUID. */
+    fs::path findAssetPathByUuid(const kString &assetUuid);
+
+    /** @brief Reparents @p uuid under @p newParentUuid. Empty newParentUuid = scene root. */
+    void reparentObject(const kString &uuid, const kString &newParentUuid);
+
+    /** @brief Reorders an object within its parent's children list, before @p siblingUuid. */
+    void reorderBefore(const kString &uuid, const kString &siblingUuid);
+
+    /** @brief Returns the prefab-instance root that owns @p obj, or nullptr if @p obj is not in a prefab. */
+    kObject *findPrefabInstanceRoot(kObject *obj);
+
+    /** @brief Creates a .prefab from the current selection, plus an instance link in the scene. */
+    bool createPrefabFromSelection();
+
+    /** @brief Pushes the in-scene state of @p instanceRoot back into its source .prefab template. */
+    bool applyPrefabInstance(kObject *instanceRoot);
+
+    /**
+     * @brief Replaces every prefab instance of @p prefabUuid in every scene
+     *        with a fresh instantiation of the (possibly-just-rewritten)
+     *        .prefab template. World transform and parent of each instance
+     *        are preserved; per-instance edits are discarded.
+     */
+    void refreshAllPrefabInstances(const kString &prefabUuid);
+
+    /** @brief Clears prefab linkage from @p instanceRoot and all descendants. */
+    void unpackPrefabInstance(kObject *instanceRoot);
+
+    /** @brief Applies a material asset (.mat) to @p obj. */
+    bool applyMaterialToObject(kObject *obj, const fs::path &materialPath);
+
+    // --- Material drag-preview state ----------------------------------------
+    // While a .mat payload is hovering over a scene object, we swap the material
+    // for live preview. If the drop is committed we keep it (with undo); if the
+    // user drags away or cancels we restore the original.
+    kObject   *matPreviewObject       = nullptr;
+    kMaterial *matPreviewOriginal     = nullptr;
+    kString    matPreviewSourceUuid;
+
+    // --- Drag-hover highlight ----------------------------------------------
+    // While any drag-and-drop is over the World viewport, the panel records
+    // the picked object here so the main render loop can paint an outline on
+    // it, telling the user which object their cursor is over.
+    kString    dragHoverObjectUuid;
+
     // Editor path and directory
     fs::path exePath;
     fs::path baseDir;

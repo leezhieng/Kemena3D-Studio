@@ -2496,6 +2496,16 @@ void PanelInspector::draw(bool &opened)
             float tw = gui->calcTextSize(text).x;
             gui->setCursorPosX(gui->getCursorPosX() + (gui->getContentRegionAvail().x - tw) * 0.5f);
             gui->textDisabled(text);
+
+            gui->spacing();
+            gui->separator();
+            gui->spacing();
+
+            // Multi-select Create Prefab: wraps the selection in a new empty
+            // object positioned at the last-selected, parents everything under
+            // it, and saves the empty as a prefab template + instance.
+            if (gui->button("Create Prefab", kIvec2(-1, 0)))
+                manager->createPrefabFromSelection();
         }
         else
         {
@@ -2602,11 +2612,13 @@ void PanelInspector::draw(bool &opened)
                 {
                     if (!obj->getPrefabRef().empty())
                     {
+                        // Prefab instance root — show linkage + lifecycle actions.
                         gui->text(kString("Linked: ") + obj->getPrefabRef());
+
                         if (gui->button("Edit Prefab", kIvec2(-1, 0)))
                         {
-                            // Find the .prefab file by walking the project's
-                            // Assets folder for one whose UUID matches.
+                            // Resolve the .prefab file by scanning Assets for
+                            // a matching prefab UUID.
                             const kString &refUuid = obj->getPrefabRef();
                             fs::path found;
                             for (const auto &p : fs::recursive_directory_iterator(
@@ -2628,13 +2640,52 @@ void PanelInspector::draw(bool &opened)
                                 std::cerr << "Edit Prefab: source .prefab not found for "
                                           << refUuid << "\n";
                         }
-                    }
 
-                    if (gui->button("Save as Prefab", kIvec2(-1, 0)))
+                        // Apply pushes per-instance edits/additions back into
+                        // the .prefab template AND replaces every other live
+                        // instance of this prefab with the new template.
+                        // This is destructive — gate it behind a modal.
+                        if (gui->button("Apply to Prefab", kIvec2(-1, 0)))
+                            ImGui::OpenPopup("Apply to Prefab?");
+
+                        if (ImGui::BeginPopupModal("Apply to Prefab?", nullptr,
+                            ImGuiWindowFlags_AlwaysAutoResize))
+                        {
+                            ImGui::TextWrapped(
+                                "This rewrites the prefab template with this "
+                                "instance's current state, then refreshes every "
+                                "instance of this prefab in the world.");
+                            ImGui::Spacing();
+                            ImGui::TextWrapped(
+                                "Per-instance changes on OTHER instances will "
+                                "be discarded. This action cannot be undone.");
+                            ImGui::Spacing();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+
+                            kString prefabUuid = obj->getPrefabRef();
+                            if (ImGui::Button("Apply", ImVec2(120, 0)))
+                            {
+                                manager->applyPrefabInstance(obj);
+                                manager->refreshAllPrefabInstances(prefabUuid);
+                                ImGui::CloseCurrentPopup();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Cancel", ImVec2(120, 0)))
+                                ImGui::CloseCurrentPopup();
+                            ImGui::EndPopup();
+                        }
+
+                        // Unpack severs the prefab link, leaving plain scene
+                        // objects behind. Undoable via UnpackPrefabCommand.
+                        if (gui->button("Unpack Prefab", kIvec2(-1, 0)))
+                            manager->unpackPrefabInstance(obj);
+                    }
+                    else
                     {
-                        kString prefabName = obj->getName().empty() ? kString("New Prefab")
-                                                                    : obj->getName();
-                        manager->saveSelectedAsPrefab(prefabName);
+                        // Not a prefab instance — offer to create one.
+                        if (gui->button("Create Prefab", kIvec2(-1, 0)))
+                            manager->createPrefabFromSelection();
                     }
                 }
             }

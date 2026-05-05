@@ -3,6 +3,66 @@
 
 #include <kemena/kmesh.h>
 #include <kemena/klight.h>
+#include <kemena/kcamera.h>
+
+#include <functional>
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+// Insert `child` into `parent`'s children list immediately before
+// `beforeSibling`. If `beforeSibling` is null, append. Used by Reparent /
+// Instantiate / CreatePrefab undo paths to restore sibling order without
+// needing index arithmetic.
+static void insertChildBefore(kObject *parent, kObject *child, kObject *beforeSibling)
+{
+    if (!parent || !child) return;
+    child->detachFromParent();
+    if (!beforeSibling)
+    {
+        child->setParent(parent);
+        return;
+    }
+    auto kids = parent->getChildren();
+    std::vector<kObject *> tail;
+    bool found = false;
+    for (kObject *k : kids)
+    {
+        if (k == beforeSibling) found = true;
+        if (found) tail.push_back(k);
+    }
+    for (kObject *k : tail) k->detachFromParent();
+    child->setParent(parent);
+    for (kObject *k : tail) k->setParent(parent);
+}
+
+// Locate an object by UUID anywhere in the active scene tree.
+static kObject *findInTree(kObject *node, const kString &uuid)
+{
+    if (!node) return nullptr;
+    if (node->getUuid() == uuid) return node;
+    for (kObject *c : node->getChildren())
+        if (kObject *f = findInTree(c, uuid)) return f;
+    return nullptr;
+}
+
+static kObject *findInScene(kScene *scene, const kString &uuid)
+{
+    if (!scene) return nullptr;
+    return findInTree(scene->getRootNode(), uuid);
+}
+
+// Recursive subtree teardown (free this object and every descendant).
+// Used by InstantiateCommand / CreatePrefabCommand destructors when the
+// command goes out of scope while the subtree is in the "detached" state.
+static void freeSubtree(kObject *node)
+{
+    if (!node) return;
+    auto kids = node->getChildren();
+    for (kObject *c : kids) freeSubtree(c);
+    delete node;
+}
 
 // ---------------------------------------------------------------------------
 // UndoRedoManager
@@ -136,4 +196,191 @@ void SelectCommand::redo()
 {
     manager->selectedObjects = after;
     manager->selectedObject  = selectedObjAfter;
+}
+
+// ---------------------------------------------------------------------------
+// ReparentCommand
+// ---------------------------------------------------------------------------
+
+void ReparentCommand::undo()
+{
+    kObject *obj = findInScene(manager->getScene(), objUuid);
+    if (!obj || !oldParent) return;
+    insertChildBefore(oldParent, obj, oldNextSibling);
+    obj->setPosition(oldLocalPos);
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+void ReparentCommand::redo()
+{
+    kObject *obj = findInScene(manager->getScene(), objUuid);
+    if (!obj || !newParent) return;
+    insertChildBefore(newParent, obj, newNextSibling);
+    obj->setPosition(newLocalPos);
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+// ---------------------------------------------------------------------------
+// MaterialCommand
+// ---------------------------------------------------------------------------
+
+void MaterialCommand::undo()
+{
+    kObject *obj = findInScene(manager->getScene(), objUuid);
+    if (!obj) return;
+    obj->setMaterial(before, /*setChildren*/ false);
+}
+
+void MaterialCommand::redo()
+{
+    kObject *obj = findInScene(manager->getScene(), objUuid);
+    if (!obj) return;
+    obj->setMaterial(after, /*setChildren*/ false);
+}
+
+// ---------------------------------------------------------------------------
+// InstantiateCommand
+// ---------------------------------------------------------------------------
+
+InstantiateCommand::~InstantiateCommand()
+{
+    // If the command is destroyed while the subtree is detached (i.e. the
+    // user undid the spawn and the redo stack got cleared by some later
+    // edit), the subtree is unreachable — free it so we don't leak.
+    if (!attached && ownsSubtree)
+        freeSubtree(root);
+}
+
+void InstantiateCommand::undo()
+{
+    if (!attached || !root) return;
+    // Lights/cameras have side-vectors on scene/world. For the asset types we
+    // currently spawn from drag-drop (mesh, prefab root, empty-with-audio)
+    // detach is sufficient — we'd need richer logic if lights become drop
+    // sources later.
+    root->detachFromParent();
+    attached    = false;
+    ownsSubtree = true;
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+void InstantiateCommand::redo()
+{
+    if (attached || !root || !parent) return;
+    insertChildBefore(parent, root, nextSibling);
+    attached    = true;
+    ownsSubtree = false;
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+// ---------------------------------------------------------------------------
+// CreatePrefabCommand
+// ---------------------------------------------------------------------------
+// Multi-select Create Prefab does three things in sequence: create wrapper
+// empty, reparent each selected object under it (and adjust local positions),
+// stamp prefab_ref/template_uuid on every node in the new instance subtree.
+// Undo reverses all of that, in reverse order.
+
+void CreatePrefabCommand::undo()
+{
+    kScene *scene = manager->getScene();
+
+    // 1) Clear the prefab linkage stamps.
+    for (const auto &s : stamps)
+    {
+        kObject *obj = findInScene(scene, s.objUuid);
+        if (!obj) continue;
+        obj->setPrefabRef(s.oldPrefabRef);
+        obj->setTemplateUuid(s.oldTemplateUuid);
+    }
+
+    // 2) Move each child back to its original parent + sibling order +
+    //    local position. Walk in reverse so the most-recently-moved is
+    //    restored first (matches the order they were placed under the empty).
+    for (auto it = childMoves.rbegin(); it != childMoves.rend(); ++it)
+    {
+        kObject *obj = findInScene(scene, it->objUuid);
+        if (!obj || !it->oldParent) continue;
+        insertChildBefore(it->oldParent, obj, it->oldNextSibling);
+        obj->setPosition(it->oldLocalPos);
+    }
+
+    // 3) Tear down the wrapper empty if multi-select created one.
+    if (createdEmpty)
+    {
+        createdEmpty->detachFromParent();
+        // Don't delete: redo will re-attach the same instance. The command
+        // owns it while detached.
+    }
+
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+void CreatePrefabCommand::redo()
+{
+    kScene *scene = manager->getScene();
+
+    // 1) Re-attach the wrapper empty under its original parent (scene root).
+    if (createdEmpty)
+    {
+        if (createdEmptyParent)
+            createdEmpty->setParent(createdEmptyParent);
+        createdEmpty->setPosition(createdEmptyPos);
+    }
+
+    // 2) Re-parent each child under the wrapper, in original move order, with
+    //    the local-pos that was assigned at original-do time.
+    for (const auto &m : childMoves)
+    {
+        kObject *obj = findInScene(scene, m.objUuid);
+        if (!obj) continue;
+        // We need access to the wrapper for the destination parent; multi-
+        // select Create Prefab always uses createdEmpty as the destination.
+        if (createdEmpty) insertChildBefore(createdEmpty, obj, /*append*/ nullptr);
+        // Local-pos to apply on redo wasn't captured separately — use
+        // obj_pos = stored_old - createdEmptyPos to recompute, matching the
+        // logic in createPrefabFromSelection. This preserves visual layout.
+        obj->setPosition(m.oldLocalPos - createdEmptyPos);
+    }
+
+    // 3) Re-apply prefab linkage stamps.
+    for (const auto &s : stamps)
+    {
+        kObject *obj = findInScene(scene, s.objUuid);
+        if (!obj) continue;
+        obj->setPrefabRef(s.newPrefabRef);
+        obj->setTemplateUuid(s.newTemplateUuid);
+    }
+
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+// ---------------------------------------------------------------------------
+// UnpackPrefabCommand
+// ---------------------------------------------------------------------------
+
+void UnpackPrefabCommand::undo()
+{
+    kScene *scene = manager->getScene();
+    for (const auto &e : entries)
+    {
+        kObject *obj = findInScene(scene, e.objUuid);
+        if (!obj) continue;
+        obj->setPrefabRef(e.prefabRef);
+        obj->setTemplateUuid(e.templateUuid);
+    }
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+void UnpackPrefabCommand::redo()
+{
+    kScene *scene = manager->getScene();
+    for (const auto &e : entries)
+    {
+        kObject *obj = findInScene(scene, e.objUuid);
+        if (!obj) continue;
+        obj->setPrefabRef("");
+        obj->setTemplateUuid("");
+    }
+    if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
 }

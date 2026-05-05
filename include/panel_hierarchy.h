@@ -44,6 +44,12 @@ class PanelHierarchy
 			GLuint icon = 0;
 			kString type = ""; // world, scene, mesh, etc.
 
+			// True for nodes that live underneath a prefab instance root.
+			// They render greyed-out and don't accept drag/drop or selection-
+			// based edits — structural changes inside a prefab must be done
+			// in the prefab editor.
+			bool isPrefabDescendant = false;
+
 			Node(const kString& n, const kString& g, GLuint i = 0, const kString& t = "")
             : name(n), uuid(g), icon(i), type(t) {}
 		};

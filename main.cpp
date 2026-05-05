@@ -191,6 +191,42 @@ int main()
 					manager->checkAssetChange();
 				}
 			}
+			else if (eventType == SDL_EVENT_DROP_FILE)
+			{
+				// OS file dropped onto the window — copy it into the currently-
+				// browsed project folder so checkAssetChange picks it up via the
+				// existing import pipeline. Drops outside an open project are
+				// ignored.
+				const char *droppedPath = event.getSdlEvent()->drop.data;
+				if (droppedPath && manager->projectOpened)
+				{
+					try
+					{
+						std::filesystem::path src(droppedPath);
+						if (std::filesystem::exists(src) && std::filesystem::is_regular_file(src))
+						{
+							std::filesystem::path destDir = manager->getCurrentDirPath();
+							std::filesystem::path dst = destDir / src.filename();
+							int counter = 1;
+							while (std::filesystem::exists(dst))
+							{
+								std::string stem = src.stem().string();
+								std::string ext  = src.extension().string();
+								dst = destDir / (stem + " " + std::to_string(counter) + ext);
+								counter++;
+							}
+							std::filesystem::copy_file(src, dst);
+							manager->checkAssetChange();
+							if (manager->panelProject)
+								manager->panelProject->triggerRefresh();
+						}
+					}
+					catch (const std::exception &e)
+					{
+						std::cerr << "drop file: " << e.what() << "\n";
+					}
+				}
+			}
 			else if (eventType == K_EVENT_MOUSEBUTTONDOWN)
 			{
 				if (panelWorld->enabled && panelWorld->hovered)
@@ -422,6 +458,16 @@ int main()
 			if (manager->projectOpened && !manager->selectedObjects.empty())
 				renderer->renderOutline(world, renderScene, manager->selectedObjects,
 										kVec4(1.0f, 0.55f, 0.0f, 1.0f), 3.0f);
+
+			// Drag-hover outline (yellow) — applied on top of any selection
+			// outline so the user sees which object is under the cursor while
+			// they're holding a project asset over the viewport.
+			if (manager->projectOpened && !manager->dragHoverObjectUuid.empty())
+			{
+				std::vector<kString> hoverList = { manager->dragHoverObjectUuid };
+				renderer->renderOutline(world, renderScene, hoverList,
+										kVec4(1.0f, 0.85f, 0.0f, 0.85f), 3.0f);
+			}
 
 			// Debug shapes for selected lights and cameras
 			if (manager->projectOpened && !manager->selectedObjects.empty())

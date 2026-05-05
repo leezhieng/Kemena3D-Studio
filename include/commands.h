@@ -131,6 +131,123 @@ struct DeleteCommand : ICommand
 };
 
 // ---------------------------------------------------------------------------
+// ReparentCommand — undoable parent-change OR sibling-reorder
+//
+// The "next sibling" approach captures *what comes after* the moved object in
+// each parent's children list. When restoring state we insert the object
+// before that sibling (or append if the sibling is null), which sidesteps
+// fragile index math when other operations have shuffled siblings.
+// ---------------------------------------------------------------------------
+struct ReparentCommand : ICommand
+{
+    Manager *manager;
+    kString  objUuid;
+
+    kObject *oldParent       = nullptr;
+    kObject *oldNextSibling  = nullptr;
+    kVec3    oldLocalPos     = kVec3(0);
+
+    kObject *newParent       = nullptr;
+    kObject *newNextSibling  = nullptr;
+    kVec3    newLocalPos     = kVec3(0);
+
+    void undo() override;
+    void redo() override;
+};
+
+// ---------------------------------------------------------------------------
+// MaterialCommand — undoable material swap on a single object
+// ---------------------------------------------------------------------------
+struct MaterialCommand : ICommand
+{
+    Manager   *manager;
+    kString    objUuid;
+    kMaterial *before = nullptr;
+    kMaterial *after  = nullptr;
+
+    void undo() override;
+    void redo() override;
+};
+
+// ---------------------------------------------------------------------------
+// InstantiateCommand — undoable spawn of a subtree into a scene
+//
+// Mirrors DeleteCommand: when undone, the subtree is detached and held in
+// memory so a redo can re-attach. The destructor reclaims memory if the
+// command is dropped while the subtree is still detached.
+// ---------------------------------------------------------------------------
+struct InstantiateCommand : ICommand
+{
+    Manager *manager;
+    kObject *root         = nullptr;
+    kObject *parent       = nullptr;
+    kObject *nextSibling  = nullptr;
+    kScene  *scene        = nullptr;
+    bool     attached     = true;   // current attachment state
+    bool     ownsSubtree  = false;  // true while the subtree is detached
+
+    ~InstantiateCommand() override;
+    void undo() override;
+    void redo() override;
+};
+
+// ---------------------------------------------------------------------------
+// CreatePrefabCommand — undoable Create-Prefab-from-selection
+//
+// Captures every in-scene structural change (multi-select wrapper empty,
+// reparenting, position offsets, prefab_ref/template_uuid stamps) so undo
+// can revert them. The .prefab file written to disk is NOT deleted on undo.
+// ---------------------------------------------------------------------------
+struct CreatePrefabCommand : ICommand
+{
+    struct ChildMove {
+        kString  objUuid;
+        kObject *oldParent       = nullptr;
+        kObject *oldNextSibling  = nullptr;
+        kVec3    oldLocalPos     = kVec3(0);
+    };
+    struct StampChange {
+        kString objUuid;
+        kString oldPrefabRef;
+        kString oldTemplateUuid;
+        kString newPrefabRef;
+        kString newTemplateUuid;
+    };
+
+    Manager *manager = nullptr;
+
+    // Multi-select: a fresh empty wrapper was created and attached to the scene.
+    // For single-select this stays nullptr.
+    kObject *createdEmpty       = nullptr;
+    kObject *createdEmptyParent = nullptr; // scene root unless overridden later
+    kVec3    createdEmptyPos    = kVec3(0);
+
+    std::vector<ChildMove>   childMoves;   // empty for single-select
+    std::vector<StampChange> stamps;       // applies for both modes
+
+    void undo() override;
+    void redo() override;
+};
+
+// ---------------------------------------------------------------------------
+// UnpackPrefabCommand — undoable strip of prefab_ref / template_uuid
+// ---------------------------------------------------------------------------
+struct UnpackPrefabCommand : ICommand
+{
+    struct Entry {
+        kString objUuid;
+        kString prefabRef;
+        kString templateUuid;
+    };
+
+    Manager *manager = nullptr;
+    std::vector<Entry> entries;
+
+    void undo() override;
+    void redo() override;
+};
+
+// ---------------------------------------------------------------------------
 // SelectCommand — records a selection change for undo/redo
 // ---------------------------------------------------------------------------
 struct SelectCommand : ICommand

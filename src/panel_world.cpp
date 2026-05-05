@@ -94,6 +94,105 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     gui->setNextItemAllowOverlap();
     ImGui::Image(tex_ref, ImVec2(availSize.x, availSize.y), ImVec2(0, 1), ImVec2(1, 0));
 
+    // ----- Drop target -------------------------------------------------------
+    // Project assets dragged onto the viewport: meshes/prefabs/audio spawn on
+    // release; materials live-preview on hover and commit on release.
+    // Regardless of payload type, we record the picked object in
+    // manager->dragHoverObjectUuid so the main render loop can paint an
+    // outline showing the user which object is under their cursor.
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(
+                "PROJECT_ASSET", ImGuiDragDropFlags_AcceptBeforeDelivery))
+        {
+            kString assetUuid((const char *)payload->Data);
+            auto it = manager->fileMap.find(assetUuid);
+            if (it != manager->fileMap.end())
+            {
+                const auto &info = it->second;
+
+                // Pick the object under the mouse for the drag-hover outline.
+                // Material drops also use this for live preview targeting.
+                kVec2 imMouse = gui->getMousePos();
+                int vpMouseX = (int)((imMouse.x - panelPos.x) * 2.0f);
+                int vpMouseY = (int)((imMouse.y - panelPos.y) * 2.0f);
+                kObject *hovObj = renderer->pickObject(
+                    manager->getWorld(), manager->getScene(),
+                    vpMouseX, vpMouseY, width * 2, height * 2);
+                if (hovObj != nullptr)
+                {
+                    kObject *sceneRoot = manager->getScene()->getRootNode();
+                    while (hovObj->getParent() != nullptr && hovObj->getParent() != sceneRoot)
+                        hovObj = hovObj->getParent();
+                }
+                manager->dragHoverObjectUuid = hovObj ? hovObj->getUuid() : kString("");
+
+                if (info.type == "material")
+                {
+                    fs::path matPath = manager->projectPath / "Assets" / info.path;
+
+                    // If the hovered object changed since last frame, restore
+                    // the prior preview before applying to the new one.
+                    if (hovObj != manager->matPreviewObject)
+                    {
+                        if (manager->matPreviewObject)
+                            manager->matPreviewObject->setMaterial(
+                                manager->matPreviewOriginal, /*setChildren*/ true);
+
+                        manager->matPreviewObject   = hovObj;
+                        manager->matPreviewOriginal = hovObj ? hovObj->getMaterial() : nullptr;
+                        manager->matPreviewSourceUuid = assetUuid;
+
+                        if (hovObj)
+                            manager->applyMaterialToObject(hovObj, matPath);
+                    }
+
+                    // Commit on release: leave the new material in place,
+                    // push undo, then forget the preview so the post-target
+                    // restore won't undo it.
+                    if (payload->IsDelivery() && manager->matPreviewObject)
+                    {
+                        auto cmd = std::make_unique<MaterialCommand>();
+                        cmd->manager = manager;
+                        cmd->objUuid = manager->matPreviewObject->getUuid();
+                        cmd->before  = manager->matPreviewOriginal;
+                        cmd->after   = manager->matPreviewObject->getMaterial();
+                        manager->undoRedo.push(std::move(cmd));
+
+                        manager->matPreviewObject     = nullptr;
+                        manager->matPreviewOriginal   = nullptr;
+                        manager->matPreviewSourceUuid = "";
+                    }
+                }
+                else if (payload->IsDelivery())
+                {
+                    // Spawn at a point in front of the editor camera so the new
+                    // object appears in view rather than at the world origin.
+                    kVec3 spawn = editorCamera->getPosition()
+                                 + editorCamera->calculateForward() * 5.0f;
+                    manager->instantiateAssetFromUuid(assetUuid, spawn);
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    // If a material preview is dangling (drag left the viewport or was
+    // cancelled), restore the original material so the scene isn't left with
+    // a half-applied preview.
+    if (!ImGui::IsDragDropActive() && manager->matPreviewObject)
+    {
+        manager->matPreviewObject->setMaterial(
+            manager->matPreviewOriginal, /*setChildren*/ true);
+        manager->matPreviewObject     = nullptr;
+        manager->matPreviewOriginal   = nullptr;
+        manager->matPreviewSourceUuid = "";
+    }
+
+    // Clear the drag-hover highlight when no drag is in progress.
+    if (!ImGui::IsDragDropActive() && !manager->dragHoverObjectUuid.empty())
+        manager->dragHoverObjectUuid.clear();
+
     hovered = gui->isWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
