@@ -23,6 +23,7 @@ struct ShowPanel
 	bool project = true;
 	bool shaderEditor = false;
 	bool game = false;
+	bool prefab = false;   // Toggled by Manager::editPrefab / closePrefabEditor.
 };
 
 inline ShowPanel showPanel;

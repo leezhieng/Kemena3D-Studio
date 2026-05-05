@@ -2590,6 +2590,53 @@ void PanelInspector::draw(bool &opened)
                     drawCameraSection(gui, static_cast<kCamera *>(obj), manager);
 
                 drawComponentsSection(gui, obj, manager);
+
+                // Prefab actions: "Save as Prefab" works for any selection;
+                // "Edit Prefab" only appears when the selection is a prefab
+                // instance root (i.e. has a non-empty prefab_ref).
+                gui->spacing();
+                gui->separator();
+                gui->spacing();
+
+                if (gui->collapsingHeader("Prefab", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    if (!obj->getPrefabRef().empty())
+                    {
+                        gui->text(kString("Linked: ") + obj->getPrefabRef());
+                        if (gui->button("Edit Prefab", kIvec2(-1, 0)))
+                        {
+                            // Find the .prefab file by walking the project's
+                            // Assets folder for one whose UUID matches.
+                            const kString &refUuid = obj->getPrefabRef();
+                            fs::path found;
+                            for (const auto &p : fs::recursive_directory_iterator(
+                                    manager->projectPath / "Assets"))
+                            {
+                                if (!p.is_regular_file()) continue;
+                                if (p.path().extension() != ".prefab") continue;
+                                kPrefab tmp;
+                                if (tmp.loadFromFile(p.path().string()) &&
+                                    tmp.getUuid() == refUuid)
+                                {
+                                    found = p.path();
+                                    break;
+                                }
+                            }
+                            if (!found.empty())
+                                manager->editPrefab(found);
+                            else
+                                std::cerr << "Edit Prefab: source .prefab not found for "
+                                          << refUuid << "\n";
+                        }
+                    }
+
+                    if (gui->button("Save as Prefab", kIvec2(-1, 0)))
+                    {
+                        kString prefabName = obj->getName().empty() ? kString("New Prefab")
+                                                                    : obj->getName();
+                        manager->saveSelectedAsPrefab(prefabName);
+                    }
+                }
             }
         }
 

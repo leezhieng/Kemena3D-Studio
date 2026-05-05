@@ -823,7 +823,7 @@ kString Manager::checkAssetType(const fs::path &p)
 		return "video";
 	else if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".dae" || ext == ".stl")
 		return "mesh";
-	else if (ext == ".pfb")
+	else if (ext == ".prefab" || ext == ".pfb")
 		return "prefab";
 	else if (ext == ".world")
 		return "world";
@@ -1694,7 +1694,7 @@ static void applyLightIconLoad(kLight *light, kAssetManager *am, const char *giz
 
 static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world,
                                    kAssetManager *am, const fs::path &projectPath,
-                                   kCamera *editorCamera)
+                                   kCamera *editorCamera, kObject *parent = nullptr)
 {
     std::string type = obj.value("type", "object");
     std::string uuid = obj.value("uuid", "");
@@ -1716,6 +1716,11 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
     kVec3 rotEu = readVec3xyz(obj, "rotation");
     kVec3 scale = readVec3xyz(obj, "scale", kVec3(1.0f));
 
+    // Top-level objects attach to the scene root via scene->add*; nested objects
+    // (parent != nullptr) are created standalone and parented manually so they
+    // don't end up double-tracked.
+    bool topLevel = (parent == nullptr);
+
     kObject *result = nullptr;
 
     if (type == "mesh")
@@ -1736,14 +1741,22 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         if (!mesh)
         {
             mesh = new kMesh();
-            std::cerr << "loadWorld: mesh file not found for '" << name << "'\n";
+            std::cerr << "loadObjectFromJson: mesh file not found for '" << name << "'\n";
         }
 
         mesh->setName(name);
         mesh->setActive(active);
         mesh->setCastShadow(obj.value("cast_shadow", true));
         mesh->setReceiveShadow(obj.value("receive_shadow", true));
-        scene->addMesh(mesh, uuid);
+        if (topLevel)
+        {
+            scene->addMesh(mesh, uuid);
+        }
+        else
+        {
+            mesh->setUuid(uuid.empty() ? generateUuid() : uuid);
+            mesh->setParent(parent);
+        }
         result = mesh;
     }
     else if (type == "light")
@@ -1762,20 +1775,34 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         kLight *light = nullptr;
         const char *gizmoRes = "GIZMO_SUN_LIGHT";
 
-        if (ltStr == "point")
+        if (topLevel)
         {
-            light = scene->addPointLight(pos, diff, spec, uuid);
-            gizmoRes = "GIZMO_POINT_LIGHT";
-        }
-        else if (ltStr == "spot")
-        {
-            light = scene->addSpotLight(pos, diff, spec, uuid);
-            gizmoRes = "GIZMO_SPOT_LIGHT";
+            if (ltStr == "point")
+            {
+                light = scene->addPointLight(pos, diff, spec, uuid);
+                gizmoRes = "GIZMO_POINT_LIGHT";
+            }
+            else if (ltStr == "spot")
+            {
+                light = scene->addSpotLight(pos, diff, spec, uuid);
+                gizmoRes = "GIZMO_SPOT_LIGHT";
+            }
+            else
+            {
+                light = scene->addSunLight(pos, dir, diff, spec, uuid);
+                gizmoRes = "GIZMO_SUN_LIGHT";
+            }
         }
         else
         {
-            light = scene->addSunLight(pos, dir, diff, spec, uuid);
-            gizmoRes = "GIZMO_SUN_LIGHT";
+            light = new kLight();
+            if (ltStr == "point")     { light->setLightType(kLightType::LIGHT_TYPE_POINT); gizmoRes = "GIZMO_POINT_LIGHT"; }
+            else if (ltStr == "spot") { light->setLightType(kLightType::LIGHT_TYPE_SPOT);  gizmoRes = "GIZMO_SPOT_LIGHT";  }
+            else                      { light->setLightType(kLightType::LIGHT_TYPE_SUN);   gizmoRes = "GIZMO_SUN_LIGHT";   }
+            light->setDiffuseColor(diff);
+            light->setSpecularColor(spec);
+            light->setUuid(uuid.empty() ? generateUuid() : uuid);
+            light->setParent(parent);
         }
 
         light->setName(name);
@@ -1812,8 +1839,17 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
 
         cam->setSceneUuid(obj.value("scene_uuid", std::string("")));
 
-        scene->addObject(cam, uuid);
-        world->addCamera(cam, uuid);
+        if (topLevel)
+        {
+            scene->addObject(cam, uuid);
+        }
+        else
+        {
+            cam->setUuid(uuid.empty() ? generateUuid() : uuid);
+            cam->setParent(parent);
+        }
+        // Cameras always register with the world so they can be selected as game cameras.
+        world->addCamera(cam, cam->getUuid());
 
         result = cam;
     }
@@ -1822,7 +1858,15 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         kObject *empty = new kObject();
         empty->setName(name);
         empty->setActive(active);
-        scene->addObject(empty, uuid);
+        if (topLevel)
+        {
+            scene->addObject(empty, uuid);
+        }
+        else
+        {
+            empty->setUuid(uuid.empty() ? generateUuid() : uuid);
+            empty->setParent(parent);
+        }
         result = empty;
     }
 
@@ -1831,6 +1875,17 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         result->setPosition(pos);
         result->setRotation(kQuat(glm::radians(rotEu)));
         result->setScale(scale);
+
+        // Prefab linkage — only set when present in JSON, otherwise stays empty.
+        if (obj.contains("prefab_ref"))    result->setPrefabRef(obj["prefab_ref"].get<std::string>());
+        if (obj.contains("template_uuid")) result->setTemplateUuid(obj["template_uuid"].get<std::string>());
+
+        // Recursively load children, parented to this node.
+        if (obj.contains("children") && obj["children"].is_array())
+        {
+            for (const auto &child : obj["children"])
+                loadObjectFromJson(child, scene, world, am, projectPath, editorCamera, result);
+        }
     }
 
     return result;
@@ -1934,6 +1989,177 @@ void Manager::loadWorld(const kString &path)
         panelHierarchy->refreshList();
 
     std::cout << "World loaded: " << loadPath << "\n";
+}
+
+// ---------------------------------------------------------------------------
+// Prefabs
+// ---------------------------------------------------------------------------
+
+bool Manager::saveSelectedAsPrefab(const kString &prefabName)
+{
+    if (!projectOpened || !selectedObject)
+    {
+        std::cerr << "saveSelectedAsPrefab: no project or no selection\n";
+        return false;
+    }
+
+    // Serialize the selected object subtree (kObject::serialize already recurses
+    // into children, so the full tree is captured).
+    json rootJson = selectedObject->serialize();
+
+    kPrefab prefab;
+    prefab.setUuid(generateUuid());
+    prefab.setName(prefabName);
+    prefab.setRootJson(rootJson);
+
+    // Place the .prefab into the currently-browsed project folder, picking a
+    // unique filename if one already exists.
+    fs::path dir = getCurrentDirPath();
+    fs::path filePath = dir / (prefabName + ".prefab");
+    int counter = 1;
+    while (fs::exists(filePath))
+    {
+        filePath = dir / (prefabName + " " + std::to_string(counter) + ".prefab");
+        counter++;
+    }
+
+    if (!prefab.saveToFile(filePath.string()))
+        return false;
+
+    checkAssetChange();
+    if (panelProject != nullptr)
+    {
+        panelProject->triggerRefresh();
+        panelProject->pendingSelectUuid = prefab.getUuid();
+    }
+    return true;
+}
+
+kObject *Manager::instantiatePrefabInScene(const fs::path &prefabPath)
+{
+    if (!projectOpened || !scene)
+        return nullptr;
+
+    kPrefab prefab;
+    if (!prefab.loadFromFile(prefabPath.string()))
+        return nullptr;
+
+    // Generate fresh per-node UUIDs while preserving template UUIDs so the
+    // editor can match instance nodes back to the prefab template later.
+    json instanceJson = kPrefab::instantiateJson(prefab.getRootJson());
+
+    kAssetManager *am = getAssetManager();
+    kObject *root = loadObjectFromJson(instanceJson, scene, world, am,
+                                       projectPath, editorCamera, nullptr);
+    if (!root)
+        return nullptr;
+
+    // Tag the instance root with the source prefab UUID. Each instance node
+    // already has its own template_uuid set by instantiateJson + the recursive
+    // loader, but the prefab_ref only belongs on the root.
+    root->setPrefabRef(prefab.getUuid());
+
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
+
+    selectedObject = root;
+    selectObject(root->getUuid(), true);
+    projectSaved = false;
+    refreshWindowTitle();
+
+    return root;
+}
+
+void Manager::editPrefab(const fs::path &prefabPath)
+{
+    if (!projectOpened || !world)
+        return;
+
+    // If we're already editing a different prefab, save & close it first.
+    if (prefabEditing)
+        closePrefabEditor(true);
+
+    if (!editingPrefab.loadFromFile(prefabPath.string()))
+    {
+        std::cerr << "editPrefab: failed to load " << prefabPath << "\n";
+        return;
+    }
+
+    editingPrefabPath = prefabPath;
+
+    // Build an isolated scene + camera for the prefab editor. The prefab is
+    // loaded with its template UUIDs preserved (no instantiateJson) so saving
+    // round-trips cleanly back to the same node identities.
+    prefabScene = world->createScene("__PrefabEdit__");
+
+    kAssetManager *am = getAssetManager();
+    prefabRoot = loadObjectFromJson(editingPrefab.getRootJson(),
+                                    prefabScene, world, am,
+                                    projectPath, editorCamera, nullptr);
+
+    // Position an editor camera so the prefab is framed reasonably. The camera
+    // is registered with the world so the renderer can use it; we tag it with a
+    // sentinel scene_uuid that the game-camera picker should ignore.
+    prefabCamera = world->addCamera(kVec3(-5, 3, 8), kVec3(0, 1, 0),
+                                    kCameraType::CAMERA_TYPE_FREE);
+    prefabCamera->setFOV(60.0f);
+    prefabCamera->setName("__PrefabEditCamera__");
+
+    prefabEditing = true;
+
+    // Clear the main scene's selection — the prefab editor has its own context.
+    selectedObjects.clear();
+    selectedObject = prefabRoot;
+    if (prefabRoot)
+        selectedObjects.push_back(prefabRoot->getUuid());
+
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
+}
+
+void Manager::closePrefabEditor(bool saveChanges)
+{
+    if (!prefabEditing) return;
+
+    if (saveChanges && prefabRoot)
+    {
+        // Serialize the (possibly-edited) root subtree back into the prefab JSON
+        // and write the .prefab file. UUIDs are preserved because we never
+        // re-randomized them on load.
+        editingPrefab.setRootJson(prefabRoot->serialize());
+        editingPrefab.saveToFile(editingPrefabPath.string());
+    }
+
+    // Tear down the editor scene. Children are owned by the scene-graph nodes,
+    // so deleting children of the root recursively frees the prefab subtree.
+    if (prefabScene)
+    {
+        if (prefabScene->getRootNode())
+        {
+            for (kObject *child : prefabScene->getRootNode()->getChildren())
+                deleteObjectRecursive(child);
+        }
+        if (world) world->removeScene(prefabScene);
+        delete prefabScene;
+        prefabScene = nullptr;
+    }
+
+    if (prefabCamera && world)
+    {
+        world->removeCamera(prefabCamera);
+        delete prefabCamera;
+        prefabCamera = nullptr;
+    }
+
+    prefabRoot = nullptr;
+    prefabEditing = false;
+    editingPrefabPath.clear();
+
+    selectedObjects.clear();
+    selectedObject = nullptr;
+
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
 }
 
 void Manager::deleteAssets(const std::vector<fs::path> &paths)

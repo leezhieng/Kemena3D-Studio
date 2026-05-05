@@ -460,7 +460,7 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 				icon = iconVideo;
 			else if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".dae" || ext == ".stl")
 				icon = iconModel;
-			else if (ext == ".pfb")
+			else if (ext == ".prefab" || ext == ".pfb")
 				icon = iconPrefab;
 			else if (ext == ".world")
 				icon = iconWorld;

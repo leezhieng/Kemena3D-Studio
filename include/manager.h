@@ -21,6 +21,7 @@
 #include <kemena/kcamera.h>
 #include <kemena/kassetmanager.h>
 #include <kemena/koffscreenrenderer.h>
+#include <kemena/kprefab.h>
 
 #include "commands.h"
 #include <portable-file-dialogs.h>
@@ -157,6 +158,45 @@ public:
     void saveWorld();
     void saveWorldAs(const kString &path);
     void loadWorld(const kString &path);
+
+    // --- Prefabs ------------------------------------------------------------
+
+    /**
+     * @brief Saves the currently-selected object subtree as a new .prefab asset
+     *        in the current project folder.
+     *
+     * @param prefabName Display name and base filename for the new prefab.
+     * @return true on success.
+     */
+    bool saveSelectedAsPrefab(const kString &prefabName);
+
+    /**
+     * @brief Loads a .prefab file and instantiates it as a new top-level object
+     *        in the current scene, with fresh per-node UUIDs.
+     *
+     * @param prefabPath Filesystem path of the .prefab file to load.
+     * @return Pointer to the instance root, or nullptr on failure.
+     */
+    kObject *instantiatePrefabInScene(const fs::path &prefabPath);
+
+    /**
+     * @brief Opens the prefab editor for the given .prefab file. The main world
+     *        view is hidden while the prefab editor is active.
+     */
+    void editPrefab(const fs::path &prefabPath);
+
+    /**
+     * @brief Closes the prefab editor. If @p saveChanges is true, serializes
+     *        the editor scene back into the .prefab file.
+     */
+    void closePrefabEditor(bool saveChanges);
+
+    bool prefabEditing = false;        ///< True while the prefab editor panel is active.
+    fs::path editingPrefabPath;        ///< Path to the .prefab file being edited.
+    kPrefab editingPrefab;             ///< Loaded prefab data while editing.
+    kScene *prefabScene = nullptr;     ///< Isolated scene used by the prefab editor.
+    kCamera *prefabCamera = nullptr;   ///< Editor camera for the prefab scene.
+    kObject *prefabRoot = nullptr;     ///< Root instance of the prefab inside prefabScene.
 
     // Editor path and directory
     fs::path exePath;
