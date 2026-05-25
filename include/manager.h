@@ -127,10 +127,71 @@ public:
     void createMeshFromFile();
     void createLight(kLightType type);
     void createCamera();
+    void createNavMesh();
+
+    // --- Game export --------------------------------------------------------
+
+    /** @brief Settings for building a distributable game from the project. */
+    struct ExportSettings
+    {
+        int          platform   = 0;        ///< 0=Windows, 1=Linux, 2=macOS.
+        std::string  gameName   = "Game";   ///< Output executable name.
+        std::string  title      = "My Game";///< Window title (game.config).
+        int          width      = 1280;
+        int          height     = 720;
+        bool         fullscreen = false;
+        std::string  outputDir;             ///< Destination folder for the build.
+        std::string  templateDir;           ///< Folder holding the prebuilt runtime template.
+        std::string  iconPath;              ///< Optional .ico for the Windows exe.
+    };
+
+    ExportSettings exportSettings;       ///< Persisted between dialog opens.
+    bool           showExportDialog = false;
+
+    /**
+     * @brief Builds a distributable game: copies the runtime template, bundles
+     *        the project data (scene.world, imported assets, shader + script
+     *        bytecode), writes game.config, and applies per-OS metadata.
+     * @return true on success.
+     */
+    bool exportGame(const ExportSettings &settings);
+
+    // --- Navigation baking --------------------------------------------------
+
+    /** @brief Bakes @p navObj's navigation surface from the scene's static
+     *         meshes — all of them, or only those overlapping its area box. */
+    void bakeNavMesh(kObject *navObj);
+
+    /** @brief Discards the baked nav mesh for @p navObj. */
+    void clearNavMesh(kObject *navObj);
+
+    /** @brief Frees every baked nav mesh (called when a world is (re)loaded). */
+    void clearAllNavMeshes();
+
+    /** @brief Returns true if @p navObj currently has a baked nav mesh. */
+    bool isNavMeshBaked(kObject *navObj) const;
+
+    /** @brief Returns the baked nav mesh for @p navObj, or nullptr. */
+    kNavMesh *getBakedNavMesh(kObject *navObj) const;
 
     // --- Asset creation -----------------------------------------------------
     void createNewMaterial();
+    void createNewFolder();
+    void createNewShader();
+    void createNewScript();
+    void createNewLogicGraph();
     void deleteAssets(const std::vector<fs::path> &paths);
+
+    /** @brief Renames a project asset (file or folder) in place.
+     *  @return true on success; false if the target name already exists. */
+    bool renameAsset(const fs::path &oldPath, const kString &newName);
+
+    /** @brief Moves a project asset into another folder, preserving its filename
+     *         (and therefore its embedded UUID).
+     *  @return true on success; false if the destination already has a file
+     *          with the same name, the source is missing, or @p destDir is not
+     *          a directory. */
+    bool moveAsset(const fs::path &srcPath, const fs::path &destDir);
 
     kString getCurrentDirPath();
 
@@ -198,6 +259,10 @@ public:
     kCamera *prefabCamera = nullptr;   ///< Editor camera for the prefab scene.
     kObject *prefabRoot = nullptr;     ///< Root instance of the prefab inside prefabScene.
 
+    /// Dedicated renderer for the prefab editor so it never shares the World
+    /// panel's render target. Background is dark grey.
+    kOffscreenRenderer prefabRenderer{512, 512};
+
     // --- Drag-and-drop helpers ----------------------------------------------
 
     /** @brief Spawns a project-asset (mesh/prefab/audio) into the current scene. */
@@ -248,6 +313,54 @@ public:
     // the picked object here so the main render loop can paint an outline on
     // it, telling the user which object their cursor is over.
     kString    dragHoverObjectUuid;
+
+    // --- Physics simulation -------------------------------------------------
+    //
+    // The physics manager is created lazily on the first Play and kept alive
+    // afterwards so subsequent Play/Stop cycles reuse the same Jolt world.
+    // Physics ONLY runs while PanelGame is in the Playing state — never
+    // during normal editor work or while editing a prefab.
+
+    /** @brief Walks the active scene, builds physics bodies for every object
+     *         that has a physics descriptor, and attaches them via kObject::attachPhysics. */
+    void startPhysicsSimulation();
+
+    /** @brief Destroys all physics bodies built by startPhysicsSimulation and
+     *         detaches them from their kObjects. */
+    void stopPhysicsSimulation();
+
+    /** @brief Steps the physics simulation by @p dt seconds and syncs
+     *         transforms back into the scene-graph nodes. */
+    void stepPhysics(float dt);
+
+    kPhysicsManager        *physicsManager = nullptr;
+    std::vector<kObject *>  physicsBodies;   // objects with live physics this Play session
+    std::vector<kObject *>  characterBodies; // objects with a live character controller this session
+
+    // Baked navigation meshes keyed by the owning object's UUID. Editor-owned;
+    // regenerated via Bake and never serialised.
+    std::map<kString, kNavMesh *> bakedNavMeshes;
+
+    // --- Scripting --------------------------------------------------------
+    // Attached AngelScript files are compiled to bytecode under
+    // Library/Scripts/<scriptUuid>.kbc. Play loads that bytecode; the source
+    // .as file stays editable and is only recompiled when it changes.
+
+    /** @brief Compiles every attached script to Library/Scripts bytecode.
+     *         Skips scripts whose source checksum is unchanged. */
+    void buildScripts();
+
+    /** @brief Builds bytecode then starts script lifecycle dispatch (on Play). */
+    void startScripts();
+
+    /** @brief Stops script lifecycle dispatch and releases instances (on Stop). */
+    void stopScripts();
+
+    /** @brief File-watch tick: periodically recompiles changed script sources
+     *         while the editor is idle. Call once per frame. */
+    void pollScriptChanges(float dt);
+
+    float scriptWatchTimer = 0.0f;   ///< Accumulator for the script file-watch poll.
 
     // Editor path and directory
     fs::path exePath;

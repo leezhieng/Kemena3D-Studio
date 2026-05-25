@@ -2,6 +2,10 @@
 #include <kemena/kmeshgenerator.h>
 #include <kemena/klight.h>
 
+#include "portable-file-dialogs.h"
+#include <cstring>
+#include <string>
+
 using namespace kemena;
 
 MainMenu::MainMenu(kGuiManager* setGuiManager, Manager* setManager)
@@ -85,7 +89,8 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 			if (gui->menuItem("Open Project", "")) { manager->openProject(); }
 			if (gui->menuItem("Save Project", "", false, manager->projectOpened)) {}
 			gui->separator();
-			if (gui->menuItem("Build Settings", "", false, manager->projectOpened)) {}
+			if (gui->menuItem("Build Settings", "", false, manager->projectOpened))
+				manager->showExportDialog = true;
 			if (gui->menuItem("Build And Run", "", false, manager->projectOpened)) {}
 			gui->separator();
 			if (gui->menuItem("Exit")) { manager->closeEditor(); }
@@ -131,6 +136,10 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 				if (manager->panelGame)
 					manager->panelGame->pressStop();
 			}
+			if (gui->menuItem("Build Scripts", "", false, manager->projectOpened))
+			{
+				manager->buildScripts();
+			}
 			gui->separator();
 			if (gui->menuItem("Sign In", "")) {}
 			if (gui->menuItem("Sign Out", "")) {}
@@ -146,7 +155,15 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 		// Assets Menu
 		if (gui->menu("Assets"))
 		{
-			if (gui->menuItem("Create", "", false, manager->projectOpened)) {}
+			if (ImGui::BeginMenu("Create", manager->projectOpened))
+			{
+				if (ImGui::MenuItem("Folder"))      manager->createNewFolder();
+				if (ImGui::MenuItem("Shader"))      manager->createNewShader();
+				if (ImGui::MenuItem("Material"))    manager->createNewMaterial();
+				if (ImGui::MenuItem("Script"))      manager->createNewScript();
+				if (ImGui::MenuItem("Logic Graph")) manager->createNewLogicGraph();
+				ImGui::EndMenu();
+			}
 			if (gui->menuItem("Show In Explorer", "", false, manager->projectOpened)) {}
 			if (gui->menuItem("Open", "", false, manager->projectOpened)) {}
 			if (gui->menuItem("Delete", "", false, manager->projectOpened)) {}
@@ -201,6 +218,8 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 			if (gui->menuItem("UI",     "", false, manager->projectOpened)) {}
 			if (gui->menuItem("Camera", "", false, manager->projectOpened))
 				manager->createCamera();
+			if (gui->menuItem("Nav Mesh", "", false, manager->projectOpened))
+				manager->createNavMesh();
 
 			ImGui::EndMenu();
 		}
@@ -236,6 +255,9 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 
 				if (gui->menuItem("Shader Editor", "", showPanel.shaderEditor))
 					showPanel.shaderEditor = !showPanel.shaderEditor;
+
+				if (gui->menuItem("Script Editor", "", showPanel.scriptEditor))
+					showPanel.scriptEditor = !showPanel.scriptEditor;
 
 				if (gui->menuItem("Game", "", showPanel.game))
 					showPanel.game = !showPanel.game;
@@ -322,6 +344,81 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 		}
 
 		gui->menuBarEnd();
+	}
+
+	// ---- Build Settings / Export dialog ------------------------------------
+	if (manager->showExportDialog)
+	{
+		ImGui::OpenPopup("Build Settings");
+		manager->showExportDialog = false;
+	}
+	ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+	if (ImGui::BeginPopupModal("Build Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+	{
+		Manager::ExportSettings &es = manager->exportSettings;
+
+		auto inputStr = [](const char *label, std::string &str, float w = 340.0f) {
+			char buf[1024];
+			std::strncpy(buf, str.c_str(), sizeof(buf) - 1);
+			buf[sizeof(buf) - 1] = '\0';
+			ImGui::SetNextItemWidth(w);
+			if (ImGui::InputText(label, buf, sizeof(buf)))
+				str = buf;
+		};
+
+		const char *platforms[] = { "Windows", "Linux", "macOS" };
+		ImGui::SetNextItemWidth(340.0f);
+		ImGui::Combo("Platform", &es.platform, platforms, IM_ARRAYSIZE(platforms));
+
+		inputStr("Game Name",    es.gameName);
+		inputStr("Window Title", es.title);
+		ImGui::SetNextItemWidth(160.0f); ImGui::InputInt("Width",  &es.width);
+		ImGui::SetNextItemWidth(160.0f); ImGui::InputInt("Height", &es.height);
+		ImGui::Checkbox("Fullscreen", &es.fullscreen);
+
+		ImGui::Separator();
+
+		inputStr("Output Folder", es.outputDir);
+		ImGui::SameLine();
+		if (ImGui::SmallButton("...##exportOut"))
+		{
+			auto sel = pfd::select_folder("Choose output folder").result();
+			if (!sel.empty()) es.outputDir = sel;
+		}
+
+		inputStr("Runtime Template Folder", es.templateDir);
+		ImGui::SameLine();
+		if (ImGui::SmallButton("...##exportTpl"))
+		{
+			auto sel = pfd::select_folder("Choose runtime template folder").result();
+			if (!sel.empty()) es.templateDir = sel;
+		}
+		ImGui::TextDisabled("  Folder with the built kemena3d-runtime + its libs.");
+
+		if (es.platform == 0)
+		{
+			inputStr("Icon (.ico)", es.iconPath);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("...##exportIco"))
+			{
+				auto sel = pfd::open_file("Choose icon", "",
+					{ "Icon (*.ico)", "*.ico" }).result();
+				if (!sel.empty()) es.iconPath = sel[0];
+			}
+		}
+
+		ImGui::Separator();
+		if (ImGui::Button("Export", ImVec2(120, 0)))
+		{
+			if (manager->exportGame(es))
+				ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			ImGui::CloseCurrentPopup();
+
+		ImGui::EndPopup();
 	}
 }
 

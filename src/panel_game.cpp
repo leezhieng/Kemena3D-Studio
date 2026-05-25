@@ -127,6 +127,12 @@ void PanelGame::pressPlay()
         }
 
         captureSnapshot();
+        // Spawn physics bodies for every object that opted in. Must happen
+        // AFTER captureSnapshot so the snapshot records the editor-authored
+        // transforms (not whatever physics moves them to during update).
+        manager->startPhysicsSimulation();
+        // Compile attached scripts to bytecode and dispatch Awake()/Start().
+        manager->startScripts();
         playState = GamePlayState::Playing;
     }
     else if (playState == GamePlayState::Paused)
@@ -145,6 +151,11 @@ void PanelGame::pressStop()
 {
     if (playState != GamePlayState::Stopped)
     {
+        // Tear down physics BEFORE restoring transforms so the bodies don't
+        // overwrite our restored positions on a final sync.
+        manager->stopPhysicsSimulation();
+        // Dispatch OnDestroy() and release every script instance.
+        manager->stopScripts();
         restoreSnapshot();
         playState = GamePlayState::Stopped;
     }

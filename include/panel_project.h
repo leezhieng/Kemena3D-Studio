@@ -68,6 +68,11 @@ class PanelProject
 		Node rootThumbnail;
 		bool needRefreshList = false;
 
+		// Rename modal state.
+		bool     openRenamePopup = false;
+		fs::path renameTargetPath;
+		char     renameBuffer[256] = "";
+
 		kAssetManager* assetManager = nullptr;
 		std::unordered_map<kString, std::pair<GLuint, ImTextureRef>> thumbnailCache;
 
@@ -111,6 +116,10 @@ class PanelProject
 		void drawThumbnailNode(const Node& currentDir);
 		void drawBreadcrumb();
 		void executeDeleteSelected();
+
+		// Begins a rename for the given asset, then renders the modal.
+		void beginRename(const fs::path& path, const kString& name);
+		void drawRenameModal();
 
 		Manager* manager;
 		kGuiManager* gui;

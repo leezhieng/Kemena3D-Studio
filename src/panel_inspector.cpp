@@ -1453,8 +1453,9 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
     gui->separatorText("Components");
     gui->spacing();
 
-    // ── Physics (mesh only) ─────────────────────────────────────────────────
-    if (type == NODE_TYPE_MESH)
+    // ── Physics ─────────────────────────────────────────────────────────────
+    // Available on every object type. Lights/cameras with physics are
+    // unusual but legal — useful for triggers attached to gameplay objects.
     {
         bool addPhysics = false;
         bool open = componentHeader("Physics", "AddPhysics", addPhysics);
@@ -1489,32 +1490,24 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
             {
                 kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
 
-                // Shape
-                const char *shapeNames[] = { "Box", "Sphere", "Capsule", "Cylinder" };
-                int shapeIdx = (int)desc.shape.type;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::Combo("##PhysShape", &shapeIdx, shapeNames, 4))
-                {
-                    desc.shape.type = (kPhysicsShapeType)shapeIdx;
-                    manager->projectSaved = false;
-                }
-
                 // Body type
                 const char *bodyNames[] = { "Dynamic", "Static", "Kinematic", "Trigger" };
                 int bodyIdx = (int)desc.type;
                 ImGui::SetNextItemWidth(-1);
-                if (ImGui::Combo("##PhysBody", &bodyIdx, bodyNames, 4))
+                if (ImGui::Combo("Body Type##PhysBody", &bodyIdx, bodyNames, 4))
                 {
                     desc.type = (kPhysicsObjectType)bodyIdx;
                     manager->projectSaved = false;
                 }
 
-                // Mass (dynamic only)
-                if (desc.type == kPhysicsObjectType::Dynamic)
+                // Shape
+                const char *shapeNames[] = { "Sphere", "Box", "Capsule", "Cylinder" };
+                int shapeIdx = (int)desc.shape.type;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::Combo("Shape##PhysShape", &shapeIdx, shapeNames, 4))
                 {
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat("Mass (kg)##PhysMass", &desc.mass, 0.05f, 0.001f, 10000.0f, "%.3f"))
-                        manager->projectSaved = false;
+                    desc.shape.type = (kPhysicsShapeType)shapeIdx;
+                    manager->projectSaved = false;
                 }
 
                 // Shape params
@@ -1541,6 +1534,49 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
                 }
 
                 gui->spacing();
+
+                // Mass — only relevant for Dynamic bodies; greyed out otherwise
+                // so the user can still see the value but can't accidentally
+                // edit a no-op.
+                {
+                    bool dynamic = (desc.type == kPhysicsObjectType::Dynamic);
+                    gui->beginDisabled(!dynamic);
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat("Mass (kg)##PhysMass", &desc.mass, 0.05f, 0.001f, 10000.0f, "%.3f"))
+                        manager->projectSaved = false;
+                    gui->endDisabled();
+                }
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Friction##PhysFr", &desc.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Restitution##PhysRest", &desc.restitution, 0.01f, 0.0f, 1.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                // Damping + gravity factor are dynamic-only; same disabled
+                // pattern as Mass.
+                {
+                    bool dynamic = (desc.type == kPhysicsObjectType::Dynamic);
+                    gui->beginDisabled(!dynamic);
+
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat("Linear Damping##PhysLD", &desc.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
+                        manager->projectSaved = false;
+
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat("Angular Damping##PhysAD", &desc.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
+                        manager->projectSaved = false;
+
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat("Gravity Factor##PhysGF", &desc.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
+                        manager->projectSaved = false;
+
+                    gui->endDisabled();
+                }
+
+                gui->spacing();
                 if (ImGui::SmallButton("Remove Physics##RemPhys"))
                 {
                     obj->setHasPhysicsDesc(false);
@@ -1550,6 +1586,165 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
             else
             {
                 ImGui::TextDisabled("  No physics body");
+            }
+        }
+        gui->spacing();
+    }
+
+    // ── Character Controller ────────────────────────────────────────────────
+    // A capsule character for player/NPC movement. Like rigid bodies it is only
+    // instantiated and simulated once the game is played.
+    {
+        bool addChar = false;
+        bool open = componentHeader("Character Controller", "AddCharacter", addChar);
+
+        if (addChar)
+        {
+            if (!obj->getHasCharacterDesc())
+            {
+                obj->setHasCharacterDesc(true);
+                manager->projectSaved = false;
+            }
+        }
+
+        if (open)
+        {
+            if (obj->getHasCharacterDesc())
+            {
+                kCharacterControllerDesc &cd = obj->getCharacterDesc();
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Radius##CCRad", &cd.radius, 0.01f, 0.01f, 100.0f, "%.3f"))
+                    manager->projectSaved = false;
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Height##CCHt", &cd.height, 0.01f, 0.05f, 100.0f, "%.3f"))
+                    manager->projectSaved = false;
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Mass (kg)##CCMass", &cd.mass, 0.5f, 0.1f, 10000.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Friction##CCFr", &cd.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Slope Limit (deg)##CCSlope", &cd.slopeLimit, 0.5f, 0.0f, 89.0f, "%.1f"))
+                    manager->projectSaved = false;
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Step Height##CCStep", &cd.stepHeight, 0.01f, 0.0f, 10.0f, "%.3f"))
+                    manager->projectSaved = false;
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Gravity Factor##CCGF", &cd.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                gui->spacing();
+                if (ImGui::SmallButton("Remove Character##RemChar"))
+                {
+                    obj->setHasCharacterDesc(false);
+                    manager->projectSaved = false;
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("  No character controller");
+            }
+        }
+        gui->spacing();
+    }
+
+    // ── Navigation ───────────────────────────────────────────────────────────
+    // Bakes a nav mesh from the scene's static meshes (all, or within an area
+    // box centred on this object). Baking is an editor action; the result is
+    // held by the Manager, not serialized.
+    {
+        bool addNav = false;
+        bool open = componentHeader("Navigation", "AddNav", addNav);
+
+        if (addNav && !obj->getHasNavMeshDesc())
+        {
+            obj->setHasNavMeshDesc(true);
+            manager->projectSaved = false;
+        }
+
+        if (open)
+        {
+            if (obj->getHasNavMeshDesc())
+            {
+                kNavMeshDesc &nd = obj->getNavMeshDesc();
+
+                // Geometry source: All vs Area.
+                ImGui::TextUnformatted("Source:");
+                ImGui::SameLine();
+                if (ImGui::RadioButton("All##NavAll", !nd.useArea))
+                {
+                    nd.useArea = false;
+                    manager->projectSaved = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Area##NavArea", nd.useArea))
+                {
+                    nd.useArea = true;
+                    manager->projectSaved = false;
+                }
+
+                if (nd.useArea)
+                {
+                    float sz[3] = { nd.areaSize.x, nd.areaSize.y, nd.areaSize.z };
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat3("Area Size##NavSz", sz, 0.1f, 0.1f, 100000.0f))
+                    {
+                        nd.areaSize = kVec3(sz[0], sz[1], sz[2]);
+                        manager->projectSaved = false;
+                    }
+                    ImGui::TextDisabled("  Box is centred on this object's position.");
+                }
+
+                gui->spacing();
+
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Agent Radius##Nav", &nd.config.agentRadius, 0.01f, 0.01f, 100.0f, "%.2f"))
+                    manager->projectSaved = false;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Agent Height##Nav", &nd.config.agentHeight, 0.01f, 0.01f, 100.0f, "%.2f"))
+                    manager->projectSaved = false;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Max Climb##Nav", &nd.config.agentMaxClimb, 0.01f, 0.0f, 100.0f, "%.2f"))
+                    manager->projectSaved = false;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Max Slope##Nav", &nd.config.agentMaxSlope, 0.5f, 0.0f, 89.0f, "%.1f"))
+                    manager->projectSaved = false;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::DragFloat("Cell Size##Nav", &nd.config.cellSize, 0.01f, 0.01f, 10.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                gui->spacing();
+
+                if (ImGui::Button("Bake##Nav", ImVec2(80, 0)))
+                    manager->bakeNavMesh(obj);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear##Nav", ImVec2(80, 0)))
+                    manager->clearNavMesh(obj);
+                ImGui::SameLine();
+                if (manager->isNavMeshBaked(obj))
+                    ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "Baked");
+                else
+                    ImGui::TextDisabled("Not baked");
+
+                gui->spacing();
+                if (ImGui::SmallButton("Remove Navigation##RemNav"))
+                {
+                    manager->clearNavMesh(obj);
+                    obj->setHasNavMeshDesc(false);
+                    manager->projectSaved = false;
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("  No navigation surface");
             }
         }
         gui->spacing();

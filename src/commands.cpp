@@ -207,7 +207,11 @@ void ReparentCommand::undo()
     kObject *obj = findInScene(manager->getScene(), objUuid);
     if (!obj || !oldParent) return;
     insertChildBefore(oldParent, obj, oldNextSibling);
+    // Restore full TRS so the object's world pose matches the pre-reparent
+    // state exactly — the original reparent was world-transform-preserving.
     obj->setPosition(oldLocalPos);
+    obj->setRotation(oldLocalRot);
+    obj->setScale(oldLocalScale);
     if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
 }
 
@@ -217,6 +221,8 @@ void ReparentCommand::redo()
     if (!obj || !newParent) return;
     insertChildBefore(newParent, obj, newNextSibling);
     obj->setPosition(newLocalPos);
+    obj->setRotation(newLocalRot);
+    obj->setScale(newLocalScale);
     if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
 }
 
@@ -303,6 +309,8 @@ void CreatePrefabCommand::undo()
         if (!obj || !it->oldParent) continue;
         insertChildBefore(it->oldParent, obj, it->oldNextSibling);
         obj->setPosition(it->oldLocalPos);
+        obj->setRotation(it->oldLocalRot);
+        obj->setScale(it->oldLocalScale);
     }
 
     // 3) Tear down the wrapper empty if multi-select created one.
@@ -337,10 +345,11 @@ void CreatePrefabCommand::redo()
         // We need access to the wrapper for the destination parent; multi-
         // select Create Prefab always uses createdEmpty as the destination.
         if (createdEmpty) insertChildBefore(createdEmpty, obj, /*append*/ nullptr);
-        // Local-pos to apply on redo wasn't captured separately — use
-        // obj_pos = stored_old - createdEmptyPos to recompute, matching the
-        // logic in createPrefabFromSelection. This preserves visual layout.
-        obj->setPosition(m.oldLocalPos - createdEmptyPos);
+        // Restore the exact local transform computed at do-time (the original
+        // reparent preserved world transform).
+        obj->setPosition(m.newLocalPos);
+        obj->setRotation(m.newLocalRot);
+        obj->setScale(m.newLocalScale);
     }
 
     // 3) Re-apply prefab linkage stamps.

@@ -10,7 +10,7 @@ PanelPrefab::PanelPrefab(kGuiManager *setGuiManager, Manager *setManager)
     manager = setManager;
 }
 
-void PanelPrefab::draw(bool &isOpened, kRenderer *renderer)
+void PanelPrefab::draw(bool &isOpened)
 {
     enabled = manager->projectOpened && manager->prefabEditing;
 
@@ -18,7 +18,7 @@ void PanelPrefab::draw(bool &isOpened, kRenderer *renderer)
     if (enabled && !isOpened) isOpened = true;
     if (!enabled && isOpened) isOpened = false;
 
-    if (!isOpened || renderer == nullptr || manager->prefabCamera == nullptr)
+    if (!isOpened || manager->prefabCamera == nullptr)
         return;
 
     gui->beginDisabled(!enabled);
@@ -58,8 +58,8 @@ void PanelPrefab::draw(bool &isOpened, kRenderer *renderer)
     gui->popStyleVar();
     gui->separator();
 
-    // Viewport — same texture pipeline as PanelWorld; main.cpp renders the
-    // prefab scene to the renderer's FBO when manager->prefabEditing is true.
+    // Viewport — the prefab editor has its OWN offscreen renderer (driven from
+    // main.cpp), so it never touches the World panel's render target.
     kVec2 availSize  = gui->getContentRegionAvail();
     width       = (int)availSize.x;
     height      = (int)availSize.y;
@@ -68,7 +68,7 @@ void PanelPrefab::draw(bool &isOpened, kRenderer *renderer)
     panelPos        = gui->getCursorScreenPos();
     kVec2 panelSize = availSize;
 
-    ImTextureRef tex_ref((ImTextureID)(uintptr_t)renderer->getFboTexture());
+    ImTextureRef tex_ref((ImTextureID)(uintptr_t)manager->prefabRenderer.getTexture());
     gui->setNextItemAllowOverlap();
     ImGui::Image(tex_ref, ImVec2(availSize.x, availSize.y), ImVec2(0, 1), ImVec2(1, 0));
 

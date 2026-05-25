@@ -9,6 +9,7 @@
 #include "panel_project.h"
 #include "panel_console.h"
 #include "panel_shader_editor.h"
+#include "panel_script_editor.h"
 #include "panel_game.h"
 #include "panel_prefab.h"
 #include "splash_screen.h"
@@ -52,6 +53,10 @@ int main()
 	Manager *manager = new Manager(window, world, renderer);
 	manager->setScene(scene);
 
+	// Prefab editor renders into its own offscreen target with a dark-grey
+	// background so it's visually distinct from the World panel.
+	manager->prefabRenderer.setBackgroundColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+
 	// Initialize panels
 	MainMenu *mainmenu = new MainMenu(gui, manager);
 	PanelWorld *panelWorld = new PanelWorld(gui, manager);
@@ -60,6 +65,7 @@ int main()
 	PanelHierarchy *panelHierarchy = new PanelHierarchy(gui, manager, assetManager, world);
 	PanelConsole *panelConsole = new PanelConsole(gui, manager);
 	PanelShaderEditor *panelShaderEditor = new PanelShaderEditor(gui, manager);
+	PanelScriptEditor *panelScriptEditor = new PanelScriptEditor(gui, manager);
 	PanelGame *panelGame = new PanelGame(gui, manager);
 	manager->panelGame = panelGame;
 	PanelPrefab *panelPrefab = new PanelPrefab(gui, manager);
@@ -71,6 +77,11 @@ int main()
 		{
 			showPanel.shaderEditor = true;
 			panelShaderEditor->openFile(path);
+		}
+		else if (path.size() >= 7 && path.substr(path.size() - 7) == ".kgraph")
+		{
+			showPanel.scriptEditor = true;
+			panelScriptEditor->openFile(path);
 		}
 		else if (path.size() >= 7 && path.substr(path.size() - 7) == ".prefab")
 		{
@@ -421,27 +432,38 @@ int main()
 
 		renderer->clear();
 
-		// While the prefab editor is active, render its isolated scene + camera
-		// to the same FBO that the panels display from. This keeps the existing
-		// single-renderer setup intact while giving the prefab editor its own
-		// editing context.
-		kScene  *renderScene  = manager->prefabEditing ? manager->prefabScene  : scene;
-		kCamera *renderCamera = manager->prefabEditing ? manager->prefabCamera : cameraEditor;
-		if (manager->prefabEditing && renderCamera)
-			world->setMainCamera(renderCamera);
-		else if (!manager->prefabEditing)
-			world->setMainCamera(cameraEditor);
+		// The World panel always renders the main scene from the editor camera.
+		// The prefab editor (below) uses its OWN renderer, so opening it never
+		// disturbs this view.
+		world->setMainCamera(cameraEditor);
 
-		// Pick which panel's viewport size drives the render target.
-		int viewportW = manager->prefabEditing ? panelPrefab->width  : panelWorld->width;
-		int viewportH = manager->prefabEditing ? panelPrefab->height : panelWorld->height;
+		int viewportW = panelWorld->width;
+		int viewportH = panelWorld->height;
 
 		// Fix aspect ratio
-		if (viewportW > 0 && viewportH > 0 && renderScene != nullptr)
+		if (viewportW > 0 && viewportH > 0)
 		{
 			// Pass 0 as deltaTime when paused so physics/animations freeze
 			float gameDt = panelGame->getEffectiveDeltaTime(deltaTime);
-			renderer->render(world, renderScene, 0, 0, viewportW * 2, viewportH * 2, gameDt, false);
+
+			// Physics only ticks while Playing (not Paused, not Stopped, never
+			// during prefab editing). gameDt is already 0 when Paused, but we
+			// also gate on play state so a Stopped editor session never builds
+			// momentum or does collision callbacks.
+			if (panelGame->getPlayState() == GamePlayState::Playing &&
+				!manager->prefabEditing && gameDt > 0.0f)
+			{
+				manager->stepPhysics(gameDt);
+				// Dispatch FixedUpdate() then Update()/LateUpdate() to scripts.
+				world->fixedUpdateScripts(gameDt);
+				world->updateScripts(gameDt);
+			}
+
+			// While stopped, watch script source files and recompile on save.
+			if (panelGame->getPlayState() == GamePlayState::Stopped)
+				manager->pollScriptChanges(deltaTime);
+
+			renderer->render(world, scene, 0, 0, viewportW * 2, viewportH * 2, gameDt, false);
 
 			// Editor scene (grid) always renders in Full mode — debug modes don't apply to it.
 			{
@@ -452,11 +474,11 @@ int main()
 			}
 
 			// Always render picking pass so click selection and outline are always fresh.
-			renderer->renderPickingPass(world, renderScene, viewportW * 2, viewportH * 2);
+			renderer->renderPickingPass(world, scene, viewportW * 2, viewportH * 2);
 
 			// Outline selected objects (orange)
 			if (manager->projectOpened && !manager->selectedObjects.empty())
-				renderer->renderOutline(world, renderScene, manager->selectedObjects,
+				renderer->renderOutline(world, scene, manager->selectedObjects,
 										kVec4(1.0f, 0.55f, 0.0f, 1.0f), 3.0f);
 
 			// Drag-hover outline (yellow) — applied on top of any selection
@@ -465,21 +487,44 @@ int main()
 			if (manager->projectOpened && !manager->dragHoverObjectUuid.empty())
 			{
 				std::vector<kString> hoverList = { manager->dragHoverObjectUuid };
-				renderer->renderOutline(world, renderScene, hoverList,
+				renderer->renderOutline(world, scene, hoverList,
 										kVec4(1.0f, 0.85f, 0.0f, 0.85f), 3.0f);
 			}
 
 			// Debug shapes for selected lights and cameras
 			if (manager->projectOpened && !manager->selectedObjects.empty())
-				renderer->renderDebugShapes(world, renderScene, manager->selectedObjects);
+				renderer->renderDebugShapes(world, scene, manager->selectedObjects);
 
 			// Octree debug visualization
-			if (manager->projectOpened && !manager->prefabEditing)
-				renderer->renderOctreeDebug(world, renderScene);
+			if (manager->projectOpened)
+				renderer->renderOctreeDebug(world, scene);
+
+			// Nav-mesh wireframe (blue) for a selected, baked navigation object.
+			if (manager->projectOpened && manager->selectedObject &&
+				manager->selectedObject->getHasNavMeshDesc())
+			{
+				kNavMesh *nav = manager->getBakedNavMesh(manager->selectedObject);
+				if (nav && nav->isBaked())
+				{
+					std::vector<kVec3> navLines;
+					nav->getDebugLines(navLines);
+					renderer->renderDebugLines(world, navLines, kVec3(0.25f, 0.55f, 1.0f));
+				}
+			}
 
 			// Thumbnail generation (one per frame, main thread only)
 			if (manager->projectOpened)
 				manager->processThumbnailQueue(panelConsole);
+		}
+
+		// Prefab editor renders its isolated scene through its OWN renderer into
+		// a separate texture, so the World panel above is left untouched. Its
+		// background is dark grey (set once after Manager construction).
+		if (manager->prefabEditing && manager->prefabScene && manager->prefabCamera &&
+			panelPrefab->width > 0 && panelPrefab->height > 0)
+		{
+			manager->prefabRenderer.resize(panelPrefab->width * 2, panelPrefab->height * 2);
+			manager->prefabRenderer.render(world, manager->prefabScene, manager->prefabCamera);
 		}
 
 		// std::cout << panelWorld->width << "," << panelWorld->height << std::endl;
@@ -491,17 +536,18 @@ int main()
 
 		manager->shaderPreview.active = showPanel.shaderEditor;
 
-		// While the prefab editor is open, hide the World panel so the user
-		// only sees the isolated prefab view.
-		bool worldVisible = showPanel.world && !manager->prefabEditing;
+		// The World panel stays visible even while the prefab editor is open —
+		// the two now render to separate targets.
+		bool worldVisible = showPanel.world;
 		panelWorld->draw(worldVisible, renderer, cameraEditor);
 		panelInspector->draw(showPanel.inspector);
 		panelHierarchy->draw(showPanel.hierarchy);
 		panelProject->draw(showPanel.project);
 		panelConsole->draw(showPanel.console);
 		panelShaderEditor->draw(showPanel.shaderEditor);
+		panelScriptEditor->draw(showPanel.scriptEditor);
 		panelGame->draw(showPanel.game);
-		panelPrefab->draw(showPanel.prefab, renderer);
+		panelPrefab->draw(showPanel.prefab);
 
 		// If there's a need to import assets
 		manager->drawImportPopup(panelConsole);

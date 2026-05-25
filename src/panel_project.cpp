@@ -1,5 +1,7 @@
 #include "panel_project.h"
 
+#include <cstring>
+
 using namespace kemena;
 
 PanelProject::PanelProject(kGuiManager* setGuiManager, Manager* setManager, kAssetManager* assetManager)
@@ -271,6 +273,8 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 		{
 			executeDeleteSelected();
 		}
+
+		drawRenameModal();
 	}
 	gui->windowEnd();
 
@@ -409,6 +413,8 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 			deselectAll(rootTree);
 			node.isSelected = true;
 		}
+		if (ImGui::MenuItem("Rename"))
+			beginRename(node.fullPath, node.name);
 		if (ImGui::MenuItem("Delete"))
 			executeDeleteSelected();
 		ImGui::EndPopup();
@@ -714,6 +720,8 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 						deselectAll(rootThumbnail);
 						child->isSelected = true;
 					}
+					if (ImGui::MenuItem("Rename"))
+						beginRename(child->fullPath, child->name);
 					if (ImGui::MenuItem("Delete"))
 						executeDeleteSelected();
 					ImGui::EndPopup();
@@ -761,10 +769,19 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 		if (ImGui::BeginPopupContextWindow("##ProjectContextMenu",
 		        ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
 		{
-			if (ImGui::MenuItem("Create New Material"))
+			if (ImGui::BeginMenu("Create"))
 			{
-				manager->createNewMaterial();
-				needRefreshList = true;
+				if (ImGui::MenuItem("Folder"))
+					{ manager->createNewFolder();     needRefreshList = true; }
+				if (ImGui::MenuItem("Shader"))
+					{ manager->createNewShader();     needRefreshList = true; }
+				if (ImGui::MenuItem("Material"))
+					{ manager->createNewMaterial();   needRefreshList = true; }
+				if (ImGui::MenuItem("Script"))
+					{ manager->createNewScript();     needRefreshList = true; }
+				if (ImGui::MenuItem("Logic Graph"))
+					{ manager->createNewLogicGraph(); needRefreshList = true; }
+				ImGui::EndMenu();
 			}
 			ImGui::EndPopup();
 		}
@@ -815,6 +832,60 @@ void PanelProject::executeDeleteSelected()
 	}
 }
 
+void PanelProject::beginRename(const fs::path& path, const kString& name)
+{
+	renameTargetPath = path;
+	std::strncpy(renameBuffer, name.c_str(), sizeof(renameBuffer) - 1);
+	renameBuffer[sizeof(renameBuffer) - 1] = '\0';
+	openRenamePopup = true;
+}
+
+void PanelProject::drawRenameModal()
+{
+	if (openRenamePopup)
+	{
+		ImGui::OpenPopup("Rename Asset");
+		openRenamePopup = false;
+	}
+
+	ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+	if (ImGui::BeginPopupModal("Rename Asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+	{
+		ImGui::TextUnformatted("New name:");
+
+		if (ImGui::IsWindowAppearing())
+			ImGui::SetKeyboardFocusHere();
+		ImGui::SetNextItemWidth(320.0f);
+		bool commit = ImGui::InputText("##renameinput", renameBuffer, sizeof(renameBuffer),
+		                               ImGuiInputTextFlags_EnterReturnsTrue);
+
+		ImGui::Spacing();
+		bool doRename = ImGui::Button("Rename", ImVec2(120, 0)) || commit;
+		ImGui::SameLine();
+		bool doCancel = ImGui::Button("Cancel", ImVec2(120, 0));
+
+		if (doRename)
+		{
+			kString newName = renameBuffer;
+			if (!newName.empty() && !renameTargetPath.empty() &&
+			    manager->renameAsset(renameTargetPath, newName))
+			{
+				clearSelection();
+				needRefreshList = true;
+			}
+			ImGui::CloseCurrentPopup();
+		}
+		else if (doCancel)
+		{
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::EndPopup();
+	}
+}
+
 void PanelProject::drawBreadcrumb()
 {
 	if (manager->currentDir.size() > 0)
@@ -822,13 +893,37 @@ void PanelProject::drawBreadcrumb()
 		// Start from project root
 		fs::path basePath = manager->projectPath;
 
-		// Draw Assets folder
+		// Make the breadcrumb button just submitted accept dragged file assets
+		// and move them into `targetDir` on drop. The file's UUID lives in its
+		// JSON content, so moving the file preserves it.
+		auto acceptDropInto = [&](const fs::path& targetDir)
+		{
+			if (ImGui::BeginDragDropTarget())
+			{
+				if (const ImGuiPayload* payload =
+				        ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+				{
+					kString uuid(static_cast<const char*>(payload->Data));
+					fs::path src = manager->findAssetPathByUuid(uuid);
+					if (!src.empty() && manager->moveAsset(src, targetDir))
+					{
+						clearSelection();
+						needRefreshList = true;
+					}
+				}
+				ImGui::EndDragDropTarget();
+			}
+		};
+
+		// "Assets" — root of the project's asset tree.
 		if (gui->button("Assets"))
 		{
 			manager->currentDir.erase(manager->currentDir.begin() + 1, manager->currentDir.end());
 			needRefreshList = true;
 		}
+		acceptDropInto(basePath / manager->currentDir[0]);
 
+		fs::path segPath = basePath / manager->currentDir[0];
 		for (size_t i = 1; i < manager->currentDir.size(); ++i)
 		{
 			gui->sameLine();
@@ -837,11 +932,14 @@ void PanelProject::drawBreadcrumb()
 			gui->sameLine();
 			gui->setCursorPosX(gui->getCursorPosX() - 4.0f);
 
+			segPath /= manager->currentDir[i];
+
 			if (gui->button(manager->currentDir[i]))
 			{
 				manager->currentDir.erase(manager->currentDir.begin() + i + 1, manager->currentDir.end());
 				needRefreshList = true;
 			}
+			acceptDropInto(segPath);
 		}
 
 		gui->dummy(kVec2(0.0f, 4.0f));

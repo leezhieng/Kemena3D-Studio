@@ -9,10 +9,13 @@
 #include <kemena/klight.h>
 #include <kemena/kcamera.h>
 #include <kemena/kmeshgenerator.h>
+#include <kemena/kshadernode.h>
+#include <kemena/kscriptgraph.h>
 
 #include <set>
 #include <functional>
 #include <ctime>
+#include <cstdlib>
 
 namespace fs = std::filesystem;
 
@@ -1591,6 +1594,245 @@ void Manager::createCamera()
     );
 }
 
+void Manager::createNavMesh()
+{
+    if (!scene) return;
+
+    // A navigation surface is a plain object carrying a nav-mesh component; the
+    // object's transform also positions the optional area box.
+    kObject *obj = new kObject();
+    obj->setName("Nav Mesh");
+    obj->setHasNavMeshDesc(true);
+    scene->addObject(obj);
+    kString uuid = obj->getUuid();
+
+    finishCreate(this, obj, scene,
+        [this, obj, uuid]()
+        {
+            clearNavMesh(obj);
+            scene->removeObject(obj);
+            selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
+                                  selectedObjects.end());
+            if (selectedObject == obj) selectedObject = nullptr;
+            if (panelHierarchy) panelHierarchy->refreshList();
+        },
+        [this, obj, uuid]()
+        {
+            scene->addObject(obj, uuid);
+            selectedObject = obj;
+            selectObject(uuid, true);
+            if (panelHierarchy) panelHierarchy->refreshList();
+        }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Navigation baking
+// ---------------------------------------------------------------------------
+
+void Manager::bakeNavMesh(kObject *navObj)
+{
+    if (!navObj || !scene || !navObj->getHasNavMeshDesc())
+        return;
+
+    kNavMeshDesc &desc = navObj->getNavMeshDesc();
+
+    // Area box centred on the nav object (full extents = areaSize).
+    navObj->calculateModelMatrix();
+    kVec3 center = navObj->getGlobalPosition();
+    kVec3 half   = desc.areaSize * 0.5f;
+    kAABB areaBox(center - half, center + half);
+
+    std::vector<float> verts;
+    std::vector<int>   tris;
+
+    std::function<void(kObject *)> walk = [&](kObject *node) {
+        if (!node) return;
+
+        // Only static mesh geometry contributes to the walkable surface.
+        if (node->getType() == NODE_TYPE_MESH && node->getStatic())
+        {
+            kMesh *mesh = static_cast<kMesh *>(node);
+            mesh->calculateModelMatrix();
+
+            if (!desc.useArea || areaBox.overlaps(mesh->getWorldAABB()))
+            {
+                kMat4 world = mesh->getModelMatrixWorld();
+                std::vector<kVec3>    mv = mesh->getVertices();
+                std::vector<uint32_t> mi = mesh->getIndices();
+
+                int base = (int)(verts.size() / 3);
+                for (const kVec3 &v : mv)
+                {
+                    kVec3 w = kVec3(world * kVec4(v, 1.0f));
+                    verts.push_back(w.x);
+                    verts.push_back(w.y);
+                    verts.push_back(w.z);
+                }
+                for (uint32_t idx : mi)
+                    tris.push_back(base + (int)idx);
+            }
+        }
+        for (kObject *c : node->getChildren()) walk(c);
+    };
+    walk(scene->getRootNode());
+
+    if (verts.empty() || tris.empty())
+    {
+        std::cerr << "Nav: no static mesh geometry found to bake.\n";
+        return;
+    }
+
+    // Replace any previous bake for this object.
+    clearNavMesh(navObj);
+
+    kNavMesh *nav = new kNavMesh();
+    if (nav->bake(verts, tris, desc.config))
+    {
+        bakedNavMeshes[navObj->getUuid()] = nav;
+    }
+    else
+    {
+        std::cerr << "Nav: bake failed.\n";
+        delete nav;
+    }
+}
+
+void Manager::clearNavMesh(kObject *navObj)
+{
+    if (!navObj) return;
+    auto it = bakedNavMeshes.find(navObj->getUuid());
+    if (it != bakedNavMeshes.end())
+    {
+        delete it->second;
+        bakedNavMeshes.erase(it);
+    }
+}
+
+void Manager::clearAllNavMeshes()
+{
+    for (auto &pair : bakedNavMeshes)
+        delete pair.second;
+    bakedNavMeshes.clear();
+}
+
+bool Manager::isNavMeshBaked(kObject *navObj) const
+{
+    if (!navObj) return false;
+    auto it = bakedNavMeshes.find(navObj->getUuid());
+    return it != bakedNavMeshes.end() && it->second && it->second->isBaked();
+}
+
+kNavMesh *Manager::getBakedNavMesh(kObject *navObj) const
+{
+    if (!navObj) return nullptr;
+    auto it = bakedNavMeshes.find(navObj->getUuid());
+    return it != bakedNavMeshes.end() ? it->second : nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Game export
+// ---------------------------------------------------------------------------
+
+bool Manager::exportGame(const ExportSettings &s)
+{
+    if (!projectOpened)
+    {
+        std::cerr << "Export: no project open.\n";
+        return false;
+    }
+    if (s.outputDir.empty())
+    {
+        std::cerr << "Export: no output directory.\n";
+        return false;
+    }
+
+    fs::path templ = s.templateDir;
+    if (templ.empty() || !fs::exists(templ))
+    {
+        std::cerr << "Export: runtime template folder not found: " << s.templateDir << "\n";
+        return false;
+    }
+
+    std::error_code ec;
+
+    // 1. Ensure compiled bytecode and an up-to-date scene.world.
+    buildScripts();
+    saveWorld();
+
+    // 2. Prepare output folder.
+    fs::path outDir = s.outputDir;
+    fs::create_directories(outDir, ec);
+
+    // 3. Copy the runtime template (player exe + dependency runtime libs).
+    for (const auto &entry : fs::directory_iterator(templ, ec))
+    {
+        fs::copy(entry.path(), outDir / entry.path().filename(),
+                 fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
+    }
+
+    // 4. Rename the generic runtime executable to the game name.
+    const bool win = (s.platform == 0);
+    fs::path runExe  = outDir / (win ? "Kemena3DRuntime.exe" : "Kemena3DRuntime");
+    fs::path gameExe = outDir / (win ? (s.gameName + ".exe")  : s.gameName);
+    if (fs::exists(runExe))
+        fs::rename(runExe, gameExe, ec);
+
+    // 5. Bundle game data under data/.
+    fs::path dataDir = outDir / "data";
+    fs::create_directories(dataDir, ec);
+
+    if (fs::exists(worldPath))
+        fs::copy(worldPath, dataDir / "scene.world", fs::copy_options::overwrite_existing, ec);
+
+    auto copyLibFolder = [&](const char *sub) {
+        fs::path src = projectPath / "Library" / sub;
+        if (fs::exists(src))
+            fs::copy(src, dataDir / "Library" / sub,
+                     fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
+    };
+    copyLibFolder("ImportedAssets"); // .glb meshes (textures baked in)
+    copyLibFolder("Shaders");        // compiled shader graphs
+
+    // Scripts: ship compiled bytecode only — never the .as / .kgraph sources.
+    {
+        fs::path src = projectPath / "Library" / "Scripts";
+        fs::path dst = dataDir / "Library" / "Scripts";
+        if (fs::exists(src))
+        {
+            fs::create_directories(dst, ec);
+            for (const auto &e : fs::directory_iterator(src, ec))
+                if (e.path().extension() == ".kbc")
+                    fs::copy(e.path(), dst / e.path().filename(),
+                             fs::copy_options::overwrite_existing, ec);
+        }
+    }
+
+    // 6. Write game.config (read by the runtime at startup).
+    {
+        nlohmann::json cfg;
+        cfg["title"]      = s.title.empty() ? s.gameName : s.title;
+        cfg["width"]      = s.width;
+        cfg["height"]     = s.height;
+        cfg["fullscreen"] = s.fullscreen;
+        std::ofstream f(dataDir / "game.config");
+        if (f.is_open()) f << cfg.dump(4);
+    }
+
+    // 7. Per-OS metadata (best-effort). Windows exe icon via rcedit if present.
+    if (win && !s.iconPath.empty() && fs::exists(s.iconPath))
+    {
+        std::string cmd = "rcedit \"" + gameExe.string() +
+                          "\" --set-icon \"" + s.iconPath + "\"";
+        int r = std::system(cmd.c_str()); // requires rcedit on PATH; non-fatal
+        if (r != 0)
+            std::cerr << "Export: rcedit icon step skipped (rcedit not found?).\n";
+    }
+
+    std::cout << "Export complete: " << outDir << "\n";
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Create New Material asset file
 // ---------------------------------------------------------------------------
@@ -1641,6 +1883,180 @@ void Manager::createNewMaterial()
     f.close();
 
     checkAssetChange();
+}
+
+void Manager::createNewFolder()
+{
+    if (!projectOpened) return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Folder";
+    fs::path folderPath = dir / baseName;
+    int counter = 1;
+    while (fs::exists(folderPath))
+        folderPath = dir / (baseName + " " + std::to_string(counter++));
+
+    std::error_code ec;
+    fs::create_directory(folderPath, ec);
+    if (ec)
+    {
+        std::cerr << "Failed to create folder: " << folderPath << " (" << ec.message() << ")\n";
+        return;
+    }
+    checkAssetChange();
+}
+
+void Manager::createNewShader()
+{
+    if (!projectOpened) return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Shader";
+    fs::path filePath = dir / (baseName + ".shader");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".shader");
+
+    // Seed with a default PBR output node so the graph opens ready to edit.
+    kShaderGraph graph;
+    graph.uuid = generateUuid();
+    graph.name = filePath.stem().string();
+    graph.nodes.push_back(graph.makeNode(kShaderNodeType::OutputPBR, 500.0f, 200.0f));
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create shader file: " << filePath << "\n";
+        return;
+    }
+    f << graph.toJson().dump(4);
+    f.close();
+
+    checkAssetChange();
+}
+
+void Manager::createNewScript()
+{
+    if (!projectOpened) return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Script";
+    fs::path filePath = dir / (baseName + ".as");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".as");
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create script file: " << filePath << "\n";
+        return;
+    }
+    f << "// AngelScript — attach to an object's Scripts component in the Inspector.\n"
+         "// Host API: getSelf(), getDeltaTime(), print(string), kVec3, kObject.\n\n"
+         "void Start()\n"
+         "{\n"
+         "}\n\n"
+         "void Update()\n"
+         "{\n"
+         "}\n";
+    f.close();
+
+    checkAssetChange();
+}
+
+void Manager::createNewLogicGraph()
+{
+    if (!projectOpened) return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Logic Graph";
+    fs::path filePath = dir / (baseName + ".kgraph");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".kgraph");
+
+    // Seed with an On Update event so the canvas is not empty.
+    kScriptGraph graph;
+    graph.uuid = generateUuid();
+    graph.name = filePath.stem().string();
+    graph.nodes.push_back(graph.makeNode(kScriptNodeType::EventUpdate, 120.0f, 120.0f));
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create logic graph file: " << filePath << "\n";
+        return;
+    }
+    f << graph.toJson().dump(2);
+    f.close();
+
+    checkAssetChange();
+}
+
+bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
+{
+    if (!projectOpened || srcPath.empty() || destDir.empty()) return false;
+
+    std::error_code ec;
+    if (!fs::exists(srcPath, ec) || ec)
+    {
+        std::cerr << "Move failed — source does not exist: " << srcPath << "\n";
+        return false;
+    }
+    if (!fs::is_directory(destDir, ec) || ec)
+    {
+        std::cerr << "Move failed — destination is not a folder: " << destDir << "\n";
+        return false;
+    }
+
+    fs::path newPath = destDir / srcPath.filename();
+    if (newPath == srcPath) return true; // already in that folder
+
+    if (fs::exists(newPath, ec))
+    {
+        std::cerr << "Move failed — '" << newPath.filename().string()
+                  << "' already exists in the target folder.\n";
+        return false;
+    }
+
+    fs::rename(srcPath, newPath, ec);
+    if (ec)
+    {
+        std::cerr << "Move failed: " << ec.message() << "\n";
+        return false;
+    }
+
+    // The file's content — including its embedded UUID — is untouched; only
+    // the path changed. checkAssetChange() refreshes Manager::fileMap so the
+    // new location is the one resolved by findAssetPathByUuid().
+    checkAssetChange();
+    return true;
+}
+
+bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
+{
+    if (!projectOpened || newName.empty()) return false;
+
+    fs::path newPath = oldPath.parent_path() / newName;
+    if (newPath == oldPath) return true;
+
+    if (fs::exists(newPath))
+    {
+        std::cerr << "Rename failed — a file named '" << newName << "' already exists.\n";
+        return false;
+    }
+
+    std::error_code ec;
+    fs::rename(oldPath, newPath, ec);
+    if (ec)
+    {
+        std::cerr << "Rename failed: " << ec.message() << "\n";
+        return false;
+    }
+
+    checkAssetChange();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1882,6 +2298,83 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         if (obj.contains("prefab_ref"))    result->setPrefabRef(obj["prefab_ref"].get<std::string>());
         if (obj.contains("template_uuid")) result->setTemplateUuid(obj["template_uuid"].get<std::string>());
 
+        // Physics body descriptor — fields mirror kPhysicsObjectDesc; missing
+        // fields fall back to descriptor defaults.
+        if (obj.contains("physics") && obj["physics"].is_object())
+        {
+            const json &phys = obj["physics"];
+            kPhysicsObjectDesc &desc = result->getPhysicsDesc();
+            desc.shape.type = (kPhysicsShapeType)phys.value("shape_type", 0);
+            if (phys.contains("half_extents") && phys["half_extents"].is_object())
+            {
+                const auto &he = phys["half_extents"];
+                desc.shape.halfExtents = kVec3(
+                    he.value("x", 0.5f), he.value("y", 0.5f), he.value("z", 0.5f));
+            }
+            desc.shape.radius   = phys.value("radius", 0.5f);
+            desc.shape.height   = phys.value("height", 1.0f);
+            desc.type           = (kPhysicsObjectType)phys.value("body_type", 0);
+            desc.mass           = phys.value("mass",            1.0f);
+            desc.friction       = phys.value("friction",        0.5f);
+            desc.restitution    = phys.value("restitution",     0.0f);
+            desc.linearDamping  = phys.value("linear_damping",  0.05f);
+            desc.angularDamping = phys.value("angular_damping", 0.05f);
+            desc.gravityFactor  = phys.value("gravity_factor",  1.0f);
+            result->setHasPhysicsDesc(true);
+        }
+
+        // Character controller descriptor.
+        if (obj.contains("character") && obj["character"].is_object())
+        {
+            const json &ch = obj["character"];
+            kCharacterControllerDesc &cd = result->getCharacterDesc();
+            cd.radius        = ch.value("radius",         0.3f);
+            cd.height        = ch.value("height",         1.8f);
+            cd.mass          = ch.value("mass",           80.0f);
+            cd.friction      = ch.value("friction",       0.5f);
+            cd.gravityFactor = ch.value("gravity_factor", 1.0f);
+            cd.slopeLimit    = ch.value("slope_limit",    45.0f);
+            cd.stepHeight    = ch.value("step_height",    0.3f);
+            result->setHasCharacterDesc(true);
+        }
+
+        // Navigation surface descriptor (bake settings only).
+        if (obj.contains("navmesh_surface") && obj["navmesh_surface"].is_object())
+        {
+            const json &nm = obj["navmesh_surface"];
+            kNavMeshDesc &nd = result->getNavMeshDesc();
+            nd.useArea = nm.value("use_area", false);
+            if (nm.contains("area_size") && nm["area_size"].is_object())
+            {
+                const auto &as = nm["area_size"];
+                nd.areaSize = kVec3(as.value("x", 20.0f), as.value("y", 10.0f), as.value("z", 20.0f));
+            }
+            nd.config.cellSize      = nm.value("cell_size",       0.3f);
+            nd.config.cellHeight    = nm.value("cell_height",     0.2f);
+            nd.config.agentHeight   = nm.value("agent_height",    2.0f);
+            nd.config.agentRadius   = nm.value("agent_radius",    0.6f);
+            nd.config.agentMaxClimb = nm.value("agent_max_climb", 0.9f);
+            nd.config.agentMaxSlope = nm.value("agent_max_slope", 45.0f);
+            nd.config.tileSize      = nm.value("tile_size",       48.0f);
+            result->setHasNavMeshDesc(true);
+        }
+
+        // Script components — restore each AngelScript attachment. The runtime
+        // module is built later (on Play) by kWorld::startScripts().
+        if (obj.contains("script") && obj["script"].is_array())
+        {
+            for (const auto &sj : obj["script"])
+            {
+                kScript s;
+                s.uuid       = sj.value("uuid", generateUuid());
+                s.scriptUuid = sj.value("script_uuid", std::string(""));
+                s.fileName   = sj.value("file_name",   std::string(""));
+                s.checksum   = sj.value("checksum",    std::string(""));
+                s.isActive   = sj.value("active", true);
+                result->addScript(s);
+            }
+        }
+
         // Recursively load children, parented to this node.
         if (obj.contains("children") && obj["children"].is_array())
         {
@@ -1903,6 +2396,9 @@ void Manager::loadWorld(const kString &path)
         std::cerr << "loadWorld: file not found: " << path << "\n";
         return;
     }
+
+    // Old baked nav meshes are keyed by now-stale object UUIDs — drop them.
+    clearAllNavMeshes();
 
     json data;
     try
@@ -2181,6 +2677,230 @@ void Manager::closePrefabEditor(bool saveChanges)
 }
 
 // ---------------------------------------------------------------------------
+// Physics simulation
+// ---------------------------------------------------------------------------
+//
+// On Play we walk the active scene, build a Jolt body per kObject that has
+// a physics descriptor, and attach it via kObject::attachPhysics. The body's
+// initial transform is taken from the object's CURRENT world transform, not
+// the descriptor's stored position — the descriptor's position field is
+// effectively unused after creation since the editor authors transforms via
+// kObject::setPosition / setRotation directly.
+//
+// On Stop we destroy every body and detach. The kObject's local transform is
+// restored separately by PanelGame's snapshot mechanism.
+
+void Manager::startPhysicsSimulation()
+{
+    if (!scene) return;
+    if (!physicsManager)
+    {
+        physicsManager = createPhysicsManager();
+        if (!physicsManager || !physicsManager->init())
+        {
+            std::cerr << "Physics: failed to initialise kPhysicsManager\n";
+            physicsManager = nullptr;
+            return;
+        }
+    }
+
+    physicsBodies.clear();
+    characterBodies.clear();
+
+    std::function<void(kObject *)> walk = [&](kObject *node) {
+        if (!node) return;
+        if (node->getHasPhysicsDesc())
+        {
+            kPhysicsObjectDesc desc = node->getPhysicsDesc();
+            // Seed the body from the object's current world transform so it
+            // appears where the editor placed it, not at the descriptor's
+            // (default-zero) position.
+            desc.position = node->getGlobalPosition();
+            desc.rotation = node->getGlobalRotation();
+            kPhysicsObject *body = physicsManager->createObject(desc);
+            if (body)
+            {
+                node->attachPhysics(body);
+                physicsBodies.push_back(node);
+            }
+            else
+            {
+                std::cerr << "Physics: createObject failed for '" << node->getName() << "'\n";
+            }
+        }
+        // A character controller is independent of the rigid-body descriptor.
+        if (node->getHasCharacterDesc())
+        {
+            kCharacterControllerDesc cd = node->getCharacterDesc();
+            cd.position = node->getGlobalPosition();
+            cd.rotation = node->getGlobalRotation();
+            kCharacterController *cc = physicsManager->createCharacter(cd);
+            if (cc)
+            {
+                node->attachCharacter(cc);
+                characterBodies.push_back(node);
+            }
+            else
+            {
+                std::cerr << "Physics: createCharacter failed for '" << node->getName() << "'\n";
+            }
+        }
+        for (kObject *c : node->getChildren()) walk(c);
+    };
+    walk(scene->getRootNode());
+}
+
+void Manager::stopPhysicsSimulation()
+{
+    if (!physicsManager) return;
+    for (kObject *obj : physicsBodies)
+    {
+        if (kPhysicsObject *body = obj->getPhysicsObject())
+        {
+            obj->detachPhysics();
+            physicsManager->destroyObject(body);
+        }
+    }
+    physicsBodies.clear();
+
+    for (kObject *obj : characterBodies)
+    {
+        if (kCharacterController *cc = obj->getCharacterController())
+        {
+            obj->detachCharacter();
+            physicsManager->destroyCharacter(cc);
+        }
+    }
+    characterBodies.clear();
+}
+
+void Manager::stepPhysics(float dt)
+{
+    if (!physicsManager || dt <= 0.0f) return;
+    physicsManager->update(dt);
+    // Sync each body's transform back into the scene-graph node so the
+    // renderer picks up the new positions on the next draw.
+    for (kObject *obj : physicsBodies)
+        if (obj->getPhysicsObject())
+            obj->syncFromPhysics();
+
+    // Characters update their ground state inside physicsManager->update();
+    // copy their resolved position back into the scene node.
+    for (kObject *obj : characterBodies)
+        if (obj->getCharacterController())
+            obj->syncFromCharacter();
+}
+
+// ---------------------------------------------------------------------------
+// Scripting
+//
+// Each attached AngelScript source is compiled to bytecode under
+// Library/Scripts/<scriptUuid>.kbc. A script asset is identified per distinct
+// source file, so two objects sharing one .as file share one compiled module
+// asset. Compilation is checksum-gated: an unchanged source is not rebuilt.
+// ---------------------------------------------------------------------------
+
+void Manager::buildScripts()
+{
+    if (!world || !scene) return;
+    kScriptManager *sm = world->getScriptManager();
+    if (!sm) return;
+
+    fs::path scriptsDir = projectPath / "Library" / "Scripts";
+    std::error_code ec;
+    fs::create_directories(scriptsDir, ec);
+
+    std::map<kString, kString> fileToAsset;   // source path -> script-asset UUID
+    std::map<kString, bool>    fileCompiled;  // script-asset UUID -> compile OK
+    bool changedMeta = false;
+
+    std::function<void(kObject *)> walk = [&](kObject *node) {
+        if (!node) return;
+        for (kScript &comp : node->getScripts())
+        {
+            if (comp.fileName.empty())
+                continue;
+            if (!fs::exists(fs::path(comp.fileName)))
+            {
+                std::cerr << "buildScripts: source missing: " << comp.fileName << "\n";
+                continue;
+            }
+
+            // One script-asset UUID per distinct source file.
+            auto fit = fileToAsset.find(comp.fileName);
+            bool firstForFile = (fit == fileToAsset.end());
+            kString sid = firstForFile
+                ? (comp.scriptUuid.empty() ? generateUuid() : comp.scriptUuid)
+                : fit->second;
+
+            kString srcSum = generateFileChecksum(comp.fileName);
+            fs::path bc    = scriptsDir / (sid + ".kbc");
+
+            if (firstForFile)
+            {
+                fileToAsset[comp.fileName] = sid;
+                sm->registerScriptAsset(sid, comp.fileName);
+
+                bool ok = true;
+                if (comp.checksum != srcSum || !fs::exists(bc))
+                {
+                    ok = sm->compileToBytecode(sid, bc.string());
+                    if (!ok)
+                        std::cerr << "buildScripts: compile failed: " << comp.fileName << "\n";
+                }
+                else
+                {
+                    sm->setBytecodePath(sid, bc.string());
+                }
+                fileCompiled[sid] = ok;
+            }
+
+            if (comp.scriptUuid != sid) { comp.scriptUuid = sid; changedMeta = true; }
+            // Only record the checksum once the source actually compiled, so a
+            // broken script is retried on the next build.
+            if (fileCompiled[sid] && comp.checksum != srcSum)
+            {
+                comp.checksum = srcSum;
+                changedMeta = true;
+            }
+        }
+        for (kObject *c : node->getChildren())
+            walk(c);
+    };
+    walk(scene->getRootNode());
+
+    if (changedMeta)
+        projectSaved = false;
+}
+
+void Manager::startScripts()
+{
+    if (!world) return;
+    buildScripts();          // ensure bytecode is fresh
+    world->startScripts();   // Awake() + Start() across the scene
+}
+
+void Manager::stopScripts()
+{
+    if (world)
+        world->stopScripts();
+}
+
+void Manager::pollScriptChanges(float dt)
+{
+    // File-watch: while the editor is idle, periodically recompile any script
+    // whose source changed on disk. buildScripts() is checksum-gated, so this
+    // only does real work when a .as file was actually saved.
+    if (!projectOpened || !world)
+        return;
+    scriptWatchTimer += dt;
+    if (scriptWatchTimer < 1.5f)
+        return;
+    scriptWatchTimer = 0.0f;
+    buildScripts();
+}
+
+// ---------------------------------------------------------------------------
 // Drag-and-drop helpers
 // ---------------------------------------------------------------------------
 
@@ -2376,13 +3096,18 @@ void Manager::reparentObject(const kString &uuid, const kString &newParentUuid)
     cmd->oldParent      = obj->getParent();
     cmd->oldNextSibling = nextSiblingOf(obj);
     cmd->oldLocalPos    = obj->getPosition();
+    cmd->oldLocalRot    = obj->getRotation();
+    cmd->oldLocalScale  = obj->getScale();
 
-    obj->detachFromParent();
-    obj->setParent(newParent);
+    // Reparent while preserving the object's world transform so the user
+    // doesn't see the object jump when dragging it under a new parent.
+    obj->setParentKeepTransform(newParent);
 
     cmd->newParent      = newParent;
     cmd->newNextSibling = nextSiblingOf(obj);
     cmd->newLocalPos    = obj->getPosition();
+    cmd->newLocalRot    = obj->getRotation();
+    cmd->newLocalScale  = obj->getScale();
     undoRedo.push(std::move(cmd));
 
     if (panelHierarchy) panelHierarchy->refreshList();
@@ -2476,20 +3201,23 @@ bool Manager::createPrefabFromSelection()
         for (kObject *o : objs)
         {
             // Snapshot pre-move state so undo can restore parent + sibling +
-            // local-position exactly.
+            // full local transform exactly.
             CreatePrefabCommand::ChildMove m;
             m.objUuid        = o->getUuid();
             m.oldParent      = o->getParent();
             m.oldNextSibling = nextSiblingOf(o);
-            m.oldLocalPos    = o->getPosition(); // captured BEFORE move
-            cmd->childMoves.push_back(m);
+            m.oldLocalPos    = o->getPosition();
+            m.oldLocalRot    = o->getRotation();
+            m.oldLocalScale  = o->getScale();
 
-            o->detachFromParent();
-            o->setParent(empty);
-            // Children moved out of world space — convert their position so the
-            // visible result is unchanged: world_pos_old = empty_pos + new_local
-            // → new_local = world_pos_old - empty_pos.
-            o->setPosition(o->getPosition() - empty->getPosition());
+            // Reparent under the wrapper while preserving the world transform so
+            // the grouped objects don't visually shift.
+            o->setParentKeepTransform(empty);
+
+            m.newLocalPos    = o->getPosition();
+            m.newLocalRot    = o->getRotation();
+            m.newLocalScale  = o->getScale();
+            cmd->childMoves.push_back(m);
         }
         root = empty;
         createdEmpty = true;

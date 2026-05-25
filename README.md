@@ -13,3 +13,14 @@ You can find the latest release, tutorials and additional information at: https:
 ![Editor Screenshot](https://kemena3d.com/site/wp-content/uploads/2026/04/kemena_screenshot.png)
 
 ![Editor Screenshot](https://kemena3d.com/site/wp-content/uploads/2026/04/kemena_screenshot_asset.png)
+
+## Scripting
+
+Gameplay is scripted with [AngelScript](https://www.angelcode.com/angelscript/),
+authored either as text `.as` files or visually in the **Script Editor** node
+graph. Attach a script to any object in the Inspector; pressing **Play**
+compiles scripts to bytecode (under the project's `Library/Scripts` folder) and
+runs their lifecycle functions. Use **Run → Build Scripts** to compile manually.
+
+See the SDK's [Scripting guide](https://github.com/leezhieng/kemena3d/blob/main/Documentation/Scripting.md)
+for the host API and node-graph reference.

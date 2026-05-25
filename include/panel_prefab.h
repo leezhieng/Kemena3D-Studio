@@ -37,7 +37,7 @@ public:
     kVec2 panelPos   = kVec2(0.f, 0.f);
 
     PanelPrefab(kGuiManager *setGuiManager, Manager *setManager);
-    void draw(bool &isOpened, kRenderer *renderer);
+    void draw(bool &isOpened);
 
     Manager     *manager;
     kGuiManager *gui;

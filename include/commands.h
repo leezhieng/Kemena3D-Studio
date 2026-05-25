@@ -146,10 +146,14 @@ struct ReparentCommand : ICommand
     kObject *oldParent       = nullptr;
     kObject *oldNextSibling  = nullptr;
     kVec3    oldLocalPos     = kVec3(0);
+    kQuat    oldLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
+    kVec3    oldLocalScale   = kVec3(1.0f);
 
     kObject *newParent       = nullptr;
     kObject *newNextSibling  = nullptr;
     kVec3    newLocalPos     = kVec3(0);
+    kQuat    newLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
+    kVec3    newLocalScale   = kVec3(1.0f);
 
     void undo() override;
     void redo() override;
@@ -205,6 +209,11 @@ struct CreatePrefabCommand : ICommand
         kObject *oldParent       = nullptr;
         kObject *oldNextSibling  = nullptr;
         kVec3    oldLocalPos     = kVec3(0);
+        kQuat    oldLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
+        kVec3    oldLocalScale   = kVec3(1.0f);
+        kVec3    newLocalPos     = kVec3(0);
+        kQuat    newLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
+        kVec3    newLocalScale   = kVec3(1.0f);
     };
     struct StampChange {
         kString objUuid;
