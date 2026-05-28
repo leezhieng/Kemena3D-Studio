@@ -286,6 +286,8 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 
 	gui->windowStart("Hierarchy", opened);
 	{
+		focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
 		gui->pushStyleColor(ImGuiCol_Button, kVec4(0, 0, 0, 0));		// Background
 		gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0, 0, 0, 0)); // Hover
 		gui->pushStyleColor(ImGuiCol_ButtonActive, kVec4(0, 0, 0, 0));	// Pressed

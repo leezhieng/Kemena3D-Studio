@@ -179,14 +179,14 @@ bool PanelScriptEditor::saveGraphAs()
         manager ? (manager->projectPath / "Assets").string() : std::string();
 
     std::string result = pfd::save_file(
-        "Save Script Graph", defaultDir,
-        { "Kemena Script Graph (*.kgraph)", "*.kgraph" }).result();
+        "Save Logic Graph", defaultDir,
+        { "Kemena Logic (*.logic)", "*.logic" }).result();
 
     if (result.empty())
         return false;
 
-    if (result.size() < 7 || result.substr(result.size() - 7) != ".kgraph")
-        result += ".kgraph";
+    if (result.size() < 6 || result.substr(result.size() - 6) != ".logic")
+        result += ".logic";
 
     filePath   = result;
     graph.name = fs::path(result).stem().string();
@@ -216,17 +216,26 @@ bool PanelScriptEditor::saveGraph()
 
 void PanelScriptEditor::regenerateScript()
 {
+    if (!manager || graph.uuid.empty())
+    {
+        statusLine = "Cannot generate script: missing project or graph UUID";
+        return;
+    }
+
     kScriptGraphResult res = kScriptGraphCompiler::compile(graph);
-
-    // The generated AngelScript sits next to the .kgraph with an .as extension.
-    fs::path asPath = fs::path(filePath);
-    asPath.replace_extension(".as");
-
     if (!res.success)
     {
         statusLine = "Compile error: " + res.error;
         return;
     }
+
+    // Generated AngelScript lives outside Assets/: a temp build artifact
+    // keyed by the .logic UUID so multiple .logic files can't collide.
+    fs::path tempDir = manager->projectPath / "Library" / "GeneratedScripts";
+    std::error_code ec;
+    fs::create_directories(tempDir, ec);
+
+    fs::path asPath = tempDir / (graph.uuid + ".as");
 
     std::ofstream out(asPath);
     if (!out.is_open())
@@ -238,8 +247,7 @@ void PanelScriptEditor::regenerateScript()
     out.close();
 
     // Refresh bytecode for any object already using this generated script.
-    if (manager)
-        manager->buildScripts();
+    manager->buildScripts();
 
     statusLine = "Saved + compiled -> " + asPath.filename().string();
 }
@@ -301,8 +309,8 @@ void PanelScriptEditor::drawToolbar()
     {
         std::string dir =
             manager ? (manager->projectPath / "Assets").string() : std::string();
-        auto sel = pfd::open_file("Open Script Graph", dir,
-                                  { "Kemena Script Graph (*.kgraph)", "*.kgraph" }).result();
+        auto sel = pfd::open_file("Open Logic Graph", dir,
+                                  { "Kemena Logic (*.logic)", "*.logic" }).result();
         if (!sel.empty())
             loadGraph(sel[0]);
     }
@@ -415,9 +423,11 @@ void PanelScriptEditor::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 
 
     ImGui::PushID(node.id);
 
-    // Header acts as the move/select handle.
+    // The whole node body is the select / move handle. Allow overlap so the pin
+    // and value widgets submitted afterwards still receive input on top of it.
     ImGui::SetCursorScreenPos(nodeScreen);
-    ImGui::InvisibleButton("##hdr", ImVec2(NODE_W, HEADER_H));
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton("##node", ImVec2(NODE_W, height));
     if (ImGui::IsItemActivated())
     {
         selectedNode = node.id;
@@ -748,7 +758,11 @@ void PanelScriptEditor::drawCanvas()
                     IM_COL32(40, 41, 46, 255));
 
     // Canvas-level button: captures panning + the empty-space context menu.
+    // Allow overlap so the node header/pin widgets submitted afterwards take
+    // input priority over this background button (otherwise the canvas, being
+    // submitted first, swallows every click and nodes can't be selected/moved).
     ImGui::SetCursorScreenPos(canvasOrigin);
+    ImGui::SetNextItemAllowOverlap();
     ImGui::InvisibleButton("##canvasbtn", size,
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool canvasHovered = ImGui::IsItemHovered();
@@ -780,9 +794,12 @@ void PanelScriptEditor::drawCanvas()
         for (auto &p : n.outputs) scan(p);
     }
 
-    // Start a link drag from a pin.
-    if (canvasHovered && hovNode && ImGui::IsMouseClicked(0) &&
-        !linkDragging && movingNode == 0)
+    // Start a link drag from a pin. This takes priority over node movement:
+    // the node body button (drawn earlier) may have started a move on the same
+    // click, so cancel it when the cursor is actually over a pin. Uses the
+    // manual pin hit-test rather than canvas hover, since the node body button
+    // now owns ImGui hover over the node.
+    if (hovNode && ImGui::IsMouseClicked(0) && !linkDragging)
     {
         kScriptGraphNode *n = graph.findNode(hovNode);
         bool isOut = false;
@@ -792,6 +809,7 @@ void PanelScriptEditor::drawCanvas()
             dragNode       = hovNode;
             dragPin        = hovPin;
             dragFromOutput = isOut;
+            movingNode     = 0; // don't drag the node while wiring a pin
         }
     }
 
@@ -874,9 +892,12 @@ void PanelScriptEditor::draw(bool &isOpened)
     ImGui::SetNextWindowSize(ImVec2(900.0f, 560.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Script Editor", &isOpened, ImGuiWindowFlags_NoScrollbar))
     {
+        focused = false;
         ImGui::End();
         return;
     }
+
+    focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     drawToolbar();
     ImGui::Separator();

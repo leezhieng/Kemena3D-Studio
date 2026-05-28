@@ -365,8 +365,16 @@ void Manager::loadRecentProjects()
 		std::ifstream f(configFile);
 		json j = json::parse(f);
 		recentProjects.clear();
+		// Filter out empties and duplicates — older builds occasionally
+		// recorded a blank entry when project creation was interrupted.
+		std::set<kString> seen;
 		for (auto& entry : j["projects"])
-			recentProjects.push_back(entry.get<std::string>());
+		{
+			kString p = entry.get<std::string>();
+			if (p.empty() || !seen.insert(p).second)
+				continue;
+			recentProjects.push_back(std::move(p));
+		}
 	}
 	catch (...) {}
 }
@@ -387,6 +395,8 @@ void Manager::saveRecentProjects()
 
 void Manager::addRecentProject(const kString& path)
 {
+	if (path.empty()) return;
+
 	auto it = std::find(recentProjects.begin(), recentProjects.end(), path);
 	if (it != recentProjects.end())
 		recentProjects.erase(it);
@@ -1204,6 +1214,85 @@ std::vector<TransformState> Manager::captureSelectedTransforms()
     return states;
 }
 
+// Forward decls — defined further down in this file but needed by
+// duplicateSelectedObjects below.
+static kObject *loadObjectFromJson(const nlohmann::json &obj, kScene *scene, kWorld *world,
+                                   kAssetManager *am, const fs::path &projectPath,
+                                   kCamera *editorCamera, kObject *parent);
+static void pushInstantiateCommand(Manager *mgr, kObject *root);
+
+// Walk a serialized kObject JSON tree and replace every UUID with a fresh one
+// so the cloned subtree doesn't collide with its original. Recurses into the
+// "children" array and also bumps the per-component UUIDs that kObject emits
+// (scripts, particles, audio sources / listeners) so attachments stay unique.
+static void regenerateUuidsRecursive(nlohmann::json &j)
+{
+    if (!j.is_object()) return;
+
+    if (j.contains("uuid") && j["uuid"].is_string())
+        j["uuid"] = generateUuid();
+
+    for (const char *key : { "script", "scripts", "particles",
+                             "audio_sources", "audio_listeners" })
+    {
+        if (j.contains(key) && j[key].is_array())
+            for (auto &item : j[key])
+                if (item.is_object() && item.contains("uuid") && item["uuid"].is_string())
+                    item["uuid"] = generateUuid();
+    }
+
+    if (j.contains("children") && j["children"].is_array())
+        for (auto &c : j["children"])
+            regenerateUuidsRecursive(c);
+}
+
+void Manager::duplicateSelectedObjects()
+{
+    if (!scene || selectedObjects.empty()) return;
+
+    kAssetManager *am = getAssetManager();
+
+    // Snapshot the current selection — loadObjectFromJson + pushInstantiateCommand
+    // will rewrite selectedObjects below, so we can't iterate the live vector.
+    std::vector<kString> sourceUuids = selectedObjects;
+    std::vector<kObject *> duplicates;
+    duplicates.reserve(sourceUuids.size());
+
+    for (const auto &uuid : sourceUuids)
+    {
+        kObject *src = findObjectByUuid(uuid);
+        if (!src) continue;
+
+        nlohmann::json j = src->serialize();
+        regenerateUuidsRecursive(j);
+
+        kObject *clone = loadObjectFromJson(j, scene, world, am,
+                                            projectPath, editorCamera, nullptr);
+        if (clone)
+            duplicates.push_back(clone);
+    }
+
+    if (duplicates.empty()) return;
+
+    // Make the new objects the active selection.
+    selectedObjects.clear();
+    for (kObject *obj : duplicates)
+        selectedObjects.push_back(obj->getUuid());
+    selectedObject = duplicates.back();
+
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
+
+    projectSaved = false;
+    refreshWindowTitle();
+
+    // One undo step per spawned root — mirrors how individual createMesh /
+    // createLight / etc. push their own InstantiateCommand. Ctrl+Z undoes the
+    // duplicates one at a time, in reverse spawn order.
+    for (kObject *obj : duplicates)
+        pushInstantiateCommand(this, obj);
+}
+
 void Manager::deleteSelectedObjects()
 {
     if (!scene || selectedObjects.empty()) return;
@@ -1273,6 +1362,19 @@ static void applyLightIcon(kLight *light, kAssetManager *am, const char *gizmoRe
                                                         kTextureFormat::TEX_FORMAT_RGBA);
     mat->addTexture(tex);
     light->setMaterial(mat);
+}
+
+// Apply the GIZMO_CAMERA icon material to a camera so it renders as a
+// billboard in the editor view (skipped automatically by the renderer when
+// the camera being drawn is also the active view camera).
+static void applyCameraIcon(kCamera *cam, kAssetManager *am)
+{
+    kShader    *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial  *mat    = am->createMaterial(shader);
+    kTexture2D *tex    = am->loadTexture2DFromResource("GIZMO_CAMERA", "albedoMap",
+                                                        kTextureFormat::TEX_FORMAT_RGBA);
+    mat->addTexture(tex);
+    cam->setMaterial(mat);
 }
 
 // ---------------------------------------------------------------------------
@@ -1571,6 +1673,8 @@ void Manager::createCamera()
 
     scene->addObject(cam);
     world->addCamera(cam, cam->getUuid()); // also register in world camera list
+    if (kAssetManager *am = getAssetManager())
+        applyCameraIcon(cam, am);
     kString uuid = cam->getUuid();
 
     finishCreate(this, cam, scene,
@@ -1794,7 +1898,7 @@ bool Manager::exportGame(const ExportSettings &s)
     copyLibFolder("ImportedAssets"); // .glb meshes (textures baked in)
     copyLibFolder("Shaders");        // compiled shader graphs
 
-    // Scripts: ship compiled bytecode only — never the .as / .kgraph sources.
+    // Scripts: ship compiled bytecode only — never the .as / .logic sources.
     {
         fs::path src = projectPath / "Library" / "Scripts";
         fs::path dst = dataDir / "Library" / "Scripts";
@@ -1971,10 +2075,10 @@ void Manager::createNewLogicGraph()
 
     fs::path dir = getCurrentDirPath();
     kString baseName = "New Logic Graph";
-    fs::path filePath = dir / (baseName + ".kgraph");
+    fs::path filePath = dir / (baseName + ".logic");
     int counter = 1;
     while (fs::exists(filePath))
-        filePath = dir / (baseName + " " + std::to_string(counter++) + ".kgraph");
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".logic");
 
     // Seed with an On Update event so the canvas is not empty.
     kScriptGraph graph;
@@ -2145,6 +2249,7 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
     {
         std::string refName = obj.value("reference", "");
         std::string fileName = obj.value("file_name", "");
+        std::string primitive = obj.value("primitive", "");
 
         fs::path meshPath;
         if (!refName.empty())
@@ -2155,6 +2260,20 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         kMesh *mesh = nullptr;
         if (!meshPath.empty() && fs::exists(meshPath))
             mesh = am->loadMesh(meshPath.string());
+
+        // Procedurally-generated primitive (cube / sphere / etc.) — used by
+        // res/default.world to seed a startup scene without shipping a model
+        // file. Only kicks in when no asset file is present.
+        if (!mesh && !primitive.empty())
+        {
+            if      (primitive == "cube")     mesh = kMeshGenerator::generateCube();
+            else if (primitive == "sphere")   mesh = kMeshGenerator::generateSphere();
+            else if (primitive == "cylinder") mesh = kMeshGenerator::generateCylinder();
+            else if (primitive == "capsule")  mesh = kMeshGenerator::generateCapsule();
+            else if (primitive == "plane")    mesh = kMeshGenerator::generatePlane();
+            if (mesh && am)
+                applyDefaultMaterial(mesh, am);
+        }
 
         if (!mesh)
         {
@@ -2268,6 +2387,10 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         }
         // Cameras always register with the world so they can be selected as game cameras.
         world->addCamera(cam, cam->getUuid());
+
+        // Editor-side gizmo (icon billboard) — the renderer auto-hides it when
+        // the camera is also the active view camera.
+        if (am) applyCameraIcon(cam, am);
 
         result = cam;
     }
@@ -2487,6 +2610,66 @@ void Manager::loadWorld(const kString &path)
         panelHierarchy->refreshList();
 
     std::cout << "World loaded: " << loadPath << "\n";
+}
+
+void Manager::loadDefaultWorldInto(kScene *target)
+{
+    if (!target || !world)
+        return;
+
+    HRSRC hRes = FindResource(NULL, "WORLD_DEFAULT", RT_RCDATA);
+    if (!hRes)
+    {
+        std::cerr << "loadDefaultWorldInto: WORLD_DEFAULT resource not found\n";
+        return;
+    }
+    HGLOBAL hData = LoadResource(NULL, hRes);
+    DWORD size = SizeofResource(NULL, hRes);
+    const char *bytes = static_cast<const char *>(LockResource(hData));
+    if (!bytes || size == 0)
+    {
+        std::cerr << "loadDefaultWorldInto: WORLD_DEFAULT resource is empty\n";
+        return;
+    }
+
+    json data;
+    try
+    {
+        data = json::parse(bytes, bytes + size);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "loadDefaultWorldInto: parse error: " << e.what() << "\n";
+        return;
+    }
+
+    if (!data.contains("scenes") || !data["scenes"].is_array() || data["scenes"].empty())
+    {
+        std::cerr << "loadDefaultWorldInto: no scenes in WORLD_DEFAULT\n";
+        return;
+    }
+
+    // We only consume the first scene — the default world is intentionally
+    // a single-scene placeholder; additional scenes would need their own
+    // kScene allocation, which is outside this helper's contract.
+    const auto &sceneJson = data["scenes"][0];
+
+    if (sceneJson.contains("ambient_light"))
+    {
+        const auto &al = sceneJson["ambient_light"];
+        target->setAmbientLightColor(kVec3(al.value("r", 0.1f),
+                                           al.value("g", 0.1f),
+                                           al.value("b", 0.1f)));
+    }
+    target->setSkyboxAmbientEnabled(sceneJson.value("skybox_ambient_enabled", false));
+    target->setSkyboxAmbientStrength(sceneJson.value("skybox_ambient_strength", 1.0f));
+
+    if (sceneJson.contains("objects") && sceneJson["objects"].is_array())
+    {
+        kAssetManager *am = getAssetManager();
+        for (const auto &objJson : sceneJson["objects"])
+            loadObjectFromJson(objJson, target, world, am, projectPath, editorCamera);
+    }
 }
 
 // ---------------------------------------------------------------------------

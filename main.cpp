@@ -13,6 +13,7 @@
 #include "panel_game.h"
 #include "panel_prefab.h"
 #include "splash_screen.h"
+#include "crashhandler.h"
 
 #include "imgui_internal.h" // <-- required for ImGuiSettingsHandler
 
@@ -27,6 +28,10 @@ kString projectVersion = "0.0.1";
 
 int main()
 {
+	// Install the crash reporter before anything else so an early fault still
+	// produces kemena3d_crash.log (the Release GUI build has no console).
+	installCrashHandler();
+
 	// Create window and renderer
 	kWindow *window = createWindow(1024, 768, windowTitle, true);
 	kRenderer *renderer = createRenderer(window);
@@ -78,7 +83,7 @@ int main()
 			showPanel.shaderEditor = true;
 			panelShaderEditor->openFile(path);
 		}
-		else if (path.size() >= 7 && path.substr(path.size() - 7) == ".kgraph")
+		else if (path.size() >= 6 && path.substr(path.size() - 6) == ".logic")
 		{
 			showPanel.scriptEditor = true;
 			panelScriptEditor->openFile(path);
@@ -130,27 +135,10 @@ int main()
 	gridMat->setSingleSided(false);
 	gridMesh->setMaterial(gridMat);
 
-	kMesh *cube = kMeshGenerator::generateCube();
-	cube->setName("Cube");
-	cube->setPosition(kVec3(0.0f, 1.0f, 0.0f));
-	scene->addMesh(cube);
-	kShader *cubeShader = assetManager->loadGlslFromResource("SHADER_MESH_PHONG");
-	kMaterial *cubeMaterial = assetManager->createMaterial(cubeShader);
-	cubeMaterial->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
-	cubeMaterial->setDiffuseColor(kVec3(0.5f, 0.5f, 0.5f));
-	cube->setMaterial(cubeMaterial);
-
-	// Default sunlight
-	kLight *light = scene->addSunLight(kVec3(0.0f, 6.0f, 0.0f), kVec3(0.0f, 1.0f, 0.0f), kVec3(1.0f, 1.0f, 1.0f), kVec3(1.0f, 1.0f, 1.0f));
-	light->setRotation(kVec3(-30.0f, 15.0f, 15.0f));
-	light->setPower(1.0f);
-	light->setName("Sun Light");
-
-	kShader *iconShader = assetManager->loadGlslFromResource("SHADER_ICON");
-	kMaterial *materialIconSun = assetManager->createMaterial(iconShader);
-	kTexture2D *textureIconSun = assetManager->loadTexture2DFromResource("GIZMO_SUN_LIGHT", "albedoMap", kTextureFormat::TEX_FORMAT_RGBA);
-	materialIconSun->addTexture(textureIconSun);
-	light->setMaterial(materialIconSun);
+	// Default scene content (cube + sun light + game camera) lives in the
+	// embedded WORLD_DEFAULT RCDATA — see res/default.world. Loading it here
+	// keeps the placeholder data in one file instead of hand-coded objects.
+	manager->loadDefaultWorldInto(scene);
 
 	// Editor camera
 	kCamera *cameraEditor = world->addCamera(kVec3(-7, 4, 12), kVec3(0, 3.5, 0), kCameraType::CAMERA_TYPE_FREE);
@@ -379,7 +367,11 @@ int main()
 				}
 				else if (event.getKeyButton() == K_KEY_DELETE)
 				{
-					if (!gui->getWantTextInput() && manager->projectOpened)
+					// Only delete scene objects when the World or Hierarchy panel
+					// has focus — other panels (script/shader editors, project)
+					// handle Delete for their own selections in their draw().
+					if (!gui->getWantTextInput() && manager->projectOpened &&
+						(panelWorld->focused || panelHierarchy->focused))
 						manager->deleteSelectedObjects();
 				}
 				else if (event.getKeyButton() == K_KEY_Z && ctrlPressed)
@@ -391,6 +383,32 @@ int main()
 				{
 					if (!gui->getWantTextInput())
 						manager->undoRedo.redo();
+				}
+				else if (event.getKeyButton() == K_KEY_S && ctrlPressed)
+				{
+					// Ctrl+S routes to whichever editor has focus.
+					// Fall back to the project (world) save for everything else
+					// — covers World, Hierarchy, Inspector, Project, Console, etc.
+					if (gui->getWantTextInput())
+					{
+						// User is typing — let the input field consume the keystroke.
+					}
+					else if (panelScriptEditor->focused)
+						panelScriptEditor->saveCurrent();
+					else if (panelShaderEditor->focused)
+						panelShaderEditor->saveCurrent();
+					else if (manager->projectOpened)
+						manager->saveWorld();
+				}
+				else if (event.getKeyButton() == K_KEY_D && ctrlPressed)
+				{
+					// Ctrl+D duplicates the current selection. Fires from the
+					// World OR Hierarchy panel — anywhere a scene-object
+					// selection is the active context — but stays out of the
+					// script/shader editors and any text-input field.
+					if (!gui->getWantTextInput() && manager->projectOpened &&
+						(panelWorld->focused || panelHierarchy->focused))
+						manager->duplicateSelectedObjects();
 				}
 			}
 			else if (eventType == K_EVENT_KEYUP)
@@ -410,7 +428,9 @@ int main()
 			}
 		}
 
-		if (panelWorld->enabled && panelWorld->focused)
+		// WASD camera movement — skip when a modifier is held so Ctrl+S /
+		// Ctrl+Z / etc. don't double-fire with the camera shortcut.
+		if (panelWorld->enabled && panelWorld->focused && !ctrlPressed && !altPressed && !shiftPressed)
 		{
 			if (event.getKeyDown(K_KEY_W))
 			{

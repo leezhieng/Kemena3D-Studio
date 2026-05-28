@@ -12,11 +12,17 @@ namespace fs = std::filesystem;
 class PanelShaderEditor
 {
 public:
+    bool focused = false;       ///< Set each draw() — used by main.cpp's Ctrl+S routing.
+
     PanelShaderEditor(kGuiManager* setGui, Manager* setManager);
     void draw(bool& isOpened);
 
     // Open a .shader file (called from project panel double-click)
     void openFile(const std::string& path);
+
+    // Save the current graph (no-op when nothing is loaded). Public so the
+    // global Ctrl+S handler can route here when this panel has focus.
+    void saveCurrent() { saveGraph(); }
 
 private:
     // -----------------------------------------------------------------------

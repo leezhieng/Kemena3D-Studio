@@ -8,6 +8,9 @@ IMAGE_KEMENA_LOGO_INV   RCDATA "res/images/kemena_logo_inv.png"
 // Layout
 LAYOUT_DEFAULT RCDATA "res/layout.ini"
 
+// Default World
+WORLD_DEFAULT RCDATA "res/default.world"
+
 // Fonts
 FONT_OPENSANS RCDATA "res/fonts/opensans.ttf"
 
@@ -79,3 +82,4 @@ ICON_SCRIPT_LABEL RCDATA "res/icons/label/script.png"
 GIZMO_POINT_LIGHT RCDATA "res/textures/gizmo/point_light.png"
 GIZMO_SPOT_LIGHT RCDATA "res/textures/gizmo/spot_light.png"
 GIZMO_SUN_LIGHT RCDATA "res/textures/gizmo/sun_light.png"
+GIZMO_CAMERA RCDATA "res/textures/gizmo/camera.png"

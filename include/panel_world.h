@@ -38,6 +38,10 @@ private:
     // Gizmo undo state
     bool wasGizmoUsing = false;
     std::vector<TransformState> gizmoStartStates;
+
+    // Lazy-initialised offscreen renderer used for the camera-preview overlay
+    // shown at the bottom-right when a kCamera is the primary selection.
+    kOffscreenRenderer *cameraPreview = nullptr;
 };
 
 #endif

@@ -684,9 +684,12 @@ void PanelShaderEditor::draw(bool& isOpened)
     ImGuiWindowFlags wflags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     if (!ImGui::Begin(title.c_str(), &isOpened, wflags))
     {
+        focused = false;
         ImGui::End();
         return;
     }
+
+    focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     drawToolbar();
     ImGui::Separator();

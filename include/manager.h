@@ -108,6 +108,15 @@ public:
 
     kObject *findObjectByUuid(const kString &uuid);
     void deleteSelectedObjects();
+
+    /**
+     * @brief Duplicates every selected object as a new top-level node in the
+     *        active scene. Sub-trees are cloned recursively; every uuid in the
+     *        copied JSON is regenerated so duplicates and originals stay
+     *        independent. New objects become the active selection and each one
+     *        gets its own InstantiateCommand so it round-trips through undo.
+     */
+    void duplicateSelectedObjects();
     std::vector<TransformState> captureSelectedTransforms();
 
     // --- Accessors ----------------------------------------------------------
@@ -219,6 +228,17 @@ public:
     void saveWorld();
     void saveWorldAs(const kString &path);
     void loadWorld(const kString &path);
+
+    /**
+     * @brief Populates @p target with the contents of the embedded WORLD_DEFAULT
+     *        RCDATA resource (cube + sun light + game camera + ambient settings).
+     *
+     * Used at editor startup so the default placeholder scene comes from a real
+     * .world file shipped as RCDATA, rather than hand-coded object creation in
+     * main.cpp. The target scene is NOT cleared — caller is responsible for
+     * ensuring it's empty (or fine to merge into).
+     */
+    void loadDefaultWorldInto(kScene *target);
 
     // --- Prefabs ------------------------------------------------------------
 

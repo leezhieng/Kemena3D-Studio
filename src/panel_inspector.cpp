@@ -1431,226 +1431,313 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr)
 // Helper: collapsing section header with a small "+" button on the right.
 // Returns true if the section is open.
 // ---------------------------------------------------------------------------
-static bool componentHeader(const char *label, const char *popupId, bool &addClicked)
+// ---------------------------------------------------------------------------
+// Script picker helpers (used by the Scripts component)
+//
+// The picker lists every script source under Assets/: raw .as files and .logic
+// node graphs. Picking a .as attaches that file directly; picking a .logic
+// attaches the generated .as path under Library/GeneratedScripts/<logic-uuid>.as.
+// The generated .as is produced when the .logic is saved in the Script Editor,
+// so picking a .logic that hasn't been saved yet will only succeed once the
+// user opens and saves it (buildScripts() warns "source missing" in the meantime).
+// ---------------------------------------------------------------------------
+namespace {
+
+struct ScriptListEntry
 {
-    ImGui::SetNextItemAllowOverlap();
-    bool open = ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
-    ImGui::SameLine(ImGui::GetWindowWidth() - 30.0f);
-    char btnId[64];
-    snprintf(btnId, sizeof(btnId), "+##%s", popupId);
-    addClicked = ImGui::SmallButton(btnId);
-    return open;
+    std::string displayName;
+    fs::path    asPath;
+};
+
+std::vector<ScriptListEntry> collectProjectScripts(Manager *mgr)
+{
+    std::vector<ScriptListEntry> out;
+    if (!mgr || mgr->projectPath.empty()) return out;
+
+    fs::path assetsDir = mgr->projectPath / "Assets";
+    if (!fs::exists(assetsDir)) return out;
+
+    fs::path genDir = mgr->projectPath / "Library" / "GeneratedScripts";
+
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(assetsDir, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec))
+    {
+        if (ec) break;
+        if (!it->is_regular_file()) continue;
+        const fs::path &p   = it->path();
+        std::string     ext = p.extension().string();
+        std::string     rel = fs::relative(p, assetsDir, ec).generic_string();
+
+        if (ext == ".as")
+        {
+            out.push_back({rel, p});
+        }
+        else if (ext == ".logic")
+        {
+            try
+            {
+                std::ifstream f(p);
+                if (!f.is_open()) continue;
+                nlohmann::json j; f >> j;
+                std::string uuid = j.value("uuid", std::string());
+                if (uuid.empty()) continue;
+                out.push_back({rel, genDir / (uuid + ".as")});
+            }
+            catch (...) {}
+        }
+    }
+
+    std::sort(out.begin(), out.end(),
+              [](const ScriptListEntry &a, const ScriptListEntry &b)
+              { return a.displayName < b.displayName; });
+    return out;
 }
+
+// Returns the human-friendly name for an attached script's stored fileName.
+// Generated scripts (under Library/GeneratedScripts/<uuid>.as) are mapped
+// back to the .logic file whose uuid produced them.
+std::string scriptDisplayName(Manager *mgr, const std::string &storedPath)
+{
+    fs::path asPath(storedPath);
+    if (!mgr || mgr->projectPath.empty())
+        return asPath.filename().string();
+
+    fs::path genDir = mgr->projectPath / "Library" / "GeneratedScripts";
+    std::error_code ec;
+    if (asPath.parent_path() != genDir)
+        return asPath.filename().string();
+
+    // Locate the .logic in Assets/ whose uuid matches the .as stem.
+    std::string  uuid      = asPath.stem().string();
+    fs::path     assetsDir = mgr->projectPath / "Assets";
+    if (!fs::exists(assetsDir))
+        return asPath.filename().string();
+
+    for (auto it = fs::recursive_directory_iterator(assetsDir, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec))
+    {
+        if (ec) break;
+        if (!it->is_regular_file()) continue;
+        if (it->path().extension() != ".logic") continue;
+        try
+        {
+            std::ifstream f(it->path());
+            if (!f.is_open()) continue;
+            nlohmann::json j; f >> j;
+            if (j.value("uuid", std::string()) == uuid)
+                return it->path().filename().string();
+        }
+        catch (...) {}
+    }
+    return asPath.filename().string();
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Components section (Physics / Scripts / Particles / Audio Sources / Listener)
 // ---------------------------------------------------------------------------
 static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manager)
 {
-    kNodeType type = obj->getType();
-
     gui->spacing();
     gui->separatorText("Components");
     gui->spacing();
 
+    // Each component section renders only when its data is present. To add a
+    // component, right-click the hint strip at the bottom — that opens a
+    // popup with every available component type (singletons disabled when
+    // already present).
+
     // ── Physics ─────────────────────────────────────────────────────────────
-    // Available on every object type. Lights/cameras with physics are
-    // unusual but legal — useful for triggers attached to gameplay objects.
+    if (obj->getHasPhysicsDesc())
     {
-        bool addPhysics = false;
-        bool open = componentHeader("Physics", "AddPhysics", addPhysics);
-
-        if (addPhysics)
-            ImGui::OpenPopup("AddPhysicsPopup");
-
-        if (ImGui::BeginPopup("AddPhysicsPopup"))
+        if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            if (obj->getHasPhysicsDesc())
-            {
-                ImGui::TextDisabled("Already has a physics body");
-            }
-            else
-            {
-                auto setShape = [&](kPhysicsShapeType t) {
-                    obj->getPhysicsDesc().shape.type = t;
-                    obj->setHasPhysicsDesc(true);
-                    manager->projectSaved = false;
-                };
-                if (ImGui::MenuItem("Box Collider"))     setShape(kPhysicsShapeType::Box);
-                if (ImGui::MenuItem("Sphere Collider"))  setShape(kPhysicsShapeType::Sphere);
-                if (ImGui::MenuItem("Capsule Collider")) setShape(kPhysicsShapeType::Capsule);
-                if (ImGui::MenuItem("Cylinder Collider"))setShape(kPhysicsShapeType::Cylinder);
-            }
-            ImGui::EndPopup();
-        }
+            kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
+            const bool dynamic = (desc.type == kPhysicsObjectType::Dynamic);
 
-        if (open)
-        {
-            if (obj->getHasPhysicsDesc())
+            if (beginPropTable(gui, "PhysTable"))
             {
-                kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
-
-                // Body type
+                // Body type — Mesh shape disallows Dynamic / Trigger in Jolt,
+                // so we grey those out instead of silently coercing on Play.
                 const char *bodyNames[] = { "Dynamic", "Static", "Kinematic", "Trigger" };
                 int bodyIdx = (int)desc.type;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::Combo("Body Type##PhysBody", &bodyIdx, bodyNames, 4))
+                const bool needsStaticBody =
+                    (desc.shape.type == kPhysicsShapeType::Mesh ||
+                     desc.shape.type == kPhysicsShapeType::Plane);
+                propLabel(gui, "Body Type");
+                if (ImGui::BeginCombo("##PhysBody", bodyNames[bodyIdx]))
                 {
-                    desc.type = (kPhysicsObjectType)bodyIdx;
-                    manager->projectSaved = false;
+                    for (int i = 0; i < 4; ++i)
+                    {
+                        bool allowed = !needsStaticBody ||
+                                       i == (int)kPhysicsObjectType::Static ||
+                                       i == (int)kPhysicsObjectType::Kinematic;
+                        bool selected = (i == bodyIdx);
+                        if (ImGui::Selectable(bodyNames[i], selected,
+                                              allowed ? 0 : ImGuiSelectableFlags_Disabled))
+                        {
+                            desc.type = (kPhysicsObjectType)i;
+                            manager->projectSaved = false;
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
                 }
 
                 // Shape
-                const char *shapeNames[] = { "Sphere", "Box", "Capsule", "Cylinder" };
+                const char *shapeNames[] = {
+                    "Sphere", "Box", "Capsule", "Cylinder", "Convex Hull", "Mesh", "Plane"
+                };
                 int shapeIdx = (int)desc.shape.type;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::Combo("Shape##PhysShape", &shapeIdx, shapeNames, 4))
+                propLabel(gui, "Shape");
+                if (ImGui::Combo("##PhysShape", &shapeIdx, shapeNames,
+                                 IM_ARRAYSIZE(shapeNames)))
                 {
                     desc.shape.type = (kPhysicsShapeType)shapeIdx;
+                    // Mesh and Plane can only be Static/Kinematic in Jolt;
+                    // auto-coerce so the body-type combo doesn't sit on an
+                    // illegal value.
+                    const bool needsStatic =
+                        (desc.shape.type == kPhysicsShapeType::Mesh ||
+                         desc.shape.type == kPhysicsShapeType::Plane);
+                    if (needsStatic &&
+                        desc.type != kPhysicsObjectType::Static &&
+                        desc.type != kPhysicsObjectType::Kinematic)
+                        desc.type = kPhysicsObjectType::Static;
                     manager->projectSaved = false;
                 }
 
                 // Shape params
-                if (desc.shape.type == kPhysicsShapeType::Box)
+                switch (desc.shape.type)
                 {
-                    float he[3] = { desc.shape.halfExtents.x, desc.shape.halfExtents.y, desc.shape.halfExtents.z };
-                    if (ImGui::DragFloat3("Half Extents##PhysHE", he, 0.01f, 0.001f, 1000.0f))
+                    case kPhysicsShapeType::Box:
                     {
-                        desc.shape.halfExtents = kVec3(he[0], he[1], he[2]);
-                        manager->projectSaved = false;
+                        float he[3] = { desc.shape.halfExtents.x, desc.shape.halfExtents.y, desc.shape.halfExtents.z };
+                        propLabel(gui, "Half Extents");
+                        if (ImGui::DragFloat3("##PhysHE", he, 0.01f, 0.001f, 1000.0f))
+                        {
+                            desc.shape.halfExtents = kVec3(he[0], he[1], he[2]);
+                            manager->projectSaved = false;
+                        }
+                        break;
                     }
-                }
-                else if (desc.shape.type == kPhysicsShapeType::Sphere)
-                {
-                    if (ImGui::DragFloat("Radius##PhysR", &desc.shape.radius, 0.01f, 0.001f, 1000.0f))
-                        manager->projectSaved = false;
-                }
-                else
-                {
-                    if (ImGui::DragFloat("Radius##PhysR",  &desc.shape.radius, 0.01f, 0.001f, 1000.0f))
-                        manager->projectSaved = false;
-                    if (ImGui::DragFloat("Height##PhysH",  &desc.shape.height, 0.01f, 0.001f, 1000.0f))
-                        manager->projectSaved = false;
+                    case kPhysicsShapeType::Sphere:
+                        propLabel(gui, "Radius");
+                        if (ImGui::DragFloat("##PhysR", &desc.shape.radius, 0.01f, 0.001f, 1000.0f))
+                            manager->projectSaved = false;
+                        break;
+                    case kPhysicsShapeType::Capsule:
+                    case kPhysicsShapeType::Cylinder:
+                        propLabel(gui, "Radius");
+                        if (ImGui::DragFloat("##PhysR", &desc.shape.radius, 0.01f, 0.001f, 1000.0f))
+                            manager->projectSaved = false;
+                        propLabel(gui, "Height");
+                        if (ImGui::DragFloat("##PhysH", &desc.shape.height, 0.01f, 0.001f, 1000.0f))
+                            manager->projectSaved = false;
+                        break;
+                    case kPhysicsShapeType::ConvexHull:
+                    case kPhysicsShapeType::Mesh:
+                        propLabel(gui, "Source");
+                        ImGui::TextDisabled(desc.shape.type == kPhysicsShapeType::Mesh
+                            ? "Object's mesh (static / kinematic only)"
+                            : "Object's mesh (convex hull)");
+                        break;
+                    case kPhysicsShapeType::Plane:
+                        propLabel(gui, "Source");
+                        ImGui::TextDisabled("Object's +Y axis (static / kinematic only)");
+                        break;
                 }
 
-                gui->spacing();
+                // Mass / damping / gravity-factor are Dynamic-only; greyed
+                // out otherwise so the user still sees the value.
+                gui->beginDisabled(!dynamic);
+                propLabel(gui, "Mass (kg)");
+                if (ImGui::DragFloat("##PhysMass", &desc.mass, 0.05f, 0.001f, 10000.0f, "%.3f"))
+                    manager->projectSaved = false;
+                gui->endDisabled();
 
-                // Mass — only relevant for Dynamic bodies; greyed out otherwise
-                // so the user can still see the value but can't accidentally
-                // edit a no-op.
-                {
-                    bool dynamic = (desc.type == kPhysicsObjectType::Dynamic);
-                    gui->beginDisabled(!dynamic);
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat("Mass (kg)##PhysMass", &desc.mass, 0.05f, 0.001f, 10000.0f, "%.3f"))
-                        manager->projectSaved = false;
-                    gui->endDisabled();
-                }
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Friction##PhysFr", &desc.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
+                propLabel(gui, "Friction");
+                if (ImGui::DragFloat("##PhysFr", &desc.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
                     manager->projectSaved = false;
 
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Restitution##PhysRest", &desc.restitution, 0.01f, 0.0f, 1.0f, "%.2f"))
+                propLabel(gui, "Restitution");
+                if (ImGui::DragFloat("##PhysRest", &desc.restitution, 0.01f, 0.0f, 1.0f, "%.2f"))
                     manager->projectSaved = false;
 
-                // Damping + gravity factor are dynamic-only; same disabled
-                // pattern as Mass.
-                {
-                    bool dynamic = (desc.type == kPhysicsObjectType::Dynamic);
-                    gui->beginDisabled(!dynamic);
-
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat("Linear Damping##PhysLD", &desc.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
-                        manager->projectSaved = false;
-
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat("Angular Damping##PhysAD", &desc.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
-                        manager->projectSaved = false;
-
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat("Gravity Factor##PhysGF", &desc.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
-                        manager->projectSaved = false;
-
-                    gui->endDisabled();
-                }
-
-                gui->spacing();
-                if (ImGui::SmallButton("Remove Physics##RemPhys"))
-                {
-                    obj->setHasPhysicsDesc(false);
+                gui->beginDisabled(!dynamic);
+                propLabel(gui, "Linear Damping");
+                if (ImGui::DragFloat("##PhysLD", &desc.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
                     manager->projectSaved = false;
-                }
+
+                propLabel(gui, "Angular Damping");
+                if (ImGui::DragFloat("##PhysAD", &desc.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
+                    manager->projectSaved = false;
+
+                propLabel(gui, "Gravity Factor");
+                if (ImGui::DragFloat("##PhysGF", &desc.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
+                    manager->projectSaved = false;
+                gui->endDisabled();
+
+                gui->tableEnd();
             }
-            else
+
+            gui->spacing();
+            if (ImGui::SmallButton("Remove Physics##RemPhys"))
             {
-                ImGui::TextDisabled("  No physics body");
+                obj->setHasPhysicsDesc(false);
+                manager->projectSaved = false;
             }
         }
         gui->spacing();
     }
 
     // ── Character Controller ────────────────────────────────────────────────
-    // A capsule character for player/NPC movement. Like rigid bodies it is only
-    // instantiated and simulated once the game is played.
+    if (obj->getHasCharacterDesc())
     {
-        bool addChar = false;
-        bool open = componentHeader("Character Controller", "AddCharacter", addChar);
-
-        if (addChar)
+        if (ImGui::CollapsingHeader("Character Controller", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            if (!obj->getHasCharacterDesc())
+            kCharacterControllerDesc &cd = obj->getCharacterDesc();
+
+            if (beginPropTable(gui, "CharTable"))
             {
-                obj->setHasCharacterDesc(true);
+                propLabel(gui, "Radius");
+                if (ImGui::DragFloat("##CCRad", &cd.radius, 0.01f, 0.01f, 100.0f, "%.3f"))
+                    manager->projectSaved = false;
+
+                propLabel(gui, "Height");
+                if (ImGui::DragFloat("##CCHt", &cd.height, 0.01f, 0.05f, 100.0f, "%.3f"))
+                    manager->projectSaved = false;
+
+                propLabel(gui, "Mass (kg)");
+                if (ImGui::DragFloat("##CCMass", &cd.mass, 0.5f, 0.1f, 10000.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                propLabel(gui, "Friction");
+                if (ImGui::DragFloat("##CCFr", &cd.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                propLabel(gui, "Slope Limit");
+                if (ImGui::DragFloat("##CCSlope", &cd.slopeLimit, 0.5f, 0.0f, 89.0f, "%.1f"))
+                    manager->projectSaved = false;
+
+                propLabel(gui, "Step Height");
+                if (ImGui::DragFloat("##CCStep", &cd.stepHeight, 0.01f, 0.0f, 10.0f, "%.3f"))
+                    manager->projectSaved = false;
+
+                propLabel(gui, "Gravity Factor");
+                if (ImGui::DragFloat("##CCGF", &cd.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
+                    manager->projectSaved = false;
+
+                gui->tableEnd();
+            }
+
+            gui->spacing();
+            if (ImGui::SmallButton("Remove Character##RemChar"))
+            {
+                obj->setHasCharacterDesc(false);
                 manager->projectSaved = false;
-            }
-        }
-
-        if (open)
-        {
-            if (obj->getHasCharacterDesc())
-            {
-                kCharacterControllerDesc &cd = obj->getCharacterDesc();
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Radius##CCRad", &cd.radius, 0.01f, 0.01f, 100.0f, "%.3f"))
-                    manager->projectSaved = false;
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Height##CCHt", &cd.height, 0.01f, 0.05f, 100.0f, "%.3f"))
-                    manager->projectSaved = false;
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Mass (kg)##CCMass", &cd.mass, 0.5f, 0.1f, 10000.0f, "%.2f"))
-                    manager->projectSaved = false;
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Friction##CCFr", &cd.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
-                    manager->projectSaved = false;
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Slope Limit (deg)##CCSlope", &cd.slopeLimit, 0.5f, 0.0f, 89.0f, "%.1f"))
-                    manager->projectSaved = false;
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Step Height##CCStep", &cd.stepHeight, 0.01f, 0.0f, 10.0f, "%.3f"))
-                    manager->projectSaved = false;
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Gravity Factor##CCGF", &cd.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
-                    manager->projectSaved = false;
-
-                gui->spacing();
-                if (ImGui::SmallButton("Remove Character##RemChar"))
-                {
-                    obj->setHasCharacterDesc(false);
-                    manager->projectSaved = false;
-                }
-            }
-            else
-            {
-                ImGui::TextDisabled("  No character controller");
             }
         }
         gui->spacing();
@@ -1660,117 +1747,91 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
     // Bakes a nav mesh from the scene's static meshes (all, or within an area
     // box centred on this object). Baking is an editor action; the result is
     // held by the Manager, not serialized.
+    if (obj->getHasNavMeshDesc())
     {
-        bool addNav = false;
-        bool open = componentHeader("Navigation", "AddNav", addNav);
-
-        if (addNav && !obj->getHasNavMeshDesc())
+        if (ImGui::CollapsingHeader("Navigation", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            obj->setHasNavMeshDesc(true);
-            manager->projectSaved = false;
-        }
+            kNavMeshDesc &nd = obj->getNavMeshDesc();
 
-        if (open)
-        {
-            if (obj->getHasNavMeshDesc())
+            // Geometry source: All vs Area. Radio buttons don't fit the
+            // label/widget table layout, so we draw this row inline.
+            ImGui::TextUnformatted("Source:");
+            ImGui::SameLine();
+            if (ImGui::RadioButton("All##NavAll", !nd.useArea))
             {
-                kNavMeshDesc &nd = obj->getNavMeshDesc();
+                nd.useArea = false;
+                manager->projectSaved = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Area##NavArea", nd.useArea))
+            {
+                nd.useArea = true;
+                manager->projectSaved = false;
+            }
 
-                // Geometry source: All vs Area.
-                ImGui::TextUnformatted("Source:");
-                ImGui::SameLine();
-                if (ImGui::RadioButton("All##NavAll", !nd.useArea))
-                {
-                    nd.useArea = false;
-                    manager->projectSaved = false;
-                }
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Area##NavArea", nd.useArea))
-                {
-                    nd.useArea = true;
-                    manager->projectSaved = false;
-                }
-
+            if (beginPropTable(gui, "NavTable"))
+            {
                 if (nd.useArea)
                 {
                     float sz[3] = { nd.areaSize.x, nd.areaSize.y, nd.areaSize.z };
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat3("Area Size##NavSz", sz, 0.1f, 0.1f, 100000.0f))
+                    propLabel(gui, "Area Size");
+                    if (ImGui::DragFloat3("##NavSz", sz, 0.1f, 0.1f, 100000.0f))
                     {
                         nd.areaSize = kVec3(sz[0], sz[1], sz[2]);
                         manager->projectSaved = false;
                     }
-                    ImGui::TextDisabled("  Box is centred on this object's position.");
                 }
 
-                gui->spacing();
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Agent Radius##Nav", &nd.config.agentRadius, 0.01f, 0.01f, 100.0f, "%.2f"))
+                propLabel(gui, "Agent Radius");
+                if (ImGui::DragFloat("##NavAR", &nd.config.agentRadius, 0.01f, 0.01f, 100.0f, "%.2f"))
                     manager->projectSaved = false;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Agent Height##Nav", &nd.config.agentHeight, 0.01f, 0.01f, 100.0f, "%.2f"))
+                propLabel(gui, "Agent Height");
+                if (ImGui::DragFloat("##NavAH", &nd.config.agentHeight, 0.01f, 0.01f, 100.0f, "%.2f"))
                     manager->projectSaved = false;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Max Climb##Nav", &nd.config.agentMaxClimb, 0.01f, 0.0f, 100.0f, "%.2f"))
+                propLabel(gui, "Max Climb");
+                if (ImGui::DragFloat("##NavMC", &nd.config.agentMaxClimb, 0.01f, 0.0f, 100.0f, "%.2f"))
                     manager->projectSaved = false;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Max Slope##Nav", &nd.config.agentMaxSlope, 0.5f, 0.0f, 89.0f, "%.1f"))
+                propLabel(gui, "Max Slope");
+                if (ImGui::DragFloat("##NavMS", &nd.config.agentMaxSlope, 0.5f, 0.0f, 89.0f, "%.1f"))
                     manager->projectSaved = false;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::DragFloat("Cell Size##Nav", &nd.config.cellSize, 0.01f, 0.01f, 10.0f, "%.2f"))
+                propLabel(gui, "Cell Size");
+                if (ImGui::DragFloat("##NavCS", &nd.config.cellSize, 0.01f, 0.01f, 10.0f, "%.2f"))
                     manager->projectSaved = false;
 
-                gui->spacing();
-
-                if (ImGui::Button("Bake##Nav", ImVec2(80, 0)))
-                    manager->bakeNavMesh(obj);
-                ImGui::SameLine();
-                if (ImGui::Button("Clear##Nav", ImVec2(80, 0)))
-                    manager->clearNavMesh(obj);
-                ImGui::SameLine();
-                if (manager->isNavMeshBaked(obj))
-                    ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "Baked");
-                else
-                    ImGui::TextDisabled("Not baked");
-
-                gui->spacing();
-                if (ImGui::SmallButton("Remove Navigation##RemNav"))
-                {
-                    manager->clearNavMesh(obj);
-                    obj->setHasNavMeshDesc(false);
-                    manager->projectSaved = false;
-                }
+                gui->tableEnd();
             }
+
+            if (nd.useArea)
+                ImGui::TextDisabled("  Box is centred on this object's position.");
+
+            gui->spacing();
+
+            if (ImGui::Button("Bake##Nav", ImVec2(80, 0)))
+                manager->bakeNavMesh(obj);
+            ImGui::SameLine();
+            if (ImGui::Button("Clear##Nav", ImVec2(80, 0)))
+                manager->clearNavMesh(obj);
+            ImGui::SameLine();
+            if (manager->isNavMeshBaked(obj))
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "Baked");
             else
+                ImGui::TextDisabled("Not baked");
+
+            gui->spacing();
+            if (ImGui::SmallButton("Remove Navigation##RemNav"))
             {
-                ImGui::TextDisabled("  No navigation surface");
+                manager->clearNavMesh(obj);
+                obj->setHasNavMeshDesc(false);
+                manager->projectSaved = false;
             }
         }
         gui->spacing();
     }
 
     // ── Scripts ─────────────────────────────────────────────────────────────
+    if (!obj->getScripts().empty())
     {
-        bool addScript = false;
-        bool open = componentHeader("Scripts", "AddScript", addScript);
-
-        if (addScript)
-        {
-            auto result = pfd::open_file("Select Script", "",
-                { "AngelScript Files", "*.as", "All Files", "*" }).result();
-            if (!result.empty())
-            {
-                kScript s;
-                s.uuid     = generateUuid();
-                s.fileName = result[0];
-                s.isActive = true;
-                obj->addScript(s);
-                manager->projectSaved = false;
-            }
-        }
-
-        if (open)
+        if (ImGui::CollapsingHeader("Scripts", ImGuiTreeNodeFlags_DefaultOpen))
         {
             auto &scripts = obj->getScripts();
             kString toRemove;
@@ -1780,8 +1841,7 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
                 if (ImGui::Checkbox("##ScActive", &s.isActive))
                     manager->projectSaved = false;
                 ImGui::SameLine();
-                fs::path p(s.fileName);
-                ImGui::TextUnformatted(p.filename().string().c_str());
+                ImGui::TextUnformatted(scriptDisplayName(manager, s.fileName).c_str());
                 ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
                 if (ImGui::SmallButton("x##RemSc"))
                     toRemove = s.uuid;
@@ -1792,26 +1852,14 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
                 obj->removeScript(toRemove);
                 manager->projectSaved = false;
             }
-            if (scripts.empty())
-                ImGui::TextDisabled("  No scripts");
         }
         gui->spacing();
     }
 
     // ── Particles ───────────────────────────────────────────────────────────
+    if (!obj->getParticles().empty())
     {
-        bool addPart = false;
-        bool open = componentHeader("Particles", "AddParticle", addPart);
-
-        if (addPart)
-        {
-            kParticle p;
-            p.uuid = generateUuid();
-            obj->addParticle(p);
-            manager->projectSaved = false;
-        }
-
-        if (open)
+        if (ImGui::CollapsingHeader("Particles", ImGuiTreeNodeFlags_DefaultOpen))
         {
             auto &particles = obj->getParticles();
             kString toRemove;
@@ -1840,33 +1888,14 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
                 obj->removeParticle(toRemove);
                 manager->projectSaved = false;
             }
-            if (particles.empty())
-                ImGui::TextDisabled("  No particle systems");
         }
         gui->spacing();
     }
 
     // ── Audio Sources ────────────────────────────────────────────────────────
+    if (!obj->getAudioSources().empty())
     {
-        bool addAudio = false;
-        bool open = componentHeader("Audio Sources", "AddAudio", addAudio);
-
-        if (addAudio)
-        {
-            auto result = pfd::open_file("Select Audio File", "",
-                { "Audio Files", "*.wav *.mp3 *.ogg *.flac", "All Files", "*" }).result();
-            if (!result.empty())
-            {
-                kAudioSource src;
-                src.uuid      = generateUuid();
-                src.audioFile = result[0];
-                src.name      = fs::path(result[0]).filename().string();
-                obj->addAudioSource(src);
-                manager->projectSaved = false;
-            }
-        }
-
-        if (open)
+        if (ImGui::CollapsingHeader("Audio Sources", ImGuiTreeNodeFlags_DefaultOpen))
         {
             auto &sources = obj->getAudioSources();
             kString toRemove;
@@ -1922,52 +1951,144 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
                 obj->removeAudioSource(toRemove);
                 manager->projectSaved = false;
             }
-            if (sources.empty())
-                ImGui::TextDisabled("  No audio sources");
         }
         gui->spacing();
     }
 
     // ── Audio Listener ───────────────────────────────────────────────────────
+    if (!obj->getAudioListeners().empty())
     {
-        bool addListener = false;
-        bool open = componentHeader("Audio Listener", "AddListener", addListener);
-
-        if (addListener)
+        if (ImGui::CollapsingHeader("Audio Listener", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            auto &listeners = obj->getAudioListeners();
-            if (listeners.empty())
+            auto &l = obj->getAudioListeners()[0];
+            ImGui::PushID(l.uuid.c_str());
+            if (ImGui::Checkbox("Active##ListActive", &l.isActive))
+                manager->projectSaved = false;
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Audio Listener");
+            ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
+            if (ImGui::SmallButton("x##RemList"))
+            {
+                obj->removeAudioListener(l.uuid);
+                manager->projectSaved = false;
+            }
+            ImGui::PopID();
+        }
+        gui->spacing();
+    }
+
+    // ── "Add Component" button ──────────────────────────────────────────────
+    {
+        gui->spacing();
+        if (ImGui::Button("Add Component", ImVec2(-1, 0)))
+            ImGui::OpenPopup("AddComponentPopup");
+
+        if (ImGui::BeginPopup("AddComponentPopup"))
+        {
+            if (ImGui::BeginMenu("Physics", !obj->getHasPhysicsDesc()))
+            {
+                auto addBody = [&](kPhysicsShapeType s, kPhysicsObjectType t) {
+                    kPhysicsObjectDesc &d = obj->getPhysicsDesc();
+                    d.shape.type = s;
+                    d.type       = t;
+                    obj->setHasPhysicsDesc(true);
+                    manager->projectSaved = false;
+                };
+                const bool hasMesh = (obj->getType() == NODE_TYPE_MESH);
+
+                // Every Jolt Body becomes a "rigid body" once it's Dynamic;
+                // "Rigid Body" is the catch-all entry that drops in a default
+                // (Box, Dynamic) body the user then tweaks in the inspector.
+                if (ImGui::MenuItem("Rigid Body"))
+                    addBody(kPhysicsShapeType::Box, kPhysicsObjectType::Dynamic);
+                ImGui::Separator();
+                if (ImGui::MenuItem("Box Collider"))
+                    addBody(kPhysicsShapeType::Box, kPhysicsObjectType::Dynamic);
+                if (ImGui::MenuItem("Sphere Collider"))
+                    addBody(kPhysicsShapeType::Sphere, kPhysicsObjectType::Dynamic);
+                if (ImGui::MenuItem("Capsule Collider"))
+                    addBody(kPhysicsShapeType::Capsule, kPhysicsObjectType::Dynamic);
+                if (ImGui::MenuItem("Cylinder Collider"))
+                    addBody(kPhysicsShapeType::Cylinder, kPhysicsObjectType::Dynamic);
+                if (ImGui::MenuItem("Plane Collider"))
+                    addBody(kPhysicsShapeType::Plane, kPhysicsObjectType::Static);
+                // Mesh-derived shapes need an actual kMesh to read from.
+                if (ImGui::MenuItem("Convex Hull Collider", nullptr, false, hasMesh))
+                    addBody(kPhysicsShapeType::ConvexHull, kPhysicsObjectType::Dynamic);
+                if (ImGui::MenuItem("Mesh Collider", nullptr, false, hasMesh))
+                    addBody(kPhysicsShapeType::Mesh, kPhysicsObjectType::Static);
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::MenuItem("Character Controller", nullptr, false, !obj->getHasCharacterDesc()))
+            {
+                obj->setHasCharacterDesc(true);
+                manager->projectSaved = false;
+            }
+
+            if (ImGui::MenuItem("Navigation", nullptr, false, !obj->getHasNavMeshDesc()))
+            {
+                obj->setHasNavMeshDesc(true);
+                manager->projectSaved = false;
+            }
+
+            if (ImGui::BeginMenu("Script"))
+            {
+                auto entries = collectProjectScripts(manager);
+                if (entries.empty())
+                {
+                    ImGui::TextDisabled("No .as or .logic in Assets/");
+                }
+                else
+                {
+                    for (const auto &e : entries)
+                    {
+                        if (ImGui::MenuItem(e.displayName.c_str()))
+                        {
+                            kScript s;
+                            s.uuid     = generateUuid();
+                            s.fileName = e.asPath.string();
+                            s.isActive = true;
+                            obj->addScript(s);
+                            manager->projectSaved = false;
+                        }
+                    }
+                }
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::MenuItem("Particle System"))
+            {
+                kParticle p;
+                p.uuid = generateUuid();
+                obj->addParticle(p);
+                manager->projectSaved = false;
+            }
+
+            if (ImGui::MenuItem("Audio Source"))
+            {
+                auto result = pfd::open_file("Select Audio File", "",
+                    { "Audio Files", "*.wav *.mp3 *.ogg *.flac", "All Files", "*" }).result();
+                if (!result.empty())
+                {
+                    kAudioSource src;
+                    src.uuid      = generateUuid();
+                    src.audioFile = result[0];
+                    src.name      = fs::path(result[0]).filename().string();
+                    obj->addAudioSource(src);
+                    manager->projectSaved = false;
+                }
+            }
+
+            if (ImGui::MenuItem("Audio Listener", nullptr, false, obj->getAudioListeners().empty()))
             {
                 kAudioListener l;
                 l.uuid = generateUuid();
                 obj->addAudioListener(l);
                 manager->projectSaved = false;
             }
-        }
 
-        if (open)
-        {
-            auto &listeners = obj->getAudioListeners();
-            if (!listeners.empty())
-            {
-                auto &l = listeners[0];
-                ImGui::PushID(l.uuid.c_str());
-                if (ImGui::Checkbox("Active##ListActive", &l.isActive))
-                    manager->projectSaved = false;
-                ImGui::SameLine();
-                ImGui::TextUnformatted("Audio Listener");
-                ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
-                if (ImGui::SmallButton("x##RemList"))
-                {
-                    obj->removeAudioListener(l.uuid);
-                    manager->projectSaved = false;
-                }
-                ImGui::PopID();
-            }
-            else
-            {
-                ImGui::TextDisabled("  No audio listener");
-            }
+            ImGui::EndPopup();
         }
     }
 }

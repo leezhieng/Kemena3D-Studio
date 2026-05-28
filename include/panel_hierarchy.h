@@ -18,6 +18,9 @@ class Manager;
 
 class PanelHierarchy
 {
+	public:
+		bool focused = false;
+
 	private:
 		GLuint iconAdd = 0;
 		GLuint iconMag = 0;

@@ -15,28 +15,34 @@ using namespace kemena;
  * @brief Visual-scripting node-graph editor panel.
  *
  * Edits a kScriptGraph on a pannable ImGui canvas (custom draw-list rendering,
- * matching the shader editor's style). Saving writes the editable @c .kgraph
- * JSON to the project's Assets folder and regenerates a sibling @c .as file
- * via kScriptGraphCompiler — that generated script flows through the normal
- * bytecode pipeline (Manager::buildScripts()).
+ * matching the shader editor's style). Saving writes the editable @c .logic
+ * JSON to the project's Assets folder and regenerates the AngelScript source
+ * to @c Library/GeneratedScripts/<logic-uuid>.as via kScriptGraphCompiler —
+ * that generated script lives outside Assets/ (a temp build artifact) and
+ * flows through the normal bytecode pipeline (Manager::buildScripts()).
  */
 class PanelScriptEditor
 {
 public:
+    bool focused = false; ///< Set each draw() — used by main.cpp's Ctrl+S routing.
+
     PanelScriptEditor(kGuiManager *setGui, Manager *setManager);
 
     /** @brief Draws the panel; @p isOpened is cleared when the window closes. */
     void draw(bool &isOpened);
 
-    /** @brief Loads a @c .kgraph file for editing. */
+    /** @brief Loads a @c .logic file for editing. */
     void openFile(const std::string &path);
+
+    /** @brief Save the current graph (Ctrl+S target). No-op when nothing loaded. */
+    void saveCurrent() { saveGraph(); }
 
 private:
     void newGraph();
     bool loadGraph(const std::string &path);
-    bool saveGraph();    ///< Writes .kgraph + regenerates .as; prompts if untitled.
+    bool saveGraph();    ///< Writes .logic + regenerates .as; prompts if untitled.
     bool saveGraphAs();
-    void regenerateScript(); ///< Compiles the graph and writes the sibling .as.
+    void regenerateScript(); ///< Compiles the graph and writes the generated .as.
 
     // Canvas <-> screen coordinate mapping (pan only; zoom is fixed at 1:1).
     ImVec2 canvasToScreen(ImVec2 canvasPos, ImVec2 origin) const;
@@ -56,7 +62,7 @@ private:
     Manager     *manager = nullptr;
 
     kScriptGraph graph;
-    std::string  filePath; ///< Current .kgraph path ("" = untitled).
+    std::string  filePath; ///< Current .logic path ("" = untitled).
 
     ImVec2 canvasOffset = ImVec2(0.0f, 0.0f);
     ImVec2 canvasOrigin = ImVec2(0.0f, 0.0f); ///< Canvas top-left, refreshed each frame.

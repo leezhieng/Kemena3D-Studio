@@ -318,6 +318,68 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         }
     }
 
+    // ------------------------------------------------------------------
+    // Camera preview overlay — when the primary selection is a kCamera
+    // (and not the editor camera), render its view via a dedicated
+    // kOffscreenRenderer and composite the result at the bottom-right.
+    // ------------------------------------------------------------------
+    if (manager->selectedObject &&
+        manager->selectedObject->getType() == NODE_TYPE_CAMERA &&
+        manager->selectedObject != editorCamera)
+    {
+        kCamera *previewCam = static_cast<kCamera *>(manager->selectedObject);
+
+        int targetW = std::max(96, std::min((int)(panelSize.x * 0.30f), 480));
+        float aspect = previewCam->getAspectRatio();
+        if (aspect <= 0.0f) aspect = 16.0f / 9.0f;
+        int targetH = (int)((float)targetW / aspect);
+        const int maxH = std::max(64, (int)(panelSize.y * 0.40f));
+        if (targetH > maxH)
+        {
+            targetH = maxH;
+            targetW = (int)((float)targetH * aspect);
+        }
+
+        if (targetW >= 64 && targetH >= 36 &&
+            targetW < (int)panelSize.x && targetH < (int)panelSize.y)
+        {
+            if (!cameraPreview)
+                cameraPreview = new kOffscreenRenderer(targetW, targetH);
+            if (cameraPreview->getWidth()  != targetW ||
+                cameraPreview->getHeight() != targetH)
+                cameraPreview->resize(targetW, targetH);
+
+            // Render at the preview rect's aspect, not whatever was left on
+            // the camera by the game viewport (avoids stretched output).
+            float savedAspect = previewCam->getAspectRatio();
+            previewCam->setAspectRatio((float)targetW / (float)targetH);
+            cameraPreview->render(manager->getWorld(), manager->getScene(), previewCam);
+            previewCam->setAspectRatio(savedAspect);
+
+            const float margin = 12.0f;
+            ImVec2 a((float)panelPos.x + (float)panelSize.x - (float)targetW - margin,
+                     (float)panelPos.y + (float)panelSize.y - (float)targetH - margin);
+            ImVec2 b(a.x + (float)targetW, a.y + (float)targetH);
+
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            ImTextureRef previewTex((ImTextureID)(uintptr_t)cameraPreview->getTexture());
+            // Same vertical flip as the main world image — kOffscreenRenderer
+            // writes top-down GL convention.
+            dl->AddImage(previewTex, a, b, ImVec2(0, 1), ImVec2(1, 0));
+            dl->AddRect(a, b, IM_COL32(220, 220, 230, 200), 2.0f, 0, 1.5f);
+
+            // Label strip across the top so the user knows which camera.
+            std::string label = previewCam->getName();
+            if (label.empty()) label = "Camera";
+            ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+            ImVec2 labelMin(a.x, a.y - ts.y - 4.0f);
+            ImVec2 labelMax(a.x + ts.x + 8.0f, a.y);
+            dl->AddRectFilled(labelMin, labelMax, IM_COL32(0, 0, 0, 160));
+            dl->AddText(ImVec2(a.x + 4.0f, a.y - ts.y - 2.0f),
+                        IM_COL32(235, 235, 240, 230), label.c_str());
+        }
+    }
+
     gui->windowEnd();
     gui->endDisabled();
 }

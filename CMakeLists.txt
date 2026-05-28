@@ -29,6 +29,7 @@ set(SOURCES
     src/panel_game.cpp
     src/panel_prefab.cpp
     src/splash_screen.cpp
+    src/crashhandler.cpp
     src/util.cpp
     resources.rc
 )
@@ -77,12 +78,19 @@ if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
         /W3
         $<$<CONFIG:Debug>:/Zi>
+        # Emit debug info in Release too so the crash reporter can resolve
+        # symbols in the no-console GUI build. /Zi does not affect /O2 codegen.
         $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Release>:/Zi>
     )
     # WIN32_EXECUTABLE uses /SUBSYSTEM:WINDOWS which expects WinMain; override the
     # entry point so the standard int main() is used instead.
     target_link_options(${PROJECT_NAME} PRIVATE
         $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>
+        # Generate a .pdb for Release (paired with /Zi) without bloating the exe.
+        $<$<CONFIG:Release>:/DEBUG>
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
         # Suppress LNK4098: some deps rebuilt with /MD still embed MSVCRTD as a default lib
         $<$<AND:$<CONFIG:Debug>,$<BOOL:${KEMENA3D_LINK_STATIC}>>:/NODEFAULTLIB:msvcrtd>
     )
@@ -113,6 +121,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     version
     oleaut32
     uuid
+    dbghelp   # crash reporter stack walking (crashhandler.cpp)
 )
 
 if(MSVC)
