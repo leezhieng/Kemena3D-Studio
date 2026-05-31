@@ -961,7 +961,11 @@ static void drawTransformSection(kGuiManager *gui, kObject *obj, Manager *mgr)
 
         propLabel(gui, "Position");
         if (gui->dragFloat3("##Pos", p, 0.1f))
+        {
             obj->setPosition(kVec3(p[0], p[1], p[2]));
+            mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
         if (gui->isItemActivated())
             s_posBefore = posPreEdit;
         if (gui->isItemDeactivatedAfterEdit())
@@ -990,7 +994,11 @@ static void drawTransformSection(kGuiManager *gui, kObject *obj, Manager *mgr)
 
         propLabel(gui, "Rotation");
         if (gui->dragFloat3("##Rot", r, 0.5f))
+        {
             obj->setRotation(kQuat(glm::radians(kVec3(r[0], r[1], r[2]))));
+            mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
         if (gui->isItemActivated())
             s_rotBefore = eulerPreEdit;
         if (gui->isItemDeactivatedAfterEdit())
@@ -1016,7 +1024,11 @@ static void drawTransformSection(kGuiManager *gui, kObject *obj, Manager *mgr)
 
         propLabel(gui, "Scale");
         if (gui->dragFloat3("##Scl", s, 0.01f, 0.001f, 10000.0f))
+        {
             obj->setScale(kVec3(s[0], s[1], s[2]));
+            mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
         if (gui->isItemActivated())
             s_scaleBefore = sclPreEdit;
         if (gui->isItemDeactivatedAfterEdit())
@@ -1639,15 +1651,43 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
                         break;
                     case kPhysicsShapeType::ConvexHull:
                     case kPhysicsShapeType::Mesh:
+                    {
                         propLabel(gui, "Source");
                         ImGui::TextDisabled(desc.shape.type == kPhysicsShapeType::Mesh
                             ? "Object's mesh (static / kinematic only)"
                             : "Object's mesh (convex hull)");
+
+                        // Per-axis stretch applied via Jolt's ScaledShape.
+                        float sc[3] = { desc.shape.customScale.x,
+                                        desc.shape.customScale.y,
+                                        desc.shape.customScale.z };
+                        propLabel(gui, "Size");
+                        if (ImGui::DragFloat3("##PhysScale", sc, 0.01f, 0.01f, 1000.0f, "%.3f"))
+                        {
+                            desc.shape.customScale = kVec3(sc[0], sc[1], sc[2]);
+                            manager->projectSaved = false;
+                        }
                         break;
+                    }
                     case kPhysicsShapeType::Plane:
+                    {
                         propLabel(gui, "Source");
                         ImGui::TextDisabled("Object's +Y axis (static / kinematic only)");
+
+                        // Plane is mathematically infinite; halfExtents.x/z
+                        // drive the broadphase rectangle so a finite size is
+                        // useful for picking and gameplay queries.
+                        float he[3] = { desc.shape.halfExtents.x,
+                                        desc.shape.halfExtents.y,
+                                        desc.shape.halfExtents.z };
+                        propLabel(gui, "Half Size");
+                        if (ImGui::DragFloat3("##PlaneHE", he, 0.05f, 0.1f, 10000.0f, "%.2f"))
+                        {
+                            desc.shape.halfExtents = kVec3(he[0], he[1], he[2]);
+                            manager->projectSaved = false;
+                        }
                         break;
+                    }
                 }
 
                 // Mass / damping / gravity-factor are Dynamic-only; greyed
@@ -1996,12 +2036,6 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
                 };
                 const bool hasMesh = (obj->getType() == NODE_TYPE_MESH);
 
-                // Every Jolt Body becomes a "rigid body" once it's Dynamic;
-                // "Rigid Body" is the catch-all entry that drops in a default
-                // (Box, Dynamic) body the user then tweaks in the inspector.
-                if (ImGui::MenuItem("Rigid Body"))
-                    addBody(kPhysicsShapeType::Box, kPhysicsObjectType::Dynamic);
-                ImGui::Separator();
                 if (ImGui::MenuItem("Box Collider"))
                     addBody(kPhysicsShapeType::Box, kPhysicsObjectType::Dynamic);
                 if (ImGui::MenuItem("Sphere Collider"))
@@ -2127,6 +2161,100 @@ static void drawSceneSection(kGuiManager *gui, kScene *scene, Manager *mgr)
         }
     }
 
+    // Shadows toggle
+    {
+        bool shadows = scene->getShadowsEnabled();
+        propLabel(gui, "Shadows");
+        if (gui->checkbox("##SceneShadows", &shadows))
+        {
+            bool before = !shadows;
+            bool after  = shadows;
+            kScene *cap = scene;
+            scene->setShadowsEnabled(shadows);
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]() { cap->setShadowsEnabled(before); },
+                [cap, after]()  { cap->setShadowsEnabled(after);  }));
+        }
+    }
+
+    // Shadow bias controls (only when shadows are enabled).
+    if (scene->getShadowsEnabled())
+    {
+        static float s_shadowBiasBefore = 0.0f;
+        float bias = scene->getShadowBias();
+        float biasPreEdit = bias;
+        propLabel(gui, "Shadow Bias");
+        if (gui->dragFloat("##ShadowBias", &bias, 0.0001f, 0.0f, 0.05f, "%.5f"))
+            scene->setShadowBias(bias);
+        if (gui->isItemActivated())
+            s_shadowBiasBefore = biasPreEdit;
+        if (gui->isItemDeactivatedAfterEdit())
+        {
+            float after = scene->getShadowBias();
+            float before = s_shadowBiasBefore;
+            kScene *cap = scene;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]() { cap->setShadowBias(before); },
+                [cap, after]()  { cap->setShadowBias(after);  }));
+        }
+
+        static float s_shadowNBiasBefore = 0.0f;
+        float nbias = scene->getShadowNormalBias();
+        float nbiasPreEdit = nbias;
+        propLabel(gui, "Shadow N.Bias");
+        if (gui->dragFloat("##ShadowNBias", &nbias, 0.0005f, 0.0f, 0.1f, "%.5f"))
+            scene->setShadowNormalBias(nbias);
+        if (gui->isItemActivated())
+            s_shadowNBiasBefore = nbiasPreEdit;
+        if (gui->isItemDeactivatedAfterEdit())
+        {
+            float after = scene->getShadowNormalBias();
+            float before = s_shadowNBiasBefore;
+            kScene *cap = scene;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]() { cap->setShadowNormalBias(before); },
+                [cap, after]()  { cap->setShadowNormalBias(after);  }));
+        }
+
+        // Shadow map resolution — combo of standard sizes. Bigger = sharper
+        // shadow but more VRAM (size² × cascadeCount × depth bpp).
+        propLabel(gui, "Shadow Res");
+        const char *resItems[] = { "512", "1024", "2048", "4096" };
+        const int   resValues[] = { 512, 1024, 2048, 4096 };
+        int curRes = scene->getShadowMapResolution();
+        int resIdx = 2; // default to 2048
+        for (int i = 0; i < 4; ++i) if (resValues[i] == curRes) { resIdx = i; break; }
+        if (ImGui::Combo("##ShadowRes", &resIdx, resItems, IM_ARRAYSIZE(resItems)))
+        {
+            int before = curRes;
+            int after  = resValues[resIdx];
+            kScene *cap = scene;
+            scene->setShadowMapResolution(after);
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]() { cap->setShadowMapResolution(before); },
+                [cap, after]()  { cap->setShadowMapResolution(after);  }));
+        }
+
+        // Shadow softness — PCF tap spacing in texels. 0 = hard, ~3 = very soft.
+        static float s_softnessBefore = 0.0f;
+        float soft = scene->getShadowSoftness();
+        float softPreEdit = soft;
+        propLabel(gui, "Shadow Softness");
+        if (gui->dragFloat("##ShadowSoftness", &soft, 0.05f, 0.0f, 5.0f, "%.2f"))
+            scene->setShadowSoftness(soft);
+        if (gui->isItemActivated())
+            s_softnessBefore = softPreEdit;
+        if (gui->isItemDeactivatedAfterEdit())
+        {
+            float after = scene->getShadowSoftness();
+            float before = s_softnessBefore;
+            kScene *cap = scene;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]() { cap->setShadowSoftness(before); },
+                [cap, after]()  { cap->setShadowSoftness(after);  }));
+        }
+    }
+
     // Skybox ambient toggle
     {
         bool enabled = scene->getSkyboxAmbientEnabled();
@@ -2170,6 +2298,12 @@ static void drawSceneSection(kGuiManager *gui, kScene *scene, Manager *mgr)
     }
 
     gui->tableEnd();
+
+    // Skybox controls — for now just a "use the bundled default" button.
+    // Future: pick a custom cubemap asset here.
+    gui->spacing();
+    if (ImGui::Button("Apply Default Skybox"))
+        mgr->applyDefaultSkybox(scene);
 }
 
 // ---------------------------------------------------------------------------

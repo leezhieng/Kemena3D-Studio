@@ -306,12 +306,16 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 }
             }
 
-            // Push undo command when drag ends
+            // Push undo command when drag ends + mark the world dirty so
+            // the window title gets its asterisk and Ctrl+S has something
+            // to save.
             if (wasGizmoUsing && !isUsingNow)
             {
                 auto after = manager->captureSelectedTransforms();
                 manager->undoRedo.push(std::make_unique<TransformCommand>(
                     manager, gizmoStartStates, std::move(after)));
+                manager->projectSaved = false;
+                manager->refreshWindowTitle();
             }
 
             wasGizmoUsing = isUsingNow;

@@ -38,7 +38,7 @@ int main()
 	renderer->setEnableScreenBuffer(true);
 	renderer->setEnableShadow(true);
 	renderer->setEnableObjectPicking(true);
-	renderer->setClearColor(kVec4(0.2f, 0.4f, 0.6f, 1.0f));
+	renderer->setClearColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
 
 	// Setup GUI manager
 	kGuiManager *gui = createGuiManager(renderer);
@@ -76,7 +76,7 @@ int main()
 	PanelPrefab *panelPrefab = new PanelPrefab(gui, manager);
 
 	// Route .shader and .prefab double-clicks from the project panel.
-	panelProject->onFileDoubleClicked = [&](const std::string& path)
+	panelProject->onFileDoubleClicked = [&](const std::string &path)
 	{
 		if (path.size() >= 7 && path.substr(path.size() - 7) == ".shader")
 		{
@@ -109,24 +109,13 @@ int main()
 		}
 	}
 
-	// Default skybox
-	kShader *skyShader = assetManager->loadGlslFromResource("SHADER_SKYBOX");
-	kMaterial *skyMaterial = assetManager->createMaterial(skyShader);
-	kTextureCube *skyTexture = assetManager->loadTextureCubeFromResource("TEXTURE_SKYBOX_RIGHT",
-																		 "TEXTURE_SKYBOX_LEFT",
-																		 "TEXTURE_SKYBOX_TOP",
-																		 "TEXTURE_SKYBOX_BOTTOM",
-																		 "TEXTURE_SKYBOX_FRONT",
-																		 "TEXTURE_SKYBOX_BACK",
-																		 "cubeMap");
-	skyMaterial->addTexture(skyTexture);
-	skyMaterial->setSingleSided(false);
-	kMesh *skyMesh = kMeshGenerator::generateCube();
-	skyMesh->setMaterial(skyMaterial);
-	scene->setSkybox(skyMaterial, skyMesh);
+	// Default skybox — shared helper so the inspector's "Apply Default
+	// Skybox" button and the per-frame scene-change guard can reuse it.
+	manager->applyDefaultSkybox(scene);
 
 	// Editor grid
 	kMesh *gridMesh = kMeshGenerator::generatePlane();
+	gridMesh->setPosition(kVec3(0.0f, -0.01f, 0.0f));
 	sceneEditor->setFrustumCullingEnabled(false);
 	sceneEditor->addMesh(gridMesh);
 	kShader *gridShader = assetManager->loadGlslFromResource("SHADER_GRID");
@@ -150,12 +139,39 @@ int main()
 	kVec2 dragStart;
 	kQuat camRot;
 
+	// Middle-mouse pan state. Captures the camera position and orbit pivot at
+	// drag start so the per-frame motion handler can slide both along the
+	// camera-space right/up axes without drift.
+	bool  panning = false;
+	kVec2 panStart;
+	kVec3 panStartCamPos;
+	kVec3 panStartPivot;
+
+	// Editor camera orbit state. F-frames-selected updates the pivot; the
+	// drag-rotate path keeps the camera at orbitDistance from orbitPivot;
+	// the wheel changes orbitDistance (dolly-toward-pivot).
+	kVec3 cameraOrbitPivot = kVec3(0.0f, 3.5f, 0.0f);
+	float cameraOrbitDistance = glm::length(kVec3(-7.0f, 4.0f, 12.0f) - cameraOrbitPivot);
+
+	// F-focus tween. When the user presses F the camera doesn't snap — it
+	// glides into the framed pose over `cameraTweenDuration` seconds with a
+	// smoothstep ease. Drag / wheel input cancels the tween.
+	const float cameraTweenDuration = 1.0f;
+	bool cameraTweenActive = false;
+	float cameraTweenT = 0.0f;
+	kVec3 cameraTweenFromPos = kVec3(0);
+	kVec3 cameraTweenToPos = kVec3(0);
+	kQuat cameraTweenFromRot = kQuat(1, 0, 0, 0);
+	kQuat cameraTweenToRot = kQuat(1, 0, 0, 0);
+	kVec3 cameraTweenToPivot = kVec3(0);
+	float cameraTweenToDist = 1.0f;
+
 	bool altPressed = false;
 	bool ctrlPressed = false;
 	bool shiftPressed = false;
 
 	// Splash screen (shown at startup until a project is chosen or dismissed)
-	SplashScreen* splashScreen = new SplashScreen(gui, assetManager, manager);
+	SplashScreen *splashScreen = new SplashScreen(gui, assetManager, manager);
 
 	// Game loop
 	kSystemEvent event;
@@ -210,7 +226,7 @@ int main()
 							while (std::filesystem::exists(dst))
 							{
 								std::string stem = src.stem().string();
-								std::string ext  = src.extension().string();
+								std::string ext = src.extension().string();
 								dst = destDir / (stem + " " + std::to_string(counter) + ext);
 								counter++;
 							}
@@ -230,7 +246,7 @@ int main()
 			{
 				if (panelWorld->enabled && panelWorld->hovered)
 				{
-					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && altPressed)
+					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && altPressed && panelWorld->focused)
 					{
 						dragging = true;
 
@@ -238,6 +254,16 @@ int main()
 						dragStart.y = event.getMouseY();
 
 						camRot = cameraEditor->getRotation();
+					}
+					else if (event.getMouseButton() == K_MOUSEBUTTON_MIDDLE && panelWorld->focused)
+					{
+						panning = true;
+						panStart.x       = event.getMouseX();
+						panStart.y       = event.getMouseY();
+						panStartCamPos   = cameraEditor->getPosition();
+						panStartPivot    = cameraOrbitPivot;
+						// User is steering — cancel any in-flight F tween.
+						cameraTweenActive = false;
 					}
 					else if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && !altPressed && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing())
 					{
@@ -269,8 +295,8 @@ int main()
 
 						if (picked != nullptr)
 						{
-							manager->worldSelected  = false;
-							manager->selectedScene  = nullptr;
+							manager->worldSelected = false;
+							manager->selectedScene = nullptr;
 							manager->selectedObject = picked;
 							manager->selectObject(picked->getUuid(), !shiftPressed);
 							if (manager->panelProject != nullptr)
@@ -278,7 +304,7 @@ int main()
 						}
 						else if (!shiftPressed)
 						{
-							manager->worldSelected  = false;
+							manager->worldSelected = false;
 							manager->selectedObject = nullptr;
 							manager->selectedObjects.clear();
 						}
@@ -305,6 +331,9 @@ int main()
 				if (dragging)
 					dragging = false;
 
+				if (panning && event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
+					panning = false;
+
 				if (panelWorld->enabled && panelWorld->hovered)
 				{
 					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT)
@@ -324,8 +353,32 @@ int main()
 
 						if (cameraEditor->getCameraType() == kCameraType::CAMERA_TYPE_FREE)
 						{
+							// Orient the camera, then re-anchor it so it stays
+							// orbitDistance from cameraOrbitPivot — turns
+							// rotate-in-place into orbit-around-pivot.
+							// User is steering — cancel any in-flight F tween.
+							cameraTweenActive = false;
 							cameraEditor->rotateByMouse(camRot, -deltaX, -deltaY);
+							kVec3 fwd = cameraEditor->calculateForward();
+							cameraEditor->setPosition(cameraOrbitPivot - fwd * cameraOrbitDistance);
 						}
+					}
+					else if (panning)
+					{
+						// Pan slides both the camera and its orbit pivot in the
+						// view plane. Speed scales with orbit distance so the
+						// world tracks the cursor at a consistent rate
+						// regardless of zoom level.
+						float deltaX = event.getMouseX() - panStart.x;
+						float deltaY = event.getMouseY() - panStart.y;
+
+						float panScale = cameraOrbitDistance * 0.0025f;
+						kVec3 right = cameraEditor->calculateRight();
+						kVec3 up    = cameraEditor->calculateUp();
+						kVec3 offset = (right * deltaX + up * deltaY) * panScale;
+
+						cameraEditor->setPosition(panStartCamPos + offset);
+						cameraOrbitPivot = panStartPivot + offset;
 					}
 				}
 			}
@@ -333,22 +386,29 @@ int main()
 			{
 				if (panelWorld->enabled && panelWorld->hovered)
 				{
-					cameraEditor->setPosition(cameraEditor->getPosition() + cameraEditor->calculateForward() * 2.0f * event.getMouseWheelY());
+					// User is zooming — cancel any in-flight F tween.
+					cameraTweenActive = false;
+					// Wheel zooms by shrinking / growing the orbit distance.
+					// Floor avoids collapsing the camera onto the pivot.
+					float wheel = event.getMouseWheelY();
+					cameraOrbitDistance = std::max(0.1f, cameraOrbitDistance - wheel * 2.0f);
+					kVec3 fwd = cameraEditor->calculateForward();
+					cameraEditor->setPosition(cameraOrbitPivot - fwd * cameraOrbitDistance);
 				}
 			}
 			else if (eventType == K_EVENT_KEYDOWN)
 			{
-				if (event.getKeyButton() == K_KEY_1)
+				if (event.getKeyButton() == K_KEY_W)
 				{
 					if (panelWorld->enabled && panelWorld->hovered)
 						manager->manipulatorType = ImGuizmo::TRANSLATE;
 				}
-				else if (event.getKeyButton() == K_KEY_2)
+				else if (event.getKeyButton() == K_KEY_E)
 				{
 					if (panelWorld->enabled && panelWorld->hovered)
 						manager->manipulatorType = ImGuizmo::ROTATE;
 				}
-				else if (event.getKeyButton() == K_KEY_3)
+				else if (event.getKeyButton() == K_KEY_R)
 				{
 					if (panelWorld->enabled && panelWorld->hovered)
 						manager->manipulatorType = ImGuizmo::SCALE;
@@ -410,6 +470,85 @@ int main()
 						(panelWorld->focused || panelHierarchy->focused))
 						manager->duplicateSelectedObjects();
 				}
+				else if (event.getKeyButton() == K_KEY_F && !ctrlPressed)
+				{
+					// F frames the editor camera on the selected object and
+					// sets the orbit pivot to its centre, so alt+drag from
+					// now on rotates around it. Only fires from the World or
+					// Hierarchy panel — anywhere else, F is free for shortcuts.
+					if (!gui->getWantTextInput() && manager->projectOpened &&
+						(panelWorld->focused || panelHierarchy->focused) &&
+						!manager->selectedObjects.empty())
+					{
+						// Union AABB across all selected objects. Mesh nodes
+						// contribute their world AABB; non-mesh nodes (lights,
+						// cameras, empties) contribute a small bounding cube
+						// around their position so they still pull the framing
+						// rectangle without dominating it.
+						kVec3 unionMin(std::numeric_limits<float>::infinity());
+						kVec3 unionMax(-std::numeric_limits<float>::infinity());
+						int count = 0;
+						for (const kString &uuid : manager->selectedObjects)
+						{
+							kObject *o = manager->findObjectByUuid(uuid);
+							if (!o)
+								continue;
+							if (o->getType() == NODE_TYPE_MESH)
+							{
+								kAABB box = ((kMesh *)o)->getWorldAABB();
+								unionMin = glm::min(unionMin, box.min);
+								unionMax = glm::max(unionMax, box.max);
+							}
+							else
+							{
+								kVec3 p = o->getGlobalPosition();
+								unionMin = glm::min(unionMin, p - kVec3(0.25f));
+								unionMax = glm::max(unionMax, p + kVec3(0.25f));
+							}
+							++count;
+						}
+
+						if (count > 0)
+						{
+							kVec3 target = (unionMin + unionMax) * 0.5f;
+							float radius = glm::length((unionMax - unionMin) * 0.5f);
+							if (radius < 0.5f)
+								radius = 0.5f;
+
+							float fovRad = glm::radians(cameraEditor->getFOV());
+							float distance = (radius / std::sin(fovRad * 0.5f)) * 1.4f;
+
+							// Keep the current viewing direction, but rebuild
+							// the rotation cleanly from forward + world-up so
+							// accumulated roll from previous drags is removed
+							// — that's the "tilt after focus" the user saw.
+							kVec3 forward = glm::normalize(cameraEditor->calculateForward());
+							kVec3 worldUp = kVec3(0.0f, 1.0f, 0.0f);
+							// If the user is staring straight up/down, give
+							// quatLookAt a non-degenerate up vector.
+							if (std::abs(glm::dot(forward, worldUp)) > 0.999f)
+								worldUp = kVec3(0.0f, 0.0f, 1.0f);
+							kQuat targetRot = glm::quatLookAt(forward, worldUp);
+							kVec3 targetPos = target - forward * distance;
+
+							// Start the tween — interpolation happens in the
+							// per-frame block below.
+							cameraTweenFromPos = cameraEditor->getPosition();
+							cameraTweenToPos = targetPos;
+							cameraTweenFromRot = cameraEditor->getRotation();
+							cameraTweenToRot = targetRot;
+							cameraTweenToPivot = target;
+							cameraTweenToDist = distance;
+							cameraTweenT = 0.0f;
+							cameraTweenActive = true;
+
+							// Update the look-at marker immediately so
+							// other code (camera frustum debug, etc.) sees the
+							// new focus point without waiting for the tween.
+							cameraEditor->setLookAt(target);
+						}
+					}
+				}
 			}
 			else if (eventType == K_EVENT_KEYUP)
 			{
@@ -428,29 +567,61 @@ int main()
 			}
 		}
 
-		// WASD camera movement — skip when a modifier is held so Ctrl+S /
-		// Ctrl+Z / etc. don't double-fire with the camera shortcut.
-		if (panelWorld->enabled && panelWorld->focused && !ctrlPressed && !altPressed && !shiftPressed)
+		// (WASD camera movement removed — selection-driven framing via F is
+		// the preferred navigation now. Alt+drag orbits, wheel zooms.)
+
+		// Camera focus tween — F-frame-selected populates the from/to state
+		// above; we advance the parameter here and write the interpolated
+		// pose every frame. Smoothstep gives a soft start and stop.
+		if (cameraTweenActive)
 		{
-			if (event.getKeyDown(K_KEY_W))
+			cameraTweenT += deltaTime / cameraTweenDuration;
+			float u = std::min(cameraTweenT, 1.0f);
+			float ease = u * u * (3.0f - 2.0f * u);
+
+			kVec3 pos = glm::mix(cameraTweenFromPos, cameraTweenToPos, ease);
+			kQuat rot = glm::slerp(cameraTweenFromRot, cameraTweenToRot, ease);
+			cameraEditor->setPosition(pos);
+			cameraEditor->setRotation(rot);
+
+			if (cameraTweenT >= 1.0f)
 			{
-				cameraEditor->setPosition(cameraEditor->getPosition() + cameraEditor->calculateForward() * deltaTime * 10.0f);
-			}
-			else if (event.getKeyDown(K_KEY_S))
-			{
-				cameraEditor->setPosition(cameraEditor->getPosition() + cameraEditor->calculateForward() * deltaTime * -10.0f);
-			}
-			else if (event.getKeyDown(K_KEY_A))
-			{
-				cameraEditor->setPosition(cameraEditor->getPosition() + cameraEditor->calculateRight() * deltaTime * 10.0f);
-			}
-			else if (event.getKeyDown(K_KEY_D))
-			{
-				cameraEditor->setPosition(cameraEditor->getPosition() + cameraEditor->calculateRight() * deltaTime * -10.0f);
+				cameraOrbitPivot = cameraTweenToPivot;
+				cameraOrbitDistance = cameraTweenToDist;
+				cameraTweenActive = false;
 			}
 		}
 
 		renderer->clear();
+
+		// Re-sync the local scene pointer from the manager. Manager::loadWorld
+		// destroys the original game scene and creates new ones, so the local
+		// here could otherwise dangle after a project open — which silently
+		// produces garbage for things like scene->getShadowsEnabled() below.
+		// When the pointer changes we also re-apply the default skybox so
+		// the editor view doesn't end up empty, and re-arm the shadow
+		// allocator in case it skipped earlier.
+		{
+			static kScene *lastSyncedScene = nullptr;
+			if (manager->getScene() != nullptr)
+			{
+				scene = manager->getScene();
+				if (scene != lastSyncedScene)
+				{
+					if (scene->getSkyboxMaterial() == nullptr)
+						manager->applyDefaultSkybox(scene);
+					renderer->setEnableShadow(scene->getShadowsEnabled());
+					renderer->setShadowBias(scene->getShadowBias());
+					renderer->setShadowNormalBias(scene->getShadowNormalBias());
+					renderer->setShadowSoftness(scene->getShadowSoftness());
+					// Resolution allocates the shadow texture, so only push it
+					// on scene change (not every frame).
+					if (renderer->getShadowResolution() != scene->getShadowMapResolution())
+						renderer->setShadowResolution(scene->getShadowMapResolution());
+					lastSyncedScene = scene;
+				}
+			}
+		}
 
 		// The World panel always renders the main scene from the editor camera.
 		// The prefab editor (below) uses its OWN renderer, so opening it never
@@ -483,6 +654,21 @@ int main()
 			if (panelGame->getPlayState() == GamePlayState::Stopped)
 				manager->pollScriptChanges(deltaTime);
 
+			// Mirror the active scene's shadow toggle into the renderer.
+			// setEnableShadow is lazy/idempotent in the SDK so this is cheap.
+			renderer->setEnableShadow(scene ? scene->getShadowsEnabled() : true);
+			if (scene)
+			{
+				renderer->setShadowBias(scene->getShadowBias());
+				renderer->setShadowNormalBias(scene->getShadowNormalBias());
+				renderer->setShadowSoftness(scene->getShadowSoftness());
+				// Push resolution every frame so inspector edits take effect
+				// immediately. setShadowResolution early-outs when unchanged,
+				// so it only reallocates the shadow texture on a real change.
+				if (renderer->getShadowResolution() != scene->getShadowMapResolution())
+					renderer->setShadowResolution(scene->getShadowMapResolution());
+			}
+
 			renderer->render(world, scene, 0, 0, viewportW * 2, viewportH * 2, gameDt, false);
 
 			// Editor scene (grid) always renders in Full mode — debug modes don't apply to it.
@@ -506,7 +692,7 @@ int main()
 			// they're holding a project asset over the viewport.
 			if (manager->projectOpened && !manager->dragHoverObjectUuid.empty())
 			{
-				std::vector<kString> hoverList = { manager->dragHoverObjectUuid };
+				std::vector<kString> hoverList = {manager->dragHoverObjectUuid};
 				renderer->renderOutline(world, scene, hoverList,
 										kVec4(1.0f, 0.85f, 0.0f, 0.85f), 3.0f);
 			}
@@ -576,7 +762,11 @@ int main()
 
 		gui->dockSpaceEnd();
 
-		if (showSplashScreen) { splashScreen->show(); showSplashScreen = false; }
+		if (showSplashScreen)
+		{
+			splashScreen->show();
+			showSplashScreen = false;
+		}
 		if (splashScreen->isOpen())
 			splashScreen->draw();
 

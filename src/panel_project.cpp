@@ -60,6 +60,15 @@ PanelProject::PanelProject(kGuiManager* setGuiManager, Manager* setManager, kAss
 	kTexture2D* tex_material = assetManager->loadTexture2DFromResource("ICON_MATERIAL_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconMaterial = (ImTextureRef)(intptr_t)tex_material->getTextureID();
 
+	kTexture2D* tex_logic = assetManager->loadTexture2DFromResource("ICON_LOGIC_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconLogic = (ImTextureRef)(intptr_t)tex_logic->getTextureID();
+
+	kTexture2D* tex_shader = assetManager->loadTexture2DFromResource("ICON_SHADER_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconShader = (ImTextureRef)(intptr_t)tex_shader->getTextureID();
+
+	kTexture2D* tex_gui = assetManager->loadTexture2DFromResource("ICON_GUI_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconGui = (ImTextureRef)(intptr_t)tex_gui->getTextureID();
+
 	kTexture2D* tex_other = assetManager->loadTexture2DFromResource("ICON_OTHER_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconOther = (ImTextureRef)(intptr_t)tex_other->getTextureID();
 
@@ -486,6 +495,12 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 				icon = iconWorld;
 			else if (ext == ".mat")
 				icon = iconMaterial;
+			else if (ext == ".logic")
+				icon = iconLogic;
+			else if (ext == ".shader")
+				icon = iconShader;
+			else if (ext == ".gui")
+				icon = iconGui;
 			else
 				icon = iconOther;
 
@@ -612,6 +627,12 @@ void PanelProject::refreshThumbnailList()
 								icon = iconWorld;
 							else if (ext == ".mat")
 								icon = iconMaterial;
+							else if (ext == ".logic")
+								icon = iconLogic;
+							else if (ext == ".shader")
+								icon = iconShader;
+							else if (ext == ".gui")
+								icon = iconGui;
 							else
 								icon = iconOther;
 

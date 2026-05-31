@@ -217,6 +217,13 @@ public:
     void saveRecentProjects();
     void addRecentProject(const kString& path);
 
+    // Per-project config (persisted to <projectPath>/Config/project.json).
+    // Holds "last_world" — the relative path of the world file that was
+    // open the last time the project was saved, so reopening the project
+    // can auto-load it.
+    void saveProjectConfig();
+    fs::path loadLastWorldPath() const; ///< Absolute path or empty when none recorded.
+
     void checkAssetChange();
 
     void refreshWindowTitle();
@@ -225,8 +232,37 @@ public:
     void clearWorld(bool forced = false);
     void deleteObjectRecursive(kObject *node);
 
+    /**
+     * @brief Saves the current world.
+     *
+     * If the world is untitled — or its current path lives outside the
+     * project's Assets folder — opens a file dialog (defaulted to
+     * @c <project>/Assets) and asks the user where to put it. Saves outside
+     * Assets are refused with a message box.
+     */
     void saveWorld();
+
+    /** @brief Save-As with an explicit destination path. Rejects paths
+     *         outside @c <project>/Assets. */
     void saveWorldAs(const kString &path);
+
+    /** @brief Save-As that always prompts for a destination via dialog,
+     *         constrained to @c <project>/Assets. */
+    void saveWorldAs();
+
+    /** @brief Opens the save dialog (defaulted to Assets) and validates the
+     *         chosen path. Returns the resolved absolute path with @c .world
+     *         appended if missing, or empty on cancel / invalid pick. */
+    kString promptWorldSavePath();
+
+    /** @brief Applies the bundled SHADER_SKYBOX + TEXTURE_SKYBOX_* cubemap
+     *         to the given scene. Used at startup and re-fired by the
+     *         "Apply Default Skybox" button on the Scene inspector — also
+     *         called automatically by main.cpp when the active scene pointer
+     *         changes (e.g. after opening a project) so the editor view
+     *         doesn't end up sky-less. */
+    void applyDefaultSkybox(kScene *target);
+
     void loadWorld(const kString &path);
 
     /**

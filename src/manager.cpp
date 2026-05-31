@@ -297,6 +297,13 @@ bool Manager::openProject()
 	if (panelHierarchy != nullptr)
 		panelHierarchy->refreshList();
 
+	// If a previous session recorded a last-opened world, load it now.
+	{
+		fs::path last = loadLastWorldPath();
+		if (!last.empty())
+			loadWorld(last.string());
+	}
+
 	addRecentProject(projectPath.string());
 
 	return true;
@@ -350,6 +357,13 @@ bool Manager::openProjectFromPath(const kString& path)
 	if (panelHierarchy != nullptr)
 		panelHierarchy->refreshList();
 
+	// Auto-load the previously-opened world for this project (if any).
+	{
+		fs::path last = loadLastWorldPath();
+		if (!last.empty())
+			loadWorld(last.string());
+	}
+
 	addRecentProject(path);
 
 	return true;
@@ -397,11 +411,18 @@ void Manager::addRecentProject(const kString& path)
 {
 	if (path.empty()) return;
 
-	auto it = std::find(recentProjects.begin(), recentProjects.end(), path);
+	// Copy first: callers (the splash) frequently pass a reference straight
+	// out of `recentProjects` — erase() below would otherwise invalidate the
+	// referent, and the subsequent insert() would read garbage and store an
+	// empty / corrupted entry. That's why the list went empty after opening
+	// a recent project.
+	kString p = path;
+
+	auto it = std::find(recentProjects.begin(), recentProjects.end(), p);
 	if (it != recentProjects.end())
 		recentProjects.erase(it);
 
-	recentProjects.insert(recentProjects.begin(), path);
+	recentProjects.insert(recentProjects.begin(), p);
 
 	if (recentProjects.size() > 8)
 		recentProjects.resize(8);
@@ -731,7 +752,7 @@ void Manager::refreshWindowTitle()
 		if (worldName == "")
 			window->setWindowTitle(initialWindowTitle + " - " + projectName + " - Untitled");
 		else
-			window->setWindowTitle(initialWindowTitle + " - " + projectName + " - " + worldName);
+			window->setWindowTitle(initialWindowTitle + " - " + projectName + " - " + worldName + ".world");
 
 		if (!projectSaved)
 			window->setWindowTitle(window->getWindowTitle() + "*");
@@ -2167,12 +2188,184 @@ bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
 // Save / Load world
 // ---------------------------------------------------------------------------
 
+void Manager::saveProjectConfig()
+{
+    if (!projectOpened || projectPath.empty()) return;
+
+    fs::path cfgDir  = projectPath / "Config";
+    std::error_code ec;
+    fs::create_directories(cfgDir, ec);
+    fs::path cfgFile = cfgDir / "project.json";
+
+    try
+    {
+        json j;
+        if (fs::exists(cfgFile))
+        {
+            std::ifstream in(cfgFile);
+            try { in >> j; } catch (...) {}
+        }
+        if (!worldPath.empty() && fs::exists(worldPath))
+        {
+            std::error_code rel_ec;
+            fs::path rel = fs::relative(worldPath, projectPath, rel_ec);
+            j["last_world"] = rel_ec ? worldPath.string()
+                                     : rel.generic_string();
+        }
+        else
+        {
+            j["last_world"] = "";
+        }
+        std::ofstream out(cfgFile);
+        if (out.is_open())
+            out << j.dump(4);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "saveProjectConfig: " << e.what() << "\n";
+    }
+}
+
+fs::path Manager::loadLastWorldPath() const
+{
+    if (projectPath.empty()) return {};
+
+    // Preferred: the explicit "last_world" record written by saveWorld.
+    fs::path cfgFile = projectPath / "Config" / "project.json";
+    if (fs::exists(cfgFile))
+    {
+        try
+        {
+            std::ifstream in(cfgFile);
+            json j; in >> j;
+            std::string rel = j.value("last_world", std::string());
+            if (!rel.empty())
+            {
+                fs::path abs = projectPath / rel;
+                if (fs::exists(abs)) return abs;
+            }
+        }
+        catch (...) {}
+    }
+
+    // Fallback A: any .world file under Assets/. Pick the most-recently-
+    // modified one so a project that has multiple .world files surfaces the
+    // one the user most likely worked on last.
+    fs::path assetsDir = projectPath / "Assets";
+    if (fs::exists(assetsDir))
+    {
+        std::error_code ec;
+        fs::path           best;
+        fs::file_time_type bestTime{};
+        for (auto it = fs::recursive_directory_iterator(assetsDir, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec))
+        {
+            if (ec) break;
+            if (!it->is_regular_file()) continue;
+            if (it->path().extension() != ".world") continue;
+            auto mt = fs::last_write_time(it->path(), ec);
+            if (best.empty() || mt > bestTime) { best = it->path(); bestTime = mt; }
+        }
+        if (!best.empty()) return best;
+    }
+
+    // Fallback B: pre-Assets-rule projects kept the world at the project root.
+    fs::path legacy = projectPath / "scene.world";
+    if (fs::exists(legacy)) return legacy;
+
+    return {};
+}
+
+namespace
+{
+    // True when `child` lives inside `parent` (or equals a file directly in it).
+    // Uses weakly_canonical so the comparison survives relative segments and
+    // mixed separators that pfd may return on Windows.
+    bool isPathUnder(const fs::path &child, const fs::path &parent)
+    {
+        std::error_code ec;
+        fs::path c = fs::weakly_canonical(child, ec);
+        fs::path p = fs::weakly_canonical(parent, ec);
+        if (ec) return false;
+        fs::path rel = c.lexically_relative(p);
+        if (rel.empty()) return false;
+        auto it = rel.begin();
+        return it != rel.end() && *it != "..";
+    }
+}
+
+kString Manager::promptWorldSavePath()
+{
+    if (!projectOpened) return "";
+
+    fs::path assetsDir = projectPath / "Assets";
+    std::error_code ec;
+    fs::create_directories(assetsDir, ec);
+
+    showingMessageBox = true;
+    std::string chosen = pfd::save_file(
+        "Save World", assetsDir.string(),
+        { "World Files", "*.world", "All Files", "*" }).result();
+    showingMessageBox = false;
+
+    if (chosen.empty()) return "";
+
+    fs::path p = chosen;
+    if (p.extension() != ".world")
+        p += ".world";
+
+    if (!isPathUnder(p, assetsDir))
+    {
+        showingMessageBox = true;
+        pfd::message(
+            "Invalid Save Location",
+            "Worlds can only be saved inside the project's Assets folder.\n\n"
+            "Selected:  " + p.string() + "\n"
+            "Required:  " + assetsDir.string(),
+            pfd::choice::ok, pfd::icon::warning).result();
+        showingMessageBox = false;
+        return "";
+    }
+
+    return p.string();
+}
+
+void Manager::applyDefaultSkybox(kScene *target)
+{
+    if (!target) return;
+    kAssetManager *am = getAssetManager();
+    if (!am) return;
+
+    kShader      *skyShader = am->loadGlslFromResource("SHADER_SKYBOX");
+    kMaterial    *skyMat    = am->createMaterial(skyShader);
+    kTextureCube *skyTex    = am->loadTextureCubeFromResource(
+        "TEXTURE_SKYBOX_RIGHT", "TEXTURE_SKYBOX_LEFT",
+        "TEXTURE_SKYBOX_TOP",   "TEXTURE_SKYBOX_BOTTOM",
+        "TEXTURE_SKYBOX_FRONT", "TEXTURE_SKYBOX_BACK",
+        "cubeMap");
+    skyMat->addTexture(skyTex);
+    skyMat->setSingleSided(false);
+
+    kMesh *skyMesh = kMeshGenerator::generateCube();
+    skyMesh->setMaterial(skyMat);
+    target->setSkybox(skyMat, skyMesh);
+}
+
 void Manager::saveWorld()
 {
     if (!projectOpened || !world) return;
 
-    if (worldPath.empty())
-        worldPath = projectPath / "scene.world";
+    fs::path assetsDir = projectPath / "Assets";
+
+    // Untitled, or pointing somewhere it shouldn't be (e.g. an older project
+    // that saved scene.world at the project root) — prompt for a new path
+    // before writing.
+    if (worldPath.empty() || !isPathUnder(worldPath, assetsDir))
+    {
+        kString chosen = promptWorldSavePath();
+        if (chosen.empty()) return; // cancelled or rejected
+        worldPath = chosen;
+    }
 
     json data = world->serialize(1); // skip editor scene at index 0
 
@@ -2188,6 +2381,9 @@ void Manager::saveWorld()
         projectSaved = true;
         worldName = worldPath.stem().string();
         refreshWindowTitle();
+        // Record this as the last-opened world so reopening the project
+        // auto-loads it.
+        saveProjectConfig();
         std::cout << "World saved: " << worldPath << "\n";
     }
     catch (const std::exception &e)
@@ -2200,7 +2396,33 @@ void Manager::saveWorldAs(const kString &path)
 {
     if (!projectOpened || !world) return;
 
-    worldPath = path;
+    fs::path p = path;
+    if (p.extension() != ".world")
+        p += ".world";
+
+    if (!isPathUnder(p, projectPath / "Assets"))
+    {
+        showingMessageBox = true;
+        pfd::message(
+            "Invalid Save Location",
+            "Worlds can only be saved inside the project's Assets folder.\n\n"
+            "Refused:  " + p.string(),
+            pfd::choice::ok, pfd::icon::warning).result();
+        showingMessageBox = false;
+        return;
+    }
+
+    worldPath = p;
+    saveWorld();
+}
+
+void Manager::saveWorldAs()
+{
+    if (!projectOpened || !world) return;
+
+    kString chosen = promptWorldSavePath();
+    if (chosen.empty()) return;
+    worldPath = chosen;
     saveWorld();
 }
 
@@ -2586,6 +2808,11 @@ void Manager::loadWorld(const kString &path)
             const auto &al = sceneJson["ambient_light"];
             scene->setAmbientLightColor(kVec3(al.value("r", 0.1f), al.value("g", 0.1f), al.value("b", 0.1f)));
         }
+        scene->setShadowsEnabled(sceneJson.value("shadows_enabled", true));
+        scene->setShadowBias(sceneJson.value("shadow_bias", 0.0008f));
+        scene->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.003f));
+        scene->setShadowMapResolution(sceneJson.value("shadow_map_resolution", 2048));
+        scene->setShadowSoftness(sceneJson.value("shadow_softness", 1.5f));
         scene->setSkyboxAmbientEnabled(sceneJson.value("skybox_ambient_enabled", false));
         scene->setSkyboxAmbientStrength(sceneJson.value("skybox_ambient_strength", 1.0f));
 
@@ -2661,6 +2888,11 @@ void Manager::loadDefaultWorldInto(kScene *target)
                                            al.value("g", 0.1f),
                                            al.value("b", 0.1f)));
     }
+    target->setShadowsEnabled(sceneJson.value("shadows_enabled", true));
+    target->setShadowBias(sceneJson.value("shadow_bias", 0.0008f));
+    target->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.003f));
+    target->setShadowMapResolution(sceneJson.value("shadow_map_resolution", 2048));
+    target->setShadowSoftness(sceneJson.value("shadow_softness", 1.5f));
     target->setSkyboxAmbientEnabled(sceneJson.value("skybox_ambient_enabled", false));
     target->setSkyboxAmbientStrength(sceneJson.value("skybox_ambient_strength", 1.0f));
 

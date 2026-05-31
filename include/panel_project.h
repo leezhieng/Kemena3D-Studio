@@ -38,6 +38,9 @@ class PanelProject
 		ImTextureRef iconPrefab;
 		ImTextureRef iconWorld;
 		ImTextureRef iconMaterial;
+		ImTextureRef iconLogic;
+		ImTextureRef iconShader;
+		ImTextureRef iconGui;
 		ImTextureRef iconOther;
 
 		char searchBuffer[128] = "";

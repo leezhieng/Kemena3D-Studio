@@ -149,6 +149,18 @@ uniform PointLight pointLights[32];
 uniform int       spotLightNum;
 uniform SpotLight spotLights[32];
 
+uniform sampler2DArray shadowMapArray;
+uniform mat4  lightSpaceMatrices[4];
+uniform vec4  cascadeSplits;
+uniform int   cascadeCount;
+uniform float shadowResolution;
+uniform bool  enableShadow;
+uniform bool  receiveShadow;
+uniform int   shadowDebug;
+uniform float shadowBias;
+uniform float shadowNormalBias;
+uniform float shadowSoftness; // PCF tap spacing in texels (default 1.0)
+
 in vec3 v_worldPos;
 in vec3 v_color;
 in vec2 v_texCoord;
@@ -158,6 +170,46 @@ in vec3 v_B;
 in vec3 v_N;
 
 out vec4 fragColor;
+
+float calcShadow(vec3 worldPos, vec3 norm, vec3 sunDir)
+{
+    // cascadeCount<=0 means the caller (e.g. kOffscreenRenderer) never set up
+    // the shadow uniforms — bail rather than sample garbage and return 1.
+    if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
+
+    // Pick cascade by distance from camera (cascade splits are camera-space far depths).
+    float viewDist = distance(worldPos, viewPos);
+    int cascade = cascadeCount - 1;
+    for (int i = 0; i < cascadeCount; ++i)
+    {
+        if (viewDist < cascadeSplits[i]) { cascade = i; break; }
+    }
+
+    vec4 lsp  = lightSpaceMatrices[cascade] * vec4(worldPos, 1.0);
+    vec3 proj = lsp.xyz / lsp.w;
+    proj      = proj * 0.5 + 0.5;
+    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
+        return 0.0;
+
+    float ndl = max(dot(norm, normalize(-sunDir)), 0.0);
+    // Scale bias by cascade index — outer cascades have a much wider depth
+    // range so the same bias becomes too tight and produces acne.
+    float biasScale = 1.0 + float(cascade) * 1.5;
+    float bias = (shadowBias + shadowNormalBias * (1.0 - ndl)) * biasScale;
+
+    // 5x5 PCF (25 taps). Tap spacing is shadowSoftness texels — bigger value
+    // = softer shadow edge but more blur of fine occluders.
+    float shadow = 0.0;
+    vec2  texel  = vec2(1.0 / max(shadowResolution, 1.0)) * max(shadowSoftness, 0.0);
+    for (int x = -2; x <= 2; ++x)
+    for (int y = -2; y <= 2; ++y)
+    {
+        float d = texture(shadowMapArray,
+                          vec3(proj.xy + vec2(x, y) * texel, float(cascade))).r;
+        shadow += (proj.z - bias > d) ? 1.0 : 0.0;
+    }
+    return shadow / 25.0;
+}
 
 vec3 calcSunLight(SunLight light, vec3 norm, vec3 vdir, vec3 specTex)
 {
@@ -220,7 +272,13 @@ void main()
     if (skyboxAmbientEnabled)
         result += texture(skyboxMap, norm).rgb * skyboxAmbientStrength * material.ambient;
 
-    for (int i = 0; i < sunLightNum;   i++) result += calcSunLight  (sunLights[i],   norm, vdir, specularTex.xyz);
+    for (int i = 0; i < sunLightNum; i++)
+    {
+        vec3 contrib = calcSunLight(sunLights[i], norm, vdir, specularTex.xyz);
+        if (i == 0) // Renderer only casts shadow from the first active sun light.
+            contrib *= 1.0 - calcShadow(v_worldPos, norm, sunLights[i].direction);
+        result += contrib;
+    }
     for (int i = 0; i < pointLightNum; i++) result += calcPointLight(pointLights[i], norm, v_worldPos, vdir, specularTex.xyz);
     for (int i = 0; i < spotLightNum;  i++) result += calcSpotLight (spotLights[i],  norm, v_worldPos, vdir, specularTex.xyz);
 

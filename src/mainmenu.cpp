@@ -73,17 +73,7 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 			if (gui->menuItem("Save World", "Ctrl+S", false, manager->projectOpened))
 				manager->saveWorld();
 			if (gui->menuItem("Save As...", "", false, manager->projectOpened))
-			{
-				auto path = pfd::save_file("Save World As", manager->projectPath.string(),
-				                           {"World Files", "*.world", "All Files", "*"}).result();
-				if (!path.empty())
-				{
-					fs::path p = path;
-					if (p.extension() != ".world")
-						p += ".world";
-					manager->saveWorldAs(p.string());
-				}
-			}
+				manager->saveWorldAs();
 			gui->separator();
 			if (gui->menuItem("New Project", "")) { manager->newProject(); }
 			if (gui->menuItem("Open Project", "")) { manager->openProject(); }
