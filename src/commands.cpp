@@ -232,18 +232,12 @@ void ReparentCommand::redo()
 
 void MaterialCommand::undo()
 {
-    kObject *obj = findInScene(manager->getScene(), objUuid);
-    if (!obj) return;
-    obj->setMaterial(before, /*setChildren*/ false);
-    obj->setMaterialUuid(beforeUuid);
+    manager->restoreMaterialSubtree(before);
 }
 
 void MaterialCommand::redo()
 {
-    kObject *obj = findInScene(manager->getScene(), objUuid);
-    if (!obj) return;
-    obj->setMaterial(after, /*setChildren*/ false);
-    obj->setMaterialUuid(afterUuid);
+    manager->restoreMaterialSubtree(after);
 }
 
 // ---------------------------------------------------------------------------

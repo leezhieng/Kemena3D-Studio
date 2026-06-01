@@ -1215,12 +1215,18 @@ kObject *Manager::findObjectByUuid(const kString &uuid)
     if (it != objectMap.end() && it->second.object)
         return it->second.object;
 
-    // Fallback: traverse scene graph directly
-    if (!scene) return nullptr;
-    for (kObject *child : scene->getRootNode()->getChildren())
-        if (child->getUuid() == uuid) return child;
-
-    return nullptr;
+    // Fallback: traverse the scene graph directly (recursively, so nested
+    // sub-meshes resolve even when objectMap hasn't been rebuilt yet).
+    if (!scene || !scene->getRootNode()) return nullptr;
+    std::function<kObject *(kObject *)> find = [&](kObject *node) -> kObject * {
+        for (kObject *child : node->getChildren())
+        {
+            if (child->getUuid() == uuid) return child;
+            if (kObject *hit = find(child)) return hit;
+        }
+        return nullptr;
+    };
+    return find(scene->getRootNode());
 }
 
 std::vector<TransformState> Manager::captureSelectedTransforms()
@@ -1242,6 +1248,7 @@ static kObject *loadObjectFromJson(const nlohmann::json &obj, kScene *scene, kWo
                                    kCamera *editorCamera, kObject *parent);
 static void pushInstantiateCommand(Manager *mgr, kObject *root);
 static void reapplyMaterialsRecursive(Manager *mgr, kObject *node, const fs::path &projectPath);
+static void assignImportChildUuidsRec(kObject *root);
 
 // Walk a serialized kObject JSON tree and replace every UUID with a fresh one
 // so the cloned subtree doesn't collide with its original. Recurses into the
@@ -1598,6 +1605,7 @@ void Manager::createMeshFromFile()
     mesh->setName(p.stem().string());
 
     if (am) applyDefaultMaterial(mesh, am);
+    assignImportChildUuidsRec(mesh);
 
     scene->addMesh(mesh);
     kString uuid = mesh->getUuid();
@@ -2539,6 +2547,10 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             mesh->setUuid(uuid.empty() ? generateUuid() : uuid);
             mesh->setParent(parent);
         }
+        // Give the model's import-derived sub-meshes UUIDs so they show
+        // uniquely in the hierarchy and can be selected (they remain excluded
+        // from serialization via the import-child flag).
+        assignImportChildUuidsRec(mesh);
         result = mesh;
     }
     else if (type == "light")
@@ -3449,6 +3461,7 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
         if (!mesh)
             mesh = new kMesh();
         if (am) applyDefaultMaterial(mesh, am);
+        assignImportChildUuidsRec(mesh);
 
         mesh->setName(fs::path(info.path).stem().string());
         scene->addMesh(mesh);
@@ -4128,11 +4141,13 @@ bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
     mat->setMetallic (matJson.value("metallic",  0.0f));
     mat->setRoughness(matJson.value("roughness", 0.5f));
 
-    // Apply only to this object (not children), so MaterialCommand can undo
-    // it cleanly without re-walking the subtree.
-    obj->setMaterial(mat, /*setChildren*/ false);
-    // Record the source asset UUID so the assignment is persisted on save and
-    // can be re-applied on load.
+    // Apply to the object AND its sub-meshes. Imported models keep their
+    // geometry in import-derived child meshes, so applying only to the root
+    // would have no visible effect. MaterialCommand snapshots the whole
+    // subtree, so undo still restores per-part materials cleanly.
+    obj->setMaterial(mat, /*setChildren*/ true);
+    // Record the source asset UUID on the root so the assignment is persisted
+    // on save and can be re-applied (and re-propagated) on load.
     obj->setMaterialUuid(materialUuid);
     projectSaved = false;
     refreshWindowTitle();
@@ -4150,7 +4165,7 @@ void Manager::applyDefaultMaterialToObject(kObject *obj)
     kMaterial *mat    = am->createMaterial(shader);
     mat->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
     mat->setDiffuseColor(kVec3(0.5f, 0.5f, 0.5f));
-    obj->setMaterial(mat, /*setChildren*/ false);
+    obj->setMaterial(mat, /*setChildren*/ true);
     obj->setMaterialUuid("");
     projectSaved = false;
     refreshWindowTitle();
@@ -4180,6 +4195,57 @@ void Manager::reapplyStoredMaterials()
         if (s && s->getRootNode())
             for (kObject *child : s->getRootNode()->getChildren())
                 reapplyMaterialsRecursive(this, child, projectPath);
+}
+
+static void captureMaterialSubtreeRec(kObject *node, std::vector<MaterialSnapshot> &out)
+{
+    if (!node) return;
+    out.push_back({ node->getUuid(), node->getMaterial(), node->getMaterialUuid() });
+    for (kObject *c : node->getChildren())
+        captureMaterialSubtreeRec(c, out);
+}
+
+std::vector<MaterialSnapshot> Manager::captureMaterialSubtree(kObject *root)
+{
+    std::vector<MaterialSnapshot> snap;
+    captureMaterialSubtreeRec(root, snap);
+    return snap;
+}
+
+void Manager::restoreMaterialSubtree(const std::vector<MaterialSnapshot> &snap)
+{
+    for (const MaterialSnapshot &s : snap)
+    {
+        kObject *obj = findObjectByUuid(s.uuid);
+        if (!obj) continue;
+        obj->setMaterial(s.material, /*setChildren*/ false);
+        obj->setMaterialUuid(s.materialUuid);
+    }
+    projectSaved = false;
+    refreshWindowTitle();
+}
+
+// Free helper so the static loadObjectFromJson (which has no Manager) can use it.
+static void assignImportChildUuidsRec(kObject *root)
+{
+    if (!root) return;
+    for (kObject *c : root->getChildren())
+    {
+        // UUID-less descendants are the importer's sub-meshes: give them a
+        // stable id and flag them so they stay out of serialization but become
+        // selectable/duplicable in the hierarchy.
+        if (c->getUuid().empty())
+        {
+            c->setUuid(generateUuid());
+            c->setImportChild(true);
+        }
+        assignImportChildUuidsRec(c);
+    }
+}
+
+void Manager::assignImportChildUuids(kObject *root)
+{
+    assignImportChildUuidsRec(root);
 }
 
 void Manager::deleteAssets(const std::vector<fs::path> &paths)

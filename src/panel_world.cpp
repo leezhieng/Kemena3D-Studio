@@ -132,44 +132,36 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     fs::path matPath = manager->projectPath / "Assets" / info.path;
 
                     // If the hovered object changed since last frame, restore
-                    // the prior preview before applying to the new one.
+                    // the prior preview's whole subtree before applying to the
+                    // new one.
                     if (hovObj != manager->matPreviewObject)
                     {
                         if (manager->matPreviewObject)
-                        {
-                            manager->matPreviewObject->setMaterial(
-                                manager->matPreviewOriginal, /*setChildren*/ true);
-                            manager->matPreviewObject->setMaterialUuid(
-                                manager->matPreviewOriginalUuid);
-                        }
+                            manager->restoreMaterialSubtree(manager->matPreviewSnapshot);
 
                         manager->matPreviewObject     = hovObj;
-                        manager->matPreviewOriginal   = hovObj ? hovObj->getMaterial() : nullptr;
-                        manager->matPreviewOriginalUuid = hovObj ? hovObj->getMaterialUuid()
-                                                                 : kString("");
+                        manager->matPreviewSnapshot   = hovObj
+                            ? manager->captureMaterialSubtree(hovObj)
+                            : std::vector<MaterialSnapshot>();
                         manager->matPreviewSourceUuid = assetUuid;
 
                         if (hovObj)
                             manager->applyMaterialToObject(hovObj, matPath, assetUuid);
                     }
 
-                    // Commit on release: leave the new material in place,
-                    // push undo, then forget the preview so the post-target
-                    // restore won't undo it.
+                    // Commit on release: leave the new material in place, push a
+                    // subtree-wide undo, then forget the preview so the post-
+                    // target restore below won't revert it.
                     if (payload->IsDelivery() && manager->matPreviewObject)
                     {
                         auto cmd = std::make_unique<MaterialCommand>();
                         cmd->manager = manager;
-                        cmd->objUuid = manager->matPreviewObject->getUuid();
-                        cmd->before  = manager->matPreviewOriginal;
-                        cmd->after   = manager->matPreviewObject->getMaterial();
-                        cmd->beforeUuid = manager->matPreviewOriginalUuid;
-                        cmd->afterUuid  = manager->matPreviewObject->getMaterialUuid();
+                        cmd->before  = manager->matPreviewSnapshot;
+                        cmd->after   = manager->captureMaterialSubtree(manager->matPreviewObject);
                         manager->undoRedo.push(std::move(cmd));
 
-                        manager->matPreviewObject     = nullptr;
-                        manager->matPreviewOriginal   = nullptr;
-                        manager->matPreviewOriginalUuid = "";
+                        manager->matPreviewObject = nullptr;
+                        manager->matPreviewSnapshot.clear();
                         manager->matPreviewSourceUuid = "";
                     }
                 }
@@ -191,12 +183,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     // a half-applied preview.
     if (!ImGui::IsDragDropActive() && manager->matPreviewObject)
     {
-        manager->matPreviewObject->setMaterial(
-            manager->matPreviewOriginal, /*setChildren*/ true);
-        manager->matPreviewObject->setMaterialUuid(manager->matPreviewOriginalUuid);
-        manager->matPreviewObject     = nullptr;
-        manager->matPreviewOriginal   = nullptr;
-        manager->matPreviewOriginalUuid = "";
+        manager->restoreMaterialSubtree(manager->matPreviewSnapshot);
+        manager->matPreviewObject = nullptr;
+        manager->matPreviewSnapshot.clear();
         manager->matPreviewSourceUuid = "";
     }
 

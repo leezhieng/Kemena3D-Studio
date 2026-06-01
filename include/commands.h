@@ -219,22 +219,34 @@ struct ReparentCommand : ICommand
 };
 
 /**
- * @brief Undoable material swap on a single object.
+ * @brief Per-node material snapshot used to revert/replay a material assignment.
  *
- * Stores both the material pointers and their asset UUIDs so the prior
- * material can be reinstated.
+ * Captures one object's runtime material and its source asset UUID, keyed by
+ * the object's UUID so it can be relocated in the scene during undo/redo.
+ */
+struct MaterialSnapshot
+{
+    kString    uuid;               ///< UUID of the object this snapshot belongs to.
+    kMaterial *material = nullptr;  ///< Runtime material at snapshot time (owned by the asset manager).
+    kString    materialUuid;        ///< Source .mat asset UUID at snapshot time.
+};
+
+/**
+ * @brief Undoable material assignment over an object and its sub-meshes.
+ *
+ * Imported models are a root object plus import-derived sub-mesh children, so a
+ * material drop must cover the whole subtree. Both before and after states are
+ * captured as per-node snapshots so undo/redo restore each node exactly —
+ * including the per-part materials a multi-mesh model started with.
  */
 struct MaterialCommand : ICommand
 {
-    Manager   *manager;          ///< Owning manager used to resolve the object.
-    kString    objUuid;          ///< UUID of the object whose material changes.
-    kMaterial *before = nullptr; ///< Material assigned before the swap.
-    kMaterial *after  = nullptr; ///< Material assigned after the swap.
-    kString    beforeUuid; ///< Object's material asset UUID before the swap.
-    kString    afterUuid;  ///< Object's material asset UUID after the swap.
+    Manager                      *manager; ///< Owning manager used to resolve objects and restore materials.
+    std::vector<MaterialSnapshot> before;  ///< Subtree material state before the assignment.
+    std::vector<MaterialSnapshot> after;   ///< Subtree material state after the assignment.
 
-    void undo() override; ///< Reassign the "before" material.
-    void redo() override; ///< Reassign the "after" material.
+    void undo() override; ///< Restore the "before" subtree materials.
+    void redo() override; ///< Restore the "after" subtree materials.
 };
 
 /**

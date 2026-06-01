@@ -506,14 +506,42 @@ public:
      */
     void reapplyStoredMaterials();
 
+    /**
+     * @brief Captures the material state of @p root and all its descendants.
+     *
+     * Records each node's runtime material and material asset UUID so a
+     * subtree-wide material change (e.g. dropping a material on an imported
+     * multi-mesh model) can be reverted exactly.
+     * @param root Subtree root to snapshot.
+     * @return One snapshot per node in the subtree.
+     */
+    std::vector<MaterialSnapshot> captureMaterialSubtree(kObject *root);
+
+    /**
+     * @brief Restores a set of per-node material snapshots (see captureMaterialSubtree).
+     * @param snap Snapshots to reinstate; each is matched to its object by UUID.
+     */
+    void restoreMaterialSubtree(const std::vector<MaterialSnapshot> &snap);
+
+    /**
+     * @brief Assigns UUIDs to import-derived sub-meshes under @p root.
+     *
+     * Model files load as a root mesh plus sub-mesh children that the importer
+     * leaves UUID-less. This walks the subtree and gives every UUID-less child a
+     * fresh UUID and marks it as an import child, so it appears uniquely in the
+     * hierarchy and can be selected/duplicated, while staying excluded from
+     * serialization (it is rebuilt from the model file on load).
+     * @param root Subtree root (typically a freshly loaded/instantiated mesh).
+     */
+    void assignImportChildUuids(kObject *root);
+
     // --- Material drag-preview state ----------------------------------------
     // While a .mat payload is hovering over a scene object, we swap the material
     // for live preview. If the drop is committed we keep it (with undo); if the
-    // user drags away or cancels we restore the original.
-    kObject   *matPreviewObject       = nullptr;
-    kMaterial *matPreviewOriginal     = nullptr;
-    kString    matPreviewOriginalUuid; ///< Object's material UUID before preview.
-    kString    matPreviewSourceUuid;
+    // user drags away or cancels we restore the original subtree state.
+    kObject                      *matPreviewObject = nullptr; ///< Object currently under a hovering material drop.
+    std::vector<MaterialSnapshot> matPreviewSnapshot;         ///< Subtree materials before the preview, for restore-on-cancel.
+    kString                       matPreviewSourceUuid;       ///< UUID of the .mat asset being previewed.
 
     // --- Drag-hover highlight ----------------------------------------------
     // While any drag-and-drop is over the World viewport, the panel records

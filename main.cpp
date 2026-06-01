@@ -186,6 +186,21 @@ int main()
 			isReloadLayout = false;
 		}
 
+		// A world load (triggered by a menu action during a previous frame's
+		// panel draw) restored the editor camera pose and staged its orbit
+		// framing. Adopt it into our live locals BEFORE the mirror below, or the
+		// mirror would overwrite the restored pivot/distance with stale values
+		// and the first orbit drag would snap the camera. Cancel any focus tween
+		// so nothing fights the restore.
+		if (manager->editorCamLoadPending)
+		{
+			cameraOrbitPivot    = manager->editorCamOrbitPivot;
+			cameraOrbitDistance = manager->editorCamOrbitDistance;
+			camRot              = cameraEditor->getRotation();
+			cameraTweenActive   = false;
+			manager->editorCamLoadPending = false;
+		}
+
 		// Keep the manager's copy of the editor-camera orbit state current so a
 		// File>Save handled during this frame persists the live viewpoint.
 		manager->editorCamOrbitPivot    = cameraOrbitPivot;
@@ -570,19 +585,6 @@ int main()
 					shiftPressed = false;
 				}
 			}
-		}
-
-		// A world load (handled in the event block above) restores the editor
-		// camera pose and stages its orbit framing — adopt it into our live
-		// locals and cancel any in-flight focus tween so nothing fights the
-		// restore on the first frame after load.
-		if (manager->editorCamLoadPending)
-		{
-			cameraOrbitPivot    = manager->editorCamOrbitPivot;
-			cameraOrbitDistance = manager->editorCamOrbitDistance;
-			camRot              = cameraEditor->getRotation();
-			cameraTweenActive   = false;
-			manager->editorCamLoadPending = false;
 		}
 
 		// (WASD camera movement removed — selection-driven framing via F is

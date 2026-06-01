@@ -30,7 +30,7 @@ struct ShowPanel
 	bool project = true;        ///< Show the Project (asset browser) panel.
 	bool shaderEditor = false;  ///< Show the Shader Editor panel.
 	bool scriptEditor = false;  ///< Show the Script Editor panel.
-	bool game = false;          ///< Show the Game (play-mode) panel.
+	bool game = true;           ///< Show the Game (play-mode) panel.
 	bool prefab = false;        ///< Show the Prefab editor; toggled by Manager::editPrefab / closePrefabEditor.
 };
 

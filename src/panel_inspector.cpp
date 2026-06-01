@@ -1103,8 +1103,9 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr)
 
         auto applyByIndex = [&](int idx) {
             if (idx < 0 || idx >= (int)matUuids.size()) return;
-            kMaterial *before     = mesh->getMaterial();
-            kString    beforeUuid = mesh->getMaterialUuid();
+            // Snapshot the whole subtree so undo restores per-part materials of
+            // multi-mesh models, not just the root.
+            std::vector<MaterialSnapshot> before = mgr->captureMaterialSubtree(mesh);
             bool ok = false;
             if (idx == 0)
             {
@@ -1123,12 +1124,9 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr)
             if (ok)
             {
                 auto cmd = std::make_unique<MaterialCommand>();
-                cmd->manager    = mgr;
-                cmd->objUuid    = mesh->getUuid();
-                cmd->before     = before;
-                cmd->after      = mesh->getMaterial();
-                cmd->beforeUuid = beforeUuid;
-                cmd->afterUuid  = mesh->getMaterialUuid();
+                cmd->manager = mgr;
+                cmd->before  = before;
+                cmd->after   = mgr->captureMaterialSubtree(mesh);
                 mgr->undoRedo.push(std::move(cmd));
                 mgr->projectSaved = false;
                 mgr->refreshWindowTitle();

@@ -53,3 +53,5 @@ Thumbs.db
 /dep
 /Kemena3DStudio.depend
 /Kemena3DStudio.layout
+build_debug
+build_release
