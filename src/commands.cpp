@@ -235,6 +235,7 @@ void MaterialCommand::undo()
     kObject *obj = findInScene(manager->getScene(), objUuid);
     if (!obj) return;
     obj->setMaterial(before, /*setChildren*/ false);
+    obj->setMaterialUuid(beforeUuid);
 }
 
 void MaterialCommand::redo()
@@ -242,6 +243,7 @@ void MaterialCommand::redo()
     kObject *obj = findInScene(manager->getScene(), objUuid);
     if (!obj) return;
     obj->setMaterial(after, /*setChildren*/ false);
+    obj->setMaterialUuid(afterUuid);
 }
 
 // ---------------------------------------------------------------------------

@@ -77,6 +77,8 @@ void PanelInspector::initPreviewScene()
     previewWorld = createWorld(createAssetManager());
     previewScene = previewWorld->createScene("preview");
     previewScene->setFrustumCullingEnabled(false);
+    // No shadows in the preview window (see matViewer note).
+    previewScene->setShadowsEnabled(false);
     previewScene->setAmbientLightColor(kVec3(0.08f, 0.08f, 0.08f));
 
     previewMesh = kMeshGenerator::generateSphere(1.0f, 32, 32);
@@ -432,6 +434,8 @@ void PanelInspector::initModelViewScene()
     modelViewWorld = createWorld(createAssetManager());
     modelViewScene = modelViewWorld->createScene("modelViewer");
     modelViewScene->setFrustumCullingEnabled(false);
+    // No shadows in the preview window (see matViewer note).
+    modelViewScene->setShadowsEnabled(false);
     modelViewScene->setAmbientLightColor(kVec3(0.08f, 0.08f, 0.08f));
 
     modelViewLight = modelViewScene->addSunLight(
@@ -698,6 +702,10 @@ void PanelInspector::initMatViewScene()
     matViewWorld = createWorld(createAssetManager());
     matViewScene = matViewWorld->createScene("matViewer");
     matViewScene->setFrustumCullingEnabled(false);
+    // No shadows in the preview — the single-mesh thumbnail doesn't benefit
+    // from a cast shadow, and skipping the depth pass keeps lit (Phong/PBR)
+    // materials rendering correctly in the preview window.
+    matViewScene->setShadowsEnabled(false);
     matViewScene->setAmbientLightColor(kVec3(0.08f, 0.08f, 0.08f));
 
     matViewLight = matViewScene->addSunLight(
@@ -1064,6 +1072,90 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr)
     strncpy_s(fileBuf, sizeof(fileBuf), mesh->getFileName().c_str(), _TRUNCATE);
     ImGui::InputText("##MeshFile", fileBuf, sizeof(fileBuf));
     gui->endDisabled();
+
+    // --- Material picker -----------------------------------------------------
+    // Lists project .mat assets; selecting one applies it to this mesh (same
+    // runtime effect as dragging a material onto the object in the viewport).
+    // Also accepts a material dragged onto the field. The assignment is stored
+    // as the material asset's UUID on the object, so it persists across save/load.
+    {
+        propLabel(gui, "Material");
+
+        std::vector<std::string> matUuids = {""};      // index 0 = "(None)"
+        std::vector<std::string> matNames = {"(None)"};
+        for (const auto &kv : mgr->fileMap)
+        {
+            if (kv.second.type == "material")
+            {
+                matUuids.push_back(kv.first);
+                matNames.push_back(fs::path(kv.second.path).stem().string());
+            }
+        }
+        std::vector<const char *> matNamePtrs;
+        matNamePtrs.reserve(matNames.size());
+        for (auto &n : matNames) matNamePtrs.push_back(n.c_str());
+
+        // Current selection comes from the object's stored material UUID.
+        std::string assignedUuid = mesh->getMaterialUuid();
+        int current = 0;
+        for (size_t i = 0; i < matUuids.size(); ++i)
+            if (matUuids[i] == assignedUuid) { current = (int)i; break; }
+
+        auto applyByIndex = [&](int idx) {
+            if (idx < 0 || idx >= (int)matUuids.size()) return;
+            kMaterial *before     = mesh->getMaterial();
+            kString    beforeUuid = mesh->getMaterialUuid();
+            bool ok = false;
+            if (idx == 0)
+            {
+                // "(None)" — revert the object to a fresh default material so its
+                // appearance visibly changes back (and clear the stored UUID).
+                mgr->applyDefaultMaterialToObject(mesh);
+                ok = true;
+            }
+            else
+            {
+                auto it = mgr->fileMap.find(matUuids[idx]);
+                if (it == mgr->fileMap.end()) return;
+                fs::path matPath = mgr->projectPath / "Assets" / it->second.path;
+                ok = mgr->applyMaterialToObject(mesh, matPath, matUuids[idx]);
+            }
+            if (ok)
+            {
+                auto cmd = std::make_unique<MaterialCommand>();
+                cmd->manager    = mgr;
+                cmd->objUuid    = mesh->getUuid();
+                cmd->before     = before;
+                cmd->after      = mesh->getMaterial();
+                cmd->beforeUuid = beforeUuid;
+                cmd->afterUuid  = mesh->getMaterialUuid();
+                mgr->undoRedo.push(std::move(cmd));
+                mgr->projectSaved = false;
+                mgr->refreshWindowTitle();
+            }
+        };
+
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##MeshMaterial", &current, matNamePtrs.data(), (int)matNamePtrs.size()))
+            applyByIndex(current);
+
+        // Accept a material asset dropped directly onto the combo.
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload *payload =
+                    ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+            {
+                std::string dropped((const char *)payload->Data);
+                auto it = mgr->fileMap.find(dropped);
+                if (it != mgr->fileMap.end() && it->second.type == "material")
+                {
+                    for (size_t i = 0; i < matUuids.size(); ++i)
+                        if (matUuids[i] == dropped) { applyByIndex((int)i); break; }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
 
     propLabel(gui, "Cast Shadow");
     bool castShadow = mesh->getCastShadow();
@@ -2753,6 +2845,9 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
             fs::path thumbPath = manager->projectPath / "Library" / "Thumbnails" / (asset.uuid + ".png");
             if (fs::exists(thumbPath)) fs::remove(thumbPath);
             manager->checkAssetChange();
+            // Rebuild runtime materials on scene objects that reference this
+            // .mat so the edited settings show up immediately in the scene.
+            manager->reapplyStoredMaterials();
             if (manager->panelProject)
             {
                 manager->panelProject->pendingSelectUuid = asset.uuid;

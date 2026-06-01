@@ -156,7 +156,7 @@ int main()
 	// F-focus tween. When the user presses F the camera doesn't snap — it
 	// glides into the framed pose over `cameraTweenDuration` seconds with a
 	// smoothstep ease. Drag / wheel input cancels the tween.
-	const float cameraTweenDuration = 1.0f;
+	const float cameraTweenDuration = 0.5f;
 	bool cameraTweenActive = false;
 	float cameraTweenT = 0.0f;
 	kVec3 cameraTweenFromPos = kVec3(0);
@@ -185,6 +185,11 @@ int main()
 
 			isReloadLayout = false;
 		}
+
+		// Keep the manager's copy of the editor-camera orbit state current so a
+		// File>Save handled during this frame persists the live viewpoint.
+		manager->editorCamOrbitPivot    = cameraOrbitPivot;
+		manager->editorCamOrbitDistance = cameraOrbitDistance;
 
 		float deltaTime = window->getTimer()->getDeltaTime();
 		gui->processEvent(event);
@@ -565,6 +570,19 @@ int main()
 					shiftPressed = false;
 				}
 			}
+		}
+
+		// A world load (handled in the event block above) restores the editor
+		// camera pose and stages its orbit framing — adopt it into our live
+		// locals and cancel any in-flight focus tween so nothing fights the
+		// restore on the first frame after load.
+		if (manager->editorCamLoadPending)
+		{
+			cameraOrbitPivot    = manager->editorCamOrbitPivot;
+			cameraOrbitDistance = manager->editorCamOrbitDistance;
+			camRot              = cameraEditor->getRotation();
+			cameraTweenActive   = false;
+			manager->editorCamLoadPending = false;
 		}
 
 		// (WASD camera movement removed — selection-driven framing via F is

@@ -1241,6 +1241,7 @@ static kObject *loadObjectFromJson(const nlohmann::json &obj, kScene *scene, kWo
                                    kAssetManager *am, const fs::path &projectPath,
                                    kCamera *editorCamera, kObject *parent);
 static void pushInstantiateCommand(Manager *mgr, kObject *root);
+static void reapplyMaterialsRecursive(Manager *mgr, kObject *node, const fs::path &projectPath);
 
 // Walk a serialized kObject JSON tree and replace every UUID with a fresh one
 // so the cloned subtree doesn't collide with its original. Recurses into the
@@ -1290,7 +1291,12 @@ void Manager::duplicateSelectedObjects()
         kObject *clone = loadObjectFromJson(j, scene, world, am,
                                             projectPath, editorCamera, nullptr);
         if (clone)
+        {
+            // Rebuild the runtime material from the cloned material UUID so the
+            // duplicate looks identical immediately (not only after a reload).
+            reapplyMaterialsRecursive(this, clone, projectPath);
             duplicates.push_back(clone);
+        }
     }
 
     if (duplicates.empty()) return;
@@ -2369,6 +2375,23 @@ void Manager::saveWorld()
 
     json data = world->serialize(1); // skip editor scene at index 0
 
+    // Persist the editor viewport camera so reopening the world restores the
+    // same viewpoint (position, orientation, and orbit framing state).
+    if (editorCamera)
+    {
+        kVec3 cp = editorCamera->getPosition();
+        kQuat cq = editorCamera->getRotation();
+        data["editor_camera"] = {
+            {"position", {{"x", cp.x}, {"y", cp.y}, {"z", cp.z}}},
+            {"rotation", {{"x", cq.x}, {"y", cq.y}, {"z", cq.z}, {"w", cq.w}}},
+            {"orbit_pivot", {{"x", editorCamOrbitPivot.x},
+                             {"y", editorCamOrbitPivot.y},
+                             {"z", editorCamOrbitPivot.z}}},
+            {"orbit_distance", editorCamOrbitDistance},
+            {"fov", editorCamera->getFOV()},
+        };
+    }
+
     try
     {
         std::ofstream f(worldPath);
@@ -2643,6 +2666,12 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         if (obj.contains("prefab_ref"))    result->setPrefabRef(obj["prefab_ref"].get<std::string>());
         if (obj.contains("template_uuid")) result->setTemplateUuid(obj["template_uuid"].get<std::string>());
 
+        // Assigned material asset UUID. Only the reference is restored here; the
+        // runtime material is rebuilt afterwards by Manager::reapplyStoredMaterials
+        // (which has the fileMap needed to resolve the UUID to a .mat path).
+        if (obj.contains("material_uuid"))
+            result->setMaterialUuid(obj["material_uuid"].get<std::string>());
+
         // Physics body descriptor — fields mirror kPhysicsObjectDesc; missing
         // fields fall back to descriptor defaults.
         if (obj.contains("physics") && obj["physics"].is_object())
@@ -2826,6 +2855,40 @@ void Manager::loadWorld(const kString &path)
 
         // Use this scene as the main game scene
         setScene(scene);
+    }
+
+    // Second pass: rebuild runtime materials from the per-object material UUIDs
+    // restored during load. Done here (not in loadObjectFromJson) because it
+    // needs fileMap to resolve a UUID to its .mat path.
+    reapplyStoredMaterials();
+
+    // Restore the editor viewport camera to where it was when saved. Orbit
+    // pivot/distance are staged for main.cpp via editorCamLoadPending so its
+    // interaction state matches the restored pose.
+    if (editorCamera && data.contains("editor_camera") && data["editor_camera"].is_object())
+    {
+        const json &ec = data["editor_camera"];
+        if (ec.contains("position"))
+        {
+            const auto &p = ec["position"];
+            editorCamera->setPosition(kVec3(p.value("x", 0.0f), p.value("y", 0.0f), p.value("z", 0.0f)));
+        }
+        if (ec.contains("rotation"))
+        {
+            const auto &r = ec["rotation"];
+            // glm::quat ctor is (w, x, y, z).
+            editorCamera->setRotation(kQuat(
+                r.value("w", 1.0f), r.value("x", 0.0f), r.value("y", 0.0f), r.value("z", 0.0f)));
+        }
+        if (ec.contains("orbit_pivot"))
+        {
+            const auto &op = ec["orbit_pivot"];
+            editorCamOrbitPivot = kVec3(op.value("x", 0.0f), op.value("y", 0.0f), op.value("z", 0.0f));
+        }
+        editorCamOrbitDistance = ec.value("orbit_distance", editorCamOrbitDistance);
+        if (ec.contains("fov"))
+            editorCamera->setFOV(ec.value("fov", 60.0f));
+        editorCamLoadPending = true;
     }
 
     worldName    = loadPath.stem().string();
@@ -4023,7 +4086,8 @@ void Manager::unpackPrefabInstance(kObject *instanceRoot)
     undoRedo.push(std::move(cmd));
 }
 
-bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath)
+bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
+                                    const kString &materialUuid)
 {
     if (!obj) return false;
     kAssetManager *am = getAssetManager();
@@ -4067,9 +4131,55 @@ bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath)
     // Apply only to this object (not children), so MaterialCommand can undo
     // it cleanly without re-walking the subtree.
     obj->setMaterial(mat, /*setChildren*/ false);
+    // Record the source asset UUID so the assignment is persisted on save and
+    // can be re-applied on load.
+    obj->setMaterialUuid(materialUuid);
     projectSaved = false;
     refreshWindowTitle();
     return true;
+}
+
+void Manager::applyDefaultMaterialToObject(kObject *obj)
+{
+    if (!obj) return;
+    kAssetManager *am = getAssetManager();
+    if (!am) return;
+
+    // Mirrors the default material assigned to freshly-created meshes.
+    kShader   *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
+    kMaterial *mat    = am->createMaterial(shader);
+    mat->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
+    mat->setDiffuseColor(kVec3(0.5f, 0.5f, 0.5f));
+    obj->setMaterial(mat, /*setChildren*/ false);
+    obj->setMaterialUuid("");
+    projectSaved = false;
+    refreshWindowTitle();
+}
+
+// Recursively re-apply the stored material UUID for a node and its descendants.
+static void reapplyMaterialsRecursive(Manager *mgr, kObject *node,
+                                      const fs::path &projectPath)
+{
+    if (!node) return;
+    const kString mu = node->getMaterialUuid();
+    if (!mu.empty())
+    {
+        auto it = mgr->fileMap.find(mu);
+        if (it != mgr->fileMap.end() && it->second.type == "material")
+            mgr->applyMaterialToObject(node, projectPath / "Assets" / it->second.path, mu);
+        // else: asset missing — keep the UUID, leave the default material.
+    }
+    for (kObject *child : node->getChildren())
+        reapplyMaterialsRecursive(mgr, child, projectPath);
+}
+
+void Manager::reapplyStoredMaterials()
+{
+    if (!world) return;
+    for (kScene *s : world->getScenes())
+        if (s && s->getRootNode())
+            for (kObject *child : s->getRootNode()->getChildren())
+                reapplyMaterialsRecursive(this, child, projectPath);
 }
 
 void Manager::deleteAssets(const std::vector<fs::path> &paths)

@@ -136,15 +136,21 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     if (hovObj != manager->matPreviewObject)
                     {
                         if (manager->matPreviewObject)
+                        {
                             manager->matPreviewObject->setMaterial(
                                 manager->matPreviewOriginal, /*setChildren*/ true);
+                            manager->matPreviewObject->setMaterialUuid(
+                                manager->matPreviewOriginalUuid);
+                        }
 
-                        manager->matPreviewObject   = hovObj;
-                        manager->matPreviewOriginal = hovObj ? hovObj->getMaterial() : nullptr;
+                        manager->matPreviewObject     = hovObj;
+                        manager->matPreviewOriginal   = hovObj ? hovObj->getMaterial() : nullptr;
+                        manager->matPreviewOriginalUuid = hovObj ? hovObj->getMaterialUuid()
+                                                                 : kString("");
                         manager->matPreviewSourceUuid = assetUuid;
 
                         if (hovObj)
-                            manager->applyMaterialToObject(hovObj, matPath);
+                            manager->applyMaterialToObject(hovObj, matPath, assetUuid);
                     }
 
                     // Commit on release: leave the new material in place,
@@ -157,10 +163,13 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                         cmd->objUuid = manager->matPreviewObject->getUuid();
                         cmd->before  = manager->matPreviewOriginal;
                         cmd->after   = manager->matPreviewObject->getMaterial();
+                        cmd->beforeUuid = manager->matPreviewOriginalUuid;
+                        cmd->afterUuid  = manager->matPreviewObject->getMaterialUuid();
                         manager->undoRedo.push(std::move(cmd));
 
                         manager->matPreviewObject     = nullptr;
                         manager->matPreviewOriginal   = nullptr;
+                        manager->matPreviewOriginalUuid = "";
                         manager->matPreviewSourceUuid = "";
                     }
                 }
@@ -184,8 +193,10 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     {
         manager->matPreviewObject->setMaterial(
             manager->matPreviewOriginal, /*setChildren*/ true);
+        manager->matPreviewObject->setMaterialUuid(manager->matPreviewOriginalUuid);
         manager->matPreviewObject     = nullptr;
         manager->matPreviewOriginal   = nullptr;
+        manager->matPreviewOriginalUuid = "";
         manager->matPreviewSourceUuid = "";
     }
 

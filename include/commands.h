@@ -14,108 +14,166 @@ using namespace kemena;
 
 class Manager;  // forward declaration — full definition in manager.h
 
-// ---------------------------------------------------------------------------
-// Pivot mode for multi-object gizmo
-// ---------------------------------------------------------------------------
+/**
+ * @brief Pivot reference used when a transform gizmo acts on multiple objects.
+ *
+ * Determines the point around which a multi-object selection is rotated/scaled.
+ */
 enum class PivotMode
 {
-    Individual,   // each object transforms around its own centre
-    Center,       // transforms around the centroid of all selected objects
-    LastSelected  // transforms around the last-selected object's pivot
+    Individual,   ///< Each object transforms around its own centre.
+    Center,       ///< Transforms around the centroid of all selected objects.
+    LastSelected  ///< Transforms around the last-selected object's pivot.
 };
 
-// ---------------------------------------------------------------------------
-// Per-object transform snapshot (used by TransformCommand)
-// ---------------------------------------------------------------------------
+/**
+ * @brief Per-object transform snapshot captured by TransformCommand.
+ *
+ * Records an object's identity and full local transform so a transform
+ * operation can be replayed or reverted.
+ */
 struct TransformState
 {
-    kString uuid;
-    kVec3   pos;
-    kQuat   rot;
-    kVec3   scale;
+    kString uuid;  ///< UUID of the object this snapshot belongs to.
+    kVec3   pos;   ///< Local position.
+    kQuat   rot;   ///< Local rotation.
+    kVec3   scale; ///< Local scale.
 };
 
-// ---------------------------------------------------------------------------
-// Base command interface
-// ---------------------------------------------------------------------------
+/**
+ * @brief Abstract base interface for all undoable editor commands.
+ *
+ * Implements the command pattern used by UndoRedoManager: every concrete
+ * command provides reversible undo() and redo() operations.
+ */
 struct ICommand
 {
     virtual ~ICommand() = default;
-    virtual void undo() = 0;
-    virtual void redo() = 0;
+    virtual void undo() = 0; ///< Revert the effect of this command.
+    virtual void redo() = 0; ///< Re-apply the effect of this command.
 };
 
-// ---------------------------------------------------------------------------
-// Undo / Redo manager
-// ---------------------------------------------------------------------------
+/**
+ * @brief Maintains the editor's undo and redo history.
+ *
+ * Owns two stacks of ICommand instances. Pushing a new command applies it as
+ * the latest action, clears the redo stack, and trims the oldest entries once
+ * the history exceeds MaxHistory.
+ */
 class UndoRedoManager
 {
 public:
-    static constexpr size_t MaxHistory = 100;
+    static constexpr size_t MaxHistory = 100; ///< Maximum number of retained commands.
 
-    void push(std::unique_ptr<ICommand> cmd); // clears redo stack, trims history
+    /**
+     * @brief Push a freshly executed command onto the undo stack.
+     *
+     * Clears the redo stack and trims the oldest history beyond MaxHistory.
+     * @param cmd Command to take ownership of and record.
+     */
+    void push(std::unique_ptr<ICommand> cmd);
+
+    /// @brief Undo the most recent command, moving it to the redo stack.
     void undo();
+    /// @brief Redo the most recently undone command, moving it back to the undo stack.
     void redo();
+
+    /// @brief Whether there is at least one command available to undo.
     bool canUndo() const { return !undoStack.empty(); }
+    /// @brief Whether there is at least one command available to redo.
     bool canRedo() const { return !redoStack.empty(); }
+    /// @brief Discard the entire undo and redo history.
     void clear()         { undoStack.clear(); redoStack.clear(); }
 
 private:
-    std::deque<std::unique_ptr<ICommand>> undoStack;
-    std::deque<std::unique_ptr<ICommand>> redoStack;
+    std::deque<std::unique_ptr<ICommand>> undoStack; ///< Executed commands available to undo.
+    std::deque<std::unique_ptr<ICommand>> redoStack; ///< Undone commands available to redo.
 };
 
-// ---------------------------------------------------------------------------
-// PropertyCommand — generic lambda pair, no Manager access needed
-// ---------------------------------------------------------------------------
+/**
+ * @brief Generic command driven by a pair of undo/redo lambdas.
+ *
+ * Useful for simple property edits that can be captured as closures without
+ * needing direct Manager access.
+ */
 struct PropertyCommand : ICommand
 {
-    std::function<void()> undoFn;
-    std::function<void()> redoFn;
+    std::function<void()> undoFn; ///< Callback invoked on undo().
+    std::function<void()> redoFn; ///< Callback invoked on redo().
 
+    /**
+     * @brief Construct from an undo and a redo callback.
+     * @param u Callback that reverts the change.
+     * @param r Callback that (re-)applies the change.
+     */
     PropertyCommand(std::function<void()> u, std::function<void()> r)
         : undoFn(std::move(u)), redoFn(std::move(r)) {}
 
-    void undo() override { undoFn(); }
-    void redo() override { redoFn(); }
+    void undo() override { undoFn(); } ///< Invoke the undo callback.
+    void redo() override { redoFn(); } ///< Invoke the redo callback.
 };
 
-// ---------------------------------------------------------------------------
-// TransformCommand — gizmo / inspector drag that may span several objects
-// ---------------------------------------------------------------------------
+/**
+ * @brief Undoable transform edit from a gizmo or inspector drag.
+ *
+ * Stores before/after transform snapshots for one or more objects so a
+ * multi-object transform can be reverted or replayed.
+ */
 struct TransformCommand : ICommand
 {
-    std::vector<TransformState> before;
-    std::vector<TransformState> after;
-    Manager *manager;
+    std::vector<TransformState> before; ///< Per-object transforms prior to the edit.
+    std::vector<TransformState> after;  ///< Per-object transforms after the edit.
+    Manager *manager;                   ///< Owning manager used to look up objects.
 
+    /**
+     * @brief Construct a transform command.
+     * @param mgr Manager used to resolve objects by UUID.
+     * @param b   Snapshots captured before the transform.
+     * @param a   Snapshots captured after the transform.
+     */
     TransformCommand(Manager *mgr,
                      std::vector<TransformState> b,
                      std::vector<TransformState> a)
         : manager(mgr), before(std::move(b)), after(std::move(a)) {}
 
-    void undo() override;
-    void redo() override;
+    void undo() override; ///< Restore the "before" transforms.
+    void redo() override; ///< Apply the "after" transforms.
 };
 
-// ---------------------------------------------------------------------------
-// DeleteCommand — stores detached objects so delete is undoable
-// ---------------------------------------------------------------------------
+/**
+ * @brief Record of a single deleted object retained for undo.
+ *
+ * Holds the detached object together with the scene and node type needed to
+ * re-attach it on undo.
+ */
 struct DeletedObjectInfo
 {
-    kObject  *object = nullptr;
-    kNodeType type   = NODE_TYPE_OBJECT;
-    kScene   *scene  = nullptr;
+    kObject  *object = nullptr;            ///< Detached object instance.
+    kNodeType type   = NODE_TYPE_OBJECT;   ///< Node type the object was registered as.
+    kScene   *scene  = nullptr;            ///< Scene the object belonged to.
 };
 
+/**
+ * @brief Undoable deletion of one or more objects.
+ *
+ * Detaches the deleted objects and keeps them alive so a redo/undo cycle can
+ * restore them, also remembering and restoring the prior selection state.
+ */
 struct DeleteCommand : ICommand
 {
-    std::vector<DeletedObjectInfo> deleted;
-    std::vector<kString>           selectionBefore;   // UUIDs before deletion
-    kObject                       *selectedObjBefore = nullptr;
-    Manager                       *manager;
-    bool                           ownsObjects = true; // true → destructor frees memory
+    std::vector<DeletedObjectInfo> deleted;            ///< Objects removed by this command.
+    std::vector<kString>           selectionBefore;    ///< UUIDs selected before deletion.
+    kObject                       *selectedObjBefore = nullptr; ///< Active object before deletion.
+    Manager                       *manager;            ///< Owning manager.
+    bool                           ownsObjects = true; ///< true → destructor frees detached objects.
 
+    /**
+     * @brief Construct a delete command.
+     * @param mgr          Owning manager.
+     * @param del          Objects being deleted, with restore metadata.
+     * @param selBefore    UUIDs of the selection prior to deletion.
+     * @param selObjBefore Active object prior to deletion.
+     */
     DeleteCommand(Manager                       *mgr,
                   std::vector<DeletedObjectInfo> del,
                   std::vector<kString>           selBefore,
@@ -125,148 +183,180 @@ struct DeleteCommand : ICommand
         , selectionBefore(std::move(selBefore))
         , selectedObjBefore(selObjBefore) {}
 
-    ~DeleteCommand() override;
-    void undo() override;
-    void redo() override;
+    ~DeleteCommand() override; ///< Frees detached objects when ownsObjects is true.
+    void undo() override;      ///< Re-attach the deleted objects and restore selection.
+    void redo() override;      ///< Re-detach (delete) the objects again.
 };
 
-// ---------------------------------------------------------------------------
-// ReparentCommand — undoable parent-change OR sibling-reorder
-//
-// The "next sibling" approach captures *what comes after* the moved object in
-// each parent's children list. When restoring state we insert the object
-// before that sibling (or append if the sibling is null), which sidesteps
-// fragile index math when other operations have shuffled siblings.
-// ---------------------------------------------------------------------------
+/**
+ * @brief Undoable parent change or sibling reorder of a single object.
+ *
+ * The "next sibling" approach captures what comes after the moved object in
+ * each parent's children list. When restoring state the object is inserted
+ * before that sibling (or appended if the sibling is null), which sidesteps
+ * fragile index math when other operations have shuffled siblings. Old/new
+ * local transforms are stored so the object's world placement is preserved.
+ */
 struct ReparentCommand : ICommand
 {
-    Manager *manager;
-    kString  objUuid;
+    Manager *manager; ///< Owning manager used to resolve objects.
+    kString  objUuid; ///< UUID of the object being moved.
 
-    kObject *oldParent       = nullptr;
-    kObject *oldNextSibling  = nullptr;
-    kVec3    oldLocalPos     = kVec3(0);
-    kQuat    oldLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
-    kVec3    oldLocalScale   = kVec3(1.0f);
+    kObject *oldParent       = nullptr; ///< Parent before the move.
+    kObject *oldNextSibling  = nullptr; ///< Sibling following the object before the move.
+    kVec3    oldLocalPos     = kVec3(0); ///< Local position before the move.
+    kQuat    oldLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Local rotation before the move.
+    kVec3    oldLocalScale   = kVec3(1.0f); ///< Local scale before the move.
 
-    kObject *newParent       = nullptr;
-    kObject *newNextSibling  = nullptr;
-    kVec3    newLocalPos     = kVec3(0);
-    kQuat    newLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
-    kVec3    newLocalScale   = kVec3(1.0f);
+    kObject *newParent       = nullptr; ///< Parent after the move.
+    kObject *newNextSibling  = nullptr; ///< Sibling following the object after the move.
+    kVec3    newLocalPos     = kVec3(0); ///< Local position after the move.
+    kQuat    newLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Local rotation after the move.
+    kVec3    newLocalScale   = kVec3(1.0f); ///< Local scale after the move.
 
-    void undo() override;
-    void redo() override;
+    void undo() override; ///< Restore the object to its old parent/order/transform.
+    void redo() override; ///< Re-apply the new parent/order/transform.
 };
 
-// ---------------------------------------------------------------------------
-// MaterialCommand — undoable material swap on a single object
-// ---------------------------------------------------------------------------
+/**
+ * @brief Undoable material swap on a single object.
+ *
+ * Stores both the material pointers and their asset UUIDs so the prior
+ * material can be reinstated.
+ */
 struct MaterialCommand : ICommand
 {
-    Manager   *manager;
-    kString    objUuid;
-    kMaterial *before = nullptr;
-    kMaterial *after  = nullptr;
+    Manager   *manager;          ///< Owning manager used to resolve the object.
+    kString    objUuid;          ///< UUID of the object whose material changes.
+    kMaterial *before = nullptr; ///< Material assigned before the swap.
+    kMaterial *after  = nullptr; ///< Material assigned after the swap.
+    kString    beforeUuid; ///< Object's material asset UUID before the swap.
+    kString    afterUuid;  ///< Object's material asset UUID after the swap.
 
-    void undo() override;
-    void redo() override;
+    void undo() override; ///< Reassign the "before" material.
+    void redo() override; ///< Reassign the "after" material.
 };
 
-// ---------------------------------------------------------------------------
-// InstantiateCommand — undoable spawn of a subtree into a scene
-//
-// Mirrors DeleteCommand: when undone, the subtree is detached and held in
-// memory so a redo can re-attach. The destructor reclaims memory if the
-// command is dropped while the subtree is still detached.
-// ---------------------------------------------------------------------------
+/**
+ * @brief Undoable spawn of a subtree into a scene.
+ *
+ * Mirrors DeleteCommand: when undone, the subtree is detached and held in
+ * memory so a redo can re-attach. The destructor reclaims memory if the
+ * command is dropped while the subtree is still detached.
+ */
 struct InstantiateCommand : ICommand
 {
-    Manager *manager;
-    kObject *root         = nullptr;
-    kObject *parent       = nullptr;
-    kObject *nextSibling  = nullptr;
-    kScene  *scene        = nullptr;
-    bool     attached     = true;   // current attachment state
-    bool     ownsSubtree  = false;  // true while the subtree is detached
+    Manager *manager;               ///< Owning manager.
+    kObject *root         = nullptr; ///< Root of the instantiated subtree.
+    kObject *parent       = nullptr; ///< Parent the subtree is attached under.
+    kObject *nextSibling  = nullptr; ///< Sibling the root is inserted before (null → append).
+    kScene  *scene        = nullptr; ///< Scene the subtree lives in.
+    bool     attached     = true;   ///< Current attachment state.
+    bool     ownsSubtree  = false;  ///< true while the subtree is detached (this command owns it).
 
-    ~InstantiateCommand() override;
-    void undo() override;
-    void redo() override;
+    ~InstantiateCommand() override; ///< Frees the subtree if still detached.
+    void undo() override;           ///< Detach the subtree from the scene.
+    void redo() override;           ///< Re-attach the subtree to the scene.
 };
 
-// ---------------------------------------------------------------------------
-// CreatePrefabCommand — undoable Create-Prefab-from-selection
-//
-// Captures every in-scene structural change (multi-select wrapper empty,
-// reparenting, position offsets, prefab_ref/template_uuid stamps) so undo
-// can revert them. The .prefab file written to disk is NOT deleted on undo.
-// ---------------------------------------------------------------------------
+/**
+ * @brief Undoable "Create Prefab from selection" operation.
+ *
+ * Captures every in-scene structural change (multi-select wrapper empty,
+ * reparenting, position offsets, prefab_ref/template_uuid stamps) so undo can
+ * revert them. The .prefab file written to disk is NOT deleted on undo.
+ */
 struct CreatePrefabCommand : ICommand
 {
+    /**
+     * @brief Records a child object's reparent and local-transform change.
+     *
+     * Used to revert the moves performed when wrapping a multi-select into the
+     * generated prefab root.
+     */
     struct ChildMove {
-        kString  objUuid;
-        kObject *oldParent       = nullptr;
-        kObject *oldNextSibling  = nullptr;
-        kVec3    oldLocalPos     = kVec3(0);
-        kQuat    oldLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
-        kVec3    oldLocalScale   = kVec3(1.0f);
-        kVec3    newLocalPos     = kVec3(0);
-        kQuat    newLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
-        kVec3    newLocalScale   = kVec3(1.0f);
+        kString  objUuid;        ///< UUID of the moved child.
+        kObject *oldParent       = nullptr; ///< Parent before the move.
+        kObject *oldNextSibling  = nullptr; ///< Following sibling before the move.
+        kVec3    oldLocalPos     = kVec3(0); ///< Local position before the move.
+        kQuat    oldLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Local rotation before the move.
+        kVec3    oldLocalScale   = kVec3(1.0f); ///< Local scale before the move.
+        kVec3    newLocalPos     = kVec3(0); ///< Local position after the move.
+        kQuat    newLocalRot     = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Local rotation after the move.
+        kVec3    newLocalScale   = kVec3(1.0f); ///< Local scale after the move.
     };
+    /**
+     * @brief Records the prefab reference / template UUID stamp on one object.
+     *
+     * Stores prior and new values so the prefab linkage can be removed on undo.
+     */
     struct StampChange {
-        kString objUuid;
-        kString oldPrefabRef;
-        kString oldTemplateUuid;
-        kString newPrefabRef;
-        kString newTemplateUuid;
+        kString objUuid;         ///< UUID of the stamped object.
+        kString oldPrefabRef;    ///< prefab_ref before stamping.
+        kString oldTemplateUuid; ///< template_uuid before stamping.
+        kString newPrefabRef;    ///< prefab_ref after stamping.
+        kString newTemplateUuid; ///< template_uuid after stamping.
     };
 
-    Manager *manager = nullptr;
+    Manager *manager = nullptr; ///< Owning manager.
 
-    // Multi-select: a fresh empty wrapper was created and attached to the scene.
-    // For single-select this stays nullptr.
+    /// @brief Wrapper empty created for multi-select; nullptr for single-select.
     kObject *createdEmpty       = nullptr;
-    kObject *createdEmptyParent = nullptr; // scene root unless overridden later
-    kVec3    createdEmptyPos    = kVec3(0);
+    kObject *createdEmptyParent = nullptr; ///< Parent of the wrapper (scene root unless overridden).
+    kVec3    createdEmptyPos    = kVec3(0); ///< World position assigned to the wrapper empty.
 
-    std::vector<ChildMove>   childMoves;   // empty for single-select
-    std::vector<StampChange> stamps;       // applies for both modes
+    std::vector<ChildMove>   childMoves;   ///< Child reparents performed (empty for single-select).
+    std::vector<StampChange> stamps;       ///< Prefab stamps applied (used in both modes).
 
-    void undo() override;
-    void redo() override;
+    void undo() override; ///< Revert wrapper creation, reparents, and stamps.
+    void redo() override; ///< Re-apply wrapper creation, reparents, and stamps.
 };
 
-// ---------------------------------------------------------------------------
-// UnpackPrefabCommand — undoable strip of prefab_ref / template_uuid
-// ---------------------------------------------------------------------------
+/**
+ * @brief Undoable strip of prefab_ref / template_uuid from objects.
+ *
+ * Records each object's prior prefab linkage so unpacking can be reversed.
+ */
 struct UnpackPrefabCommand : ICommand
 {
+    /**
+     * @brief Saved prefab linkage for one unpacked object.
+     */
     struct Entry {
-        kString objUuid;
-        kString prefabRef;
-        kString templateUuid;
+        kString objUuid;      ///< UUID of the unpacked object.
+        kString prefabRef;    ///< prefab_ref value removed by the unpack.
+        kString templateUuid; ///< template_uuid value removed by the unpack.
     };
 
-    Manager *manager = nullptr;
-    std::vector<Entry> entries;
+    Manager *manager = nullptr;    ///< Owning manager.
+    std::vector<Entry> entries;    ///< Per-object linkage to restore on undo.
 
-    void undo() override;
-    void redo() override;
+    void undo() override; ///< Restore the prefab_ref / template_uuid stamps.
+    void redo() override; ///< Strip the prefab_ref / template_uuid stamps.
 };
 
-// ---------------------------------------------------------------------------
-// SelectCommand — records a selection change for undo/redo
-// ---------------------------------------------------------------------------
+/**
+ * @brief Records a selection change so it can be undone and redone.
+ *
+ * Stores the selected UUID set and the active object both before and after the
+ * change.
+ */
 struct SelectCommand : ICommand
 {
-    std::vector<kString> before;
-    std::vector<kString> after;
-    kObject             *selectedObjBefore = nullptr;
-    kObject             *selectedObjAfter  = nullptr;
-    Manager             *manager;
+    std::vector<kString> before; ///< Selected UUIDs before the change.
+    std::vector<kString> after;  ///< Selected UUIDs after the change.
+    kObject             *selectedObjBefore = nullptr; ///< Active object before the change.
+    kObject             *selectedObjAfter  = nullptr; ///< Active object after the change.
+    Manager             *manager;                     ///< Owning manager.
 
+    /**
+     * @brief Construct a selection command.
+     * @param mgr  Owning manager.
+     * @param b    Selected UUIDs before the change.
+     * @param selB Active object before the change.
+     * @param a    Selected UUIDs after the change.
+     * @param selA Active object after the change.
+     */
     SelectCommand(Manager            *mgr,
                   std::vector<kString> b, kObject *selB,
                   std::vector<kString> a, kObject *selA)
@@ -274,8 +364,8 @@ struct SelectCommand : ICommand
         , before(std::move(b)), selectedObjBefore(selB)
         , after(std::move(a)),  selectedObjAfter(selA) {}
 
-    void undo() override;
-    void redo() override;
+    void undo() override; ///< Restore the "before" selection.
+    void redo() override; ///< Restore the "after" selection.
 };
 
 #endif // COMMANDS_H

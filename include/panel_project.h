@@ -21,111 +21,214 @@ namespace fs = std::filesystem;
 
 class Manager;
 
+/**
+ * @brief Editor panel that displays and manages the project's asset folder.
+ *
+ * Presents the on-disk asset hierarchy as a navigable tree and/or thumbnail
+ * grid, supporting selection, renaming, deletion, search filtering and
+ * double-click activation of files. Thumbnails are generated and cached per
+ * asset UUID through the associated kAssetManager.
+ */
 class PanelProject
 {
 	private:
-		ImTextureRef iconUp;
-		ImTextureRef iconAdd;
-		ImTextureRef iconMag;
+		ImTextureRef iconUp;   ///< Toolbar icon for navigating up one folder.
+		ImTextureRef iconAdd;  ///< Toolbar icon for the create/add menu.
+		ImTextureRef iconMag;  ///< Search (magnifier) icon.
 
-		ImTextureRef iconFolder;
-		ImTextureRef iconText;
-		ImTextureRef iconImage;
-		ImTextureRef iconScript;
-		ImTextureRef iconAudio;
-		ImTextureRef iconVideo;
-		ImTextureRef iconModel;
-		ImTextureRef iconPrefab;
-		ImTextureRef iconWorld;
-		ImTextureRef iconMaterial;
-		ImTextureRef iconLogic;
-		ImTextureRef iconShader;
-		ImTextureRef iconGui;
-		ImTextureRef iconOther;
+		ImTextureRef iconFolder;   ///< Default icon for folders.
+		ImTextureRef iconText;     ///< Icon for text/document assets.
+		ImTextureRef iconImage;    ///< Icon for image assets.
+		ImTextureRef iconScript;   ///< Icon for script assets.
+		ImTextureRef iconAudio;    ///< Icon for audio assets.
+		ImTextureRef iconVideo;    ///< Icon for video assets.
+		ImTextureRef iconModel;    ///< Icon for 3D model/mesh assets.
+		ImTextureRef iconPrefab;   ///< Icon for prefab assets.
+		ImTextureRef iconWorld;    ///< Icon for world/scene assets.
+		ImTextureRef iconMaterial; ///< Icon for material assets.
+		ImTextureRef iconLogic;    ///< Icon for logic/node-graph assets.
+		ImTextureRef iconShader;   ///< Icon for shader assets.
+		ImTextureRef iconGui;      ///< Icon for GUI/UI assets.
+		ImTextureRef iconOther;    ///< Fallback icon for unrecognised asset types.
 
-		char searchBuffer[128] = "";
+		char searchBuffer[128] = ""; ///< Backing buffer for the search/filter text field.
 
-		ImVec4 upTint = ImVec4(1, 1, 1, 1);
-		ImVec4 addTint = ImVec4(1, 1, 1, 1);
+		ImVec4 upTint = ImVec4(1, 1, 1, 1);  ///< Tint applied to the "up" toolbar button.
+		ImVec4 addTint = ImVec4(1, 1, 1, 1); ///< Tint applied to the "add" toolbar button.
 
-		ImTextureRef iconList;
-		ImTextureRef iconThumbnail;
+		ImTextureRef iconList;      ///< Icon for the list-view toggle.
+		ImTextureRef iconThumbnail; ///< Icon for the thumbnail-view toggle.
 
-		bool displayThumbnail = true;
+		bool displayThumbnail = true; ///< When true the thumbnail grid is shown; otherwise the list view.
 
+		/**
+		 * @brief A single entry (folder or file) in the project asset hierarchy.
+		 *
+		 * Used both for the side tree (folders only) and the thumbnail grid
+		 * (current folder contents). Owns its children via unique_ptr.
+		 */
 		struct Node
 		{
-			kString name;
-			bool isSelected = false;
-			std::vector<std::unique_ptr<Node>> children;
+			kString name;                              ///< Display name of the entry.
+			bool isSelected = false;                   ///< Whether this entry is currently selected.
+			std::vector<std::unique_ptr<Node>> children; ///< Owned child entries.
 
-			kString uuid;
-			ImTextureRef icon = nullptr;
-			int type = 0; // 0 - Folder, 1 - File
-			fs::path fullPath;
+			kString uuid;                ///< Asset UUID (empty for plain folders).
+			ImTextureRef icon = nullptr; ///< Icon used to render this entry.
+			int type = 0;                ///< Entry kind: 0 = Folder, 1 = File.
+			fs::path fullPath;           ///< Absolute filesystem path of the entry.
 
+			/**
+			 * @brief Constructs a node.
+			 * @param n Display name.
+			 * @param g Asset UUID (empty for folders).
+			 * @param i Icon texture reference.
+			 * @param t Entry kind (0 = Folder, 1 = File).
+			 */
 			Node(const kString& n, const kString& g, ImTextureRef i = nullptr, int t = 0) : name(n), uuid(g), icon(i), type(t) {}
 		};
 
-		Node rootTree;
-		Node rootThumbnail;
-		bool needRefreshList = false;
+		Node rootTree;             ///< Root of the folder tree shown in the side panel.
+		Node rootThumbnail;        ///< Root for the currently browsed folder's thumbnail contents.
+		bool needRefreshList = false; ///< Set when the on-disk view must be rebuilt on the next frame.
 
 		// Rename modal state.
-		bool     openRenamePopup = false;
-		fs::path renameTargetPath;
-		char     renameBuffer[256] = "";
+		bool     openRenamePopup = false; ///< Whether the rename modal should open this frame.
+		fs::path renameTargetPath;        ///< Filesystem path of the asset being renamed.
+		char     renameBuffer[256] = "";  ///< Backing buffer for the rename text field.
 
-		kAssetManager* assetManager = nullptr;
-		std::unordered_map<kString, std::pair<GLuint, ImTextureRef>> thumbnailCache;
+		kAssetManager* assetManager = nullptr; ///< Asset manager used to resolve and generate thumbnails.
+		std::unordered_map<kString, std::pair<GLuint, ImTextureRef>> thumbnailCache; ///< Cache of generated thumbnails keyed by asset UUID (GL texture + ImGui ref).
 
+		/**
+		 * @brief Returns the thumbnail icon for an asset, generating and caching it if needed.
+		 * @param uuid UUID of the asset whose thumbnail is requested.
+		 * @param defaultIcon Icon to fall back to when no thumbnail can be produced.
+		 * @return Texture reference to the asset's thumbnail or the supplied default.
+		 */
 		ImTextureRef getThumbnailIcon(const kString& uuid, ImTextureRef defaultIcon);
+
+		/** @brief Releases all cached thumbnail GL textures and empties the cache. */
 		void clearThumbnailCache();
+
+		/**
+		 * @brief Invalidates the cached thumbnail for a single asset so it is regenerated.
+		 * @param uuid UUID of the asset whose thumbnail should be discarded.
+		 */
 		void invalidateThumbnail(const kString& uuid);
 
 	public:
+		/**
+		 * @brief Constructs the project panel.
+		 * @param setGuiManager GUI manager used for rendering and icon loading.
+		 * @param setManager Owning editor manager providing shared editor state.
+		 * @param assetManager Asset manager backing asset resolution and thumbnails.
+		 */
 	    PanelProject(kGuiManager* setGuiManager, Manager* setManager, kAssetManager* assetManager);
 
+	    /** @brief Requests a rebuild of the asset views on the next frame. */
 	    void triggerRefresh() { needRefreshList = true; }
 
-	    // Called when a file is double-clicked; receives the full filesystem path
+	    /**
+	     * @brief Callback invoked when a file is double-clicked.
+	     *
+	     * Receives the full filesystem path of the activated file.
+	     */
 	    std::function<void(const std::string&)> onFileDoubleClicked;
 
-	    kString pendingSelectUuid;
+	    kString pendingSelectUuid; ///< UUID of an asset to select once the view is next refreshed.
 
+		/**
+		 * @brief Snapshot of the panel's current asset selection.
+		 *
+		 * Describes how many assets are selected and, for a single selection,
+		 * the details needed by other panels (e.g. the inspector).
+		 */
 		struct SelectedProjectAsset
 		{
-			int          count    = 0;      // 0=none, 1=single, >1=multi
-			kString      name;
-			kString      uuid;
-			kString      fileType;          // "mesh","image", etc. (empty for folders)
-			bool         isFolder = false;
-			ImTextureRef thumbnail = nullptr;
-			fs::path     metaPath;
+			int          count    = 0;      ///< Number of selected assets: 0 = none, 1 = single, >1 = multi.
+			kString      name;              ///< Name of the selected asset (single selection).
+			kString      uuid;              ///< UUID of the selected asset (single selection).
+			kString      fileType;          ///< Asset type string ("mesh", "image", ...); empty for folders.
+			bool         isFolder = false;  ///< Whether the single selection is a folder.
+			ImTextureRef thumbnail = nullptr; ///< Thumbnail of the selected asset.
+			fs::path     metaPath;          ///< Path to the asset's metadata file.
 		};
+
+		/**
+		 * @brief Returns a snapshot of the current selection.
+		 * @return Populated SelectedProjectAsset describing the active selection.
+		 */
 		SelectedProjectAsset getProjectSelection() const;
 
+		/**
+		 * @brief Recursively clears the selection flag on a node and its descendants.
+		 * @param root Subtree root to deselect.
+		 */
 		void deselectAll(Node& root);
+
+		/** @brief Clears the current asset selection across all views. */
 		void clearSelection();
 
+		/**
+		 * @brief Draws the full project panel contents (tree and thumbnail views).
+		 * @param rootTree Folder tree root to render.
+		 * @param rootThumbnail Current folder's thumbnail-grid root to render.
+		 * @param opened Pointer to the window's open state, toggled by the close button.
+		 */
 		void drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* opened);
+
+		/**
+		 * @brief Renders the project panel window.
+		 * @param opened Reference to the window's open state.
+		 */
 		void draw(bool& opened);
 
+		/** @brief Rebuilds the folder tree from the project's asset directory. */
 		void refreshTreeList();
+
+		/**
+		 * @brief Recursively draws a folder tree node and its children.
+		 * @param node Node to render.
+		 * @param rootTree Tree root, used for selection bookkeeping.
+		 * @param level Current indentation depth (0 for the root level).
+		 */
 		void drawTreeNode(Node& node, Node& rootTree, int level = 0);
+
+		/**
+		 * @brief Recursively populates a node's children from a filesystem path.
+		 * @param parent Node to populate.
+		 * @param fullPath Directory on disk to scan.
+		 */
 		void populateTree(Node& parent, const fs::path& fullPath);
 
+		/** @brief Rebuilds the thumbnail grid for the currently browsed folder. */
 		void refreshThumbnailList();
+
+		/**
+		 * @brief Draws the thumbnail grid for the contents of a directory node.
+		 * @param currentDir Directory node whose contents are rendered.
+		 */
 		void drawThumbnailNode(const Node& currentDir);
+
+		/** @brief Draws the breadcrumb navigation bar for the current folder path. */
 		void drawBreadcrumb();
+
+		/** @brief Deletes the currently selected assets from disk and refreshes the views. */
 		void executeDeleteSelected();
 
-		// Begins a rename for the given asset, then renders the modal.
+		/**
+		 * @brief Begins a rename operation for the given asset and opens the rename modal.
+		 * @param path Filesystem path of the asset to rename.
+		 * @param name Current name pre-filled into the rename field.
+		 */
 		void beginRename(const fs::path& path, const kString& name);
+
+		/** @brief Renders the rename modal dialog and applies the rename on confirmation. */
 		void drawRenameModal();
 
-		Manager* manager;
-		kGuiManager* gui;
+		Manager* manager;  ///< Owning editor manager providing shared editor state.
+		kGuiManager* gui;  ///< GUI manager used for rendering and icon loading.
 };
 
 #endif

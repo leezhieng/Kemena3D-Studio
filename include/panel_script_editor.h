@@ -26,6 +26,11 @@ class PanelScriptEditor
 public:
     bool focused = false; ///< Set each draw() — used by main.cpp's Ctrl+S routing.
 
+    /**
+     * @brief Constructs the editor and starts with an empty graph.
+     * @param setGui     GUI manager used for ImGui rendering context.
+     * @param setManager Studio manager (project paths, script build pipeline).
+     */
     PanelScriptEditor(kGuiManager *setGui, Manager *setManager);
 
     /** @brief Draws the panel; @p isOpened is cleared when the window closes. */
@@ -38,24 +43,85 @@ public:
     void saveCurrent() { saveGraph(); }
 
 private:
+    /** @brief Resets to a fresh, untitled graph with a new UUID. */
     void newGraph();
+
+    /**
+     * @brief Loads and parses a @c .logic file into the current graph.
+     * @param path Filesystem path to the @c .logic file.
+     * @return @c true on success; @c false if the file cannot be opened/parsed.
+     */
     bool loadGraph(const std::string &path);
-    bool saveGraph();    ///< Writes .logic + regenerates .as; prompts if untitled.
+
+    /**
+     * @brief Writes .logic + regenerates .as; prompts if untitled.
+     * @return @c true if the graph was saved.
+     */
+    bool saveGraph();
+
+    /**
+     * @brief Prompts for a destination and saves the graph under a new path.
+     * @return @c true if a path was chosen and the save succeeded.
+     */
     bool saveGraphAs();
-    void regenerateScript(); ///< Compiles the graph and writes the generated .as.
+
+    /** @brief Compiles the graph and writes the generated .as. */
+    void regenerateScript();
 
     // Canvas <-> screen coordinate mapping (pan only; zoom is fixed at 1:1).
+
+    /**
+     * @brief Maps a canvas-space point to screen-space (applies pan offset).
+     * @param canvasPos Point in canvas coordinates.
+     * @param origin    Screen position of the canvas top-left.
+     * @return The corresponding screen-space point.
+     */
     ImVec2 canvasToScreen(ImVec2 canvasPos, ImVec2 origin) const;
+
+    /**
+     * @brief Maps a screen-space point back to canvas-space (removes pan offset).
+     * @param screenPos Point in screen coordinates.
+     * @param origin    Screen position of the canvas top-left.
+     * @return The corresponding canvas-space point.
+     */
     ImVec2 screenToCanvas(ImVec2 screenPos, ImVec2 origin) const;
 
+    /** @brief Draws the top toolbar (New/Open/Save buttons and status line). */
     void drawToolbar();
+
+    /** @brief Draws the side panel listing the graph's variables. */
     void drawVariablesPanel();
+
+    /** @brief Draws the pannable node-graph canvas and handles its interactions. */
     void drawCanvas();
+
+    /**
+     * @brief Draws a single node with its header, pins and payload rows.
+     * @param dl     Draw list to render into.
+     * @param node   Node to draw (mutated for drag/selection state).
+     * @param origin Screen position of the canvas top-left.
+     */
     void drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin);
+
+    /**
+     * @brief Draws the bezier links connecting node pins.
+     * @param dl Draw list to render into.
+     */
     void drawLinks(ImDrawList *dl);
+
+    /**
+     * @brief Draws the right-click "Add Node" context menu.
+     * @param canvasSpawnPos Canvas-space position where a new node is placed.
+     */
     void drawAddNodeMenu(ImVec2 canvasSpawnPos);
 
-    // Attempts to connect two pins; silently ignores invalid pairings.
+    /**
+     * @brief Attempts to connect two pins; silently ignores invalid pairings.
+     * @param nodeA Source node id.
+     * @param pinA  Source pin index.
+     * @param nodeB Destination node id.
+     * @param pinB  Destination pin index.
+     */
     void tryConnect(int nodeA, int pinA, int nodeB, int pinB);
 
     kGuiManager *gui     = nullptr;
