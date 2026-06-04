@@ -262,14 +262,28 @@ public:
 
     // --- Asset creation -----------------------------------------------------
 
+    /**
+     * @brief Marks a just-created asset file to be selected in the project panel.
+     *
+     * Resolves the file's project UUID (assigned by the preceding asset scan) and
+     * stores it as the project panel's pending selection, then requests a refresh.
+     * Call after checkAssetChange() so the file is already tracked.
+     * @param filePath Absolute path of the newly created asset file.
+     */
+    void selectProjectAssetByPath(const fs::path &filePath);
+
     /** @brief Creates a new material (.mat) asset in the current folder. */
     void createNewMaterial();
 
     /** @brief Creates a new folder in the current project directory. */
     void createNewFolder();
 
-    /** @brief Creates a new shader asset in the current folder. */
+    /** @brief Creates a new shader asset (visual node graph) in the current folder. */
     void createNewShader();
+
+    /** @brief Creates a new hand-written raw shader (.glsl) seeded with a
+     *         working unlit/textured template and `// @var` annotations. */
+    void createNewRawShader();
 
     /** @brief Creates a new AngelScript (.as) script asset in the current folder. */
     void createNewScript();
@@ -488,6 +502,61 @@ public:
                                const kString &materialUuid = "");
 
     /**
+     * @brief Builds a runtime kMaterial from a .mat JSON document.
+     *
+     * Resolves the shader, parses its `// @var` annotations, and sets each
+     * declared parameter (scalars/vectors as generic material params; samplers
+     * by loading the referenced texture asset). This is the single source of
+     * truth used by the inspector preview, object assignment, and thumbnails.
+     *
+     * @param matJson Parsed .mat document.
+     * @return A new kMaterial owned by the asset manager, or nullptr on failure.
+     */
+    kMaterial *buildMaterialFromJson(const nlohmann::json &matJson);
+
+    /**
+     * @brief Loads (and caches) a project texture asset by its UUID.
+     * @param textureUuid Image asset UUID.
+     * @param uniformName Sampler uniform name to tag the texture with.
+     * @return The loaded 2D texture, or nullptr if the asset is missing.
+     */
+    kTexture2D *getProjectTexture(const kString &textureUuid, const kString &uniformName);
+
+    /**
+     * @brief Re-imports an image asset using its current .meta import settings.
+     *
+     * Reads the per-texture settings (size, compression, alpha, sRGB, mipmaps)
+     * from Library/Metadata/<uuid>.json, regenerates Library/ImportedAssets/
+     * <uuid>.dds, evicts the cached GPU texture and rebuilds every object's
+     * material so the change is visible in the scene immediately.
+     * @param textureUuid Image asset UUID.
+     * @return True if the texture was re-imported, false if the asset is missing
+     *         or conversion failed.
+     */
+    bool reimportTexture(const kString &textureUuid);
+
+    /**
+     * @brief Compiles (and caches) a hand-written raw shader asset by UUID.
+     *
+     * Reads the `.glsl`/`.hlsl` file from Assets/, compiles it, and caches the
+     * result. The cache is cleared by checkAssetChange so edits are picked up.
+     * @param shaderUuid Raw shader asset UUID.
+     * @return The compiled shader, or nullptr on failure.
+     */
+    kShader *getRawShader(const kString &shaderUuid);
+
+    /**
+     * @brief Returns the combined shader source backing a material.
+     *
+     * For a built-in shader this is the embedded resource text; for a custom
+     * material it is the referenced raw shader file. Used to parse `// @var`
+     * annotations for the inspector.
+     * @param matJson Parsed .mat document.
+     * @return Combined shader source, or empty if unavailable.
+     */
+    kString getMaterialShaderSource(const nlohmann::json &matJson);
+
+    /**
      * @brief Resets @p obj to a fresh default material and clears its material UUID.
      *
      * Used when the inspector's material picker is set to "None" so the object
@@ -542,6 +611,14 @@ public:
     kObject                      *matPreviewObject = nullptr; ///< Object currently under a hovering material drop.
     std::vector<MaterialSnapshot> matPreviewSnapshot;         ///< Subtree materials before the preview, for restore-on-cancel.
     kString                       matPreviewSourceUuid;       ///< UUID of the .mat asset being previewed.
+
+    // Cache of loaded project textures, keyed by image-asset UUID, so building
+    // materials doesn't reload/leak GPU textures on every edit.
+    std::unordered_map<kString, kTexture2D *> textureCache;
+
+    // Cache of compiled raw shader assets, keyed by shader-asset UUID. Cleared
+    // by checkAssetChange so saving an edited .glsl recompiles it.
+    std::unordered_map<kString, kShader *> shaderCache;
 
     // --- Drag-hover highlight ----------------------------------------------
     // While any drag-and-drop is over the World viewport, the panel records

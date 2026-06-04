@@ -86,3 +86,4 @@ GIZMO_POINT_LIGHT RCDATA "res/textures/gizmo/point_light.png"
 GIZMO_SPOT_LIGHT RCDATA "res/textures/gizmo/spot_light.png"
 GIZMO_SUN_LIGHT RCDATA "res/textures/gizmo/sun_light.png"
 GIZMO_CAMERA RCDATA "res/textures/gizmo/camera.png"
+// touch to force shader re-embed

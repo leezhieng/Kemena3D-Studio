@@ -133,7 +133,8 @@ struct Material
     float  shininess;
     float  metallic;
     float  roughness;
-    float2 _pad3;
+    float  glossiness;
+    float  _pad3;
 };
 
 struct SunLight
@@ -182,8 +183,9 @@ cbuffer PerMaterial : register(b1)
     uint     has_albedoMap;
     uint     has_normalMap;
     uint     has_specularMap;
+    uint     has_glossinessMap;
     uint     has_emissiveMap;
-    float4   _matFlagPad;
+    uint3    _matFlagPad;
 };
 
 cbuffer PerScene : register(b2)
@@ -209,23 +211,24 @@ Texture2D    normalMap      : register(t1);
 Texture2D    specularMap    : register(t2);
 Texture2D    emissiveMap    : register(t3);
 TextureCube  skyboxMap      : register(t4);
+Texture2D    glossinessMap  : register(t5);
 SamplerState defaultSampler : register(s0);
 
-float3 calcSunLight(SunLight light, float3 norm, float3 vdir, float3 specTex)
+float3 calcSunLight(SunLight light, float3 norm, float3 vdir, float3 specTex, float shininess)
 {
     float3 ldir  = normalize(-light.direction);
     float  diff  = max(dot(norm, ldir), 0.0);
-    float  shine = max(material.shininess, 1.0);
+    float  shine = max(shininess, 1.0);
     float  spec  = pow(max(dot(vdir, reflect(-ldir, norm)), 0.001), shine);
     return (light.diffuse * material.diffuse * diff +
             light.specular * material.specular * spec * specTex) * light.power;
 }
 
-float3 calcPointLight(PointLight light, float3 norm, float3 fragPos, float3 vdir, float3 specTex)
+float3 calcPointLight(PointLight light, float3 norm, float3 fragPos, float3 vdir, float3 specTex, float shininess)
 {
     float3 ldir  = normalize(light.position - fragPos);
     float  diff  = max(dot(norm, ldir), 0.0);
-    float  shine = max(material.shininess, 1.0);
+    float  shine = max(shininess, 1.0);
     float  spec  = pow(max(dot(vdir, reflect(-ldir, norm)), 0.001), shine);
     float  dist  = length(light.position - fragPos);
     float  att   = light.power / (light.constant + light.linear * dist + light.quadratic * dist * dist);
@@ -233,11 +236,11 @@ float3 calcPointLight(PointLight light, float3 norm, float3 fragPos, float3 vdir
             light.specular * material.specular * spec * specTex) * att;
 }
 
-float3 calcSpotLight(SpotLight light, float3 norm, float3 fragPos, float3 vdir, float3 specTex)
+float3 calcSpotLight(SpotLight light, float3 norm, float3 fragPos, float3 vdir, float3 specTex, float shininess)
 {
     float3 ldir   = normalize(light.position - fragPos);
     float  diff   = max(dot(norm, ldir), 0.0);
-    float  shine  = max(material.shininess, 1.0);
+    float  shine  = max(shininess, 1.0);
     float  spec   = pow(max(dot(vdir, reflect(-ldir, norm)), 0.001), shine);
     float  theta  = dot(ldir, normalize(-light.direction));
     float  eps    = light.cutOff - light.outerCutOff;
@@ -254,8 +257,12 @@ float4 PSMain(VSOutput input) : SV_Target
 
     float4 diffuseTex  = has_albedoMap   ? albedoMap.Sample(defaultSampler,   uv) : float4(1, 1, 1, 1);
     float4 normalTex   = has_normalMap   ? normalMap.Sample(defaultSampler,   uv) : float4(0.5, 0.5, 1.0, 1.0);
-    float4 specularTex = has_specularMap ? specularMap.Sample(defaultSampler, uv) : float4(0, 0, 0, 0);
+    float4 specularTex = has_specularMap ? specularMap.Sample(defaultSampler, uv) : float4(1, 1, 1, 1);
     float4 emissiveTex = has_emissiveMap ? emissiveMap.Sample(defaultSampler, uv) : float4(0, 0, 0, 0);
+
+    // Glossiness scales specular power; the optional map modulates it per-pixel (R).
+    float  gloss     = material.glossiness * (has_glossinessMap ? glossinessMap.Sample(defaultSampler, uv).r : 1.0);
+    float  shininess = material.shininess * gloss;
 
     float3 Tn = normalize(input.T);
     float3 Bn = normalize(input.B);
@@ -272,9 +279,9 @@ float4 PSMain(VSOutput input) : SV_Target
     if (skyboxAmbientEnabled)
         result += skyboxMap.Sample(defaultSampler, norm).rgb * skyboxAmbientStrength * material.ambient;
 
-    for (int i = 0; i < sunLightNum;   i++) result += calcSunLight  (sunLights[i],   norm, vdir, specularTex.xyz);
-    for (int i = 0; i < pointLightNum; i++) result += calcPointLight(pointLights[i], norm, input.worldPos, vdir, specularTex.xyz);
-    for (int i = 0; i < spotLightNum;  i++) result += calcSpotLight (spotLights[i],  norm, input.worldPos, vdir, specularTex.xyz);
+    for (int i = 0; i < sunLightNum;   i++) result += calcSunLight  (sunLights[i],   norm, vdir, specularTex.xyz, shininess);
+    for (int i = 0; i < pointLightNum; i++) result += calcPointLight(pointLights[i], norm, input.worldPos, vdir, specularTex.xyz, shininess);
+    for (int i = 0; i < spotLightNum;  i++) result += calcSpotLight (spotLights[i],  norm, input.worldPos, vdir, specularTex.xyz, shininess);
 
     return float4(clamp(result, 0.0, 1.0), 1.0) * diffuseTex + emissiveTex;
 }

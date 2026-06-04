@@ -1,4 +1,5 @@
 #include "manager.h"
+#include "util.h"
 
 #include <stb/stb_image.h>
 #include <stb/stb_image_write.h>
@@ -437,6 +438,11 @@ void Manager::checkAssetChange()
 		bool anyChanges = false;
 		fileMap.clear();
 		importTasks.clear();
+		// Drop cached raw shaders / textures so edited assets are recompiled /
+		// reloaded on next material build. (Old entries may still be referenced
+		// by live materials, so we don't free them here — just stop reusing them.)
+		shaderCache.clear();
+		textureCache.clear();
 		fs::path libraryFolder = projectPath / "Library";
 		fs::path assetsJsonFile = libraryFolder / "assets.json";
 		fs::path assetsPath = projectPath / "Assets";
@@ -865,6 +871,8 @@ kString Manager::checkAssetType(const fs::path &p)
 		return "world";
 	else if (ext == ".mat")
 		return "material";
+	else if (ext == ".glsl" || ext == ".hlsl")
+		return "shader"; // hand-written raw shader (with `// @var` annotations)
 
 	return "unknown";     // Unknown
 }
@@ -1081,51 +1089,21 @@ void Manager::processThumbnailQueue(PanelConsole *console)
 		if (!sphere) return;
 		sphere->calculateModelMatrix();
 
-		// Cached built-in shaders for material thumbnails (loaded once, owned by asset manager)
-		static kShader *s_shaderUnlit = nullptr;
-		static kShader *s_shaderPhong = nullptr;
-		static kShader *s_shaderPbr   = nullptr;
-		static kShader *s_shaderPink  = nullptr;
-
-		kAssetManager *am = getAssetManager();
-		kString shaderName = matJson.value("shader", "Phong");
-		kShader *shader = nullptr;
-
-		if (shaderName == "Unlit" && am) {
-			if (!s_shaderUnlit) s_shaderUnlit = am->loadGlslFromResource("SHADER_MESH_FLAT");
-			shader = s_shaderUnlit;
-		} else if (shaderName == "Phong" && am) {
-			if (!s_shaderPhong) s_shaderPhong = am->loadGlslFromResource("SHADER_MESH_PHONG");
-			shader = s_shaderPhong;
-		} else if (shaderName == "PBR" && am) {
-			if (!s_shaderPbr) s_shaderPbr = am->loadGlslFromResource("SHADER_MESH_PBR");
-			shader = s_shaderPbr;
-		}
-
-		// "Custom" or null/invalid → pink fallback
-		if (!shader || shader->getShaderProgram() == 0) {
-			if (!s_shaderPink) {
+		// Build the material exactly like the inspector preview / scene does, so
+		// the thumbnail reflects the @var parameters. Falls back to a pink error
+		// shader if the material's shader can't be built.
+		kMaterial *mat = buildMaterialFromJson(matJson);
+		if (!mat)
+		{
+			static kShader *s_shaderPink = nullptr;
+			if (!s_shaderPink)
+			{
 				s_shaderPink = new kShader();
 				s_shaderPink->loadShadersCode(kPinkVS, kPinkFS);
 			}
-			shader = s_shaderPink;
+			mat = new kMaterial();
+			mat->setShader(s_shaderPink);
 		}
-
-		kMaterial *mat = new kMaterial();
-		mat->setShader(shader);
-
-		// Apply colour properties from JSON
-		auto readVec3 = [&](const char *key, kVec3 def) -> kVec3 {
-			if (matJson.contains(key) && matJson[key].is_array() && matJson[key].size() >= 3)
-				return kVec3(matJson[key][0].get<float>(), matJson[key][1].get<float>(), matJson[key][2].get<float>());
-			return def;
-		};
-		mat->setDiffuseColor (readVec3("diffuse",  kVec3(1.0f)));
-		mat->setAmbientColor (readVec3("ambient",  kVec3(1.0f)));
-		mat->setSpecularColor(readVec3("specular", kVec3(1.0f)));
-		mat->setShininess(matJson.value("shininess", 32.0f));
-		mat->setMetallic (matJson.value("metallic",  0.0f));
-		mat->setRoughness(matJson.value("roughness", 0.5f));
 
 		sphere->setMaterial(mat);
 
@@ -1392,6 +1370,7 @@ static void applyLightIcon(kLight *light, kAssetManager *am, const char *gizmoRe
 {
     kShader    *shader = am->loadGlslFromResource("SHADER_ICON");
     kMaterial  *mat    = am->createMaterial(shader);
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND); // blend so the icon's drop shadow / soft edges show
     kTexture2D *tex    = am->loadTexture2DFromResource(gizmoResource, "albedoMap",
                                                         kTextureFormat::TEX_FORMAT_RGBA);
     mat->addTexture(tex);
@@ -1405,6 +1384,7 @@ static void applyCameraIcon(kCamera *cam, kAssetManager *am)
 {
     kShader    *shader = am->loadGlslFromResource("SHADER_ICON");
     kMaterial  *mat    = am->createMaterial(shader);
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND); // blend so the icon's drop shadow / soft edges show
     kTexture2D *tex    = am->loadTexture2DFromResource("GIZMO_CAMERA", "albedoMap",
                                                         kTextureFormat::TEX_FORMAT_RGBA);
     mat->addTexture(tex);
@@ -1976,6 +1956,19 @@ bool Manager::exportGame(const ExportSettings &s)
 // Create New Material asset file
 // ---------------------------------------------------------------------------
 
+void Manager::selectProjectAssetByPath(const fs::path &filePath)
+{
+    if (!panelProject) return;
+    std::error_code ec;
+    kString rel = fs::relative(filePath, projectPath / "Assets", ec).generic_string();
+    auto it = uuidMap.find(rel);
+    if (it != uuidMap.end())
+    {
+        panelProject->pendingSelectUuid = it->second;
+        panelProject->triggerRefresh();
+    }
+}
+
 void Manager::createNewMaterial()
 {
     if (!projectOpened) return;
@@ -1999,15 +1992,18 @@ void Manager::createNewMaterial()
     mat["diffuse"]   = { 1.0f, 1.0f, 1.0f };
     mat["ambient"]   = { 1.0f, 1.0f, 1.0f };
     mat["specular"]  = { 1.0f, 1.0f, 1.0f };
-    mat["shininess"] = 32.0f;
-    mat["metallic"]  = 0.0f;
-    mat["roughness"] = 0.5f;
-    mat["uv_tiling"] = { 1.0f, 1.0f };
+    mat["shininess"]  = 32.0f;
+    mat["metallic"]   = 0.0f;
+    mat["roughness"]  = 0.5f;
+    mat["glossiness"] = 1.0f;
+    mat["uv_tiling"]  = { 1.0f, 1.0f };
     mat["transparent"]  = 0;
     mat["single_sided"] = true;
     mat["cull_back"]    = true;
     mat["texture_albedo"]             = "";
     mat["texture_normal"]             = "";
+    mat["texture_specular"]           = "";
+    mat["texture_glossiness"]         = "";
     mat["texture_metallic_roughness"] = "";
     mat["texture_ao"]                 = "";
     mat["texture_emissive"]           = "";
@@ -2022,6 +2018,66 @@ void Manager::createNewMaterial()
     f.close();
 
     checkAssetChange();
+    selectProjectAssetByPath(filePath);
+}
+
+void Manager::createNewRawShader()
+{
+    if (!projectOpened) return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Raw Shader";
+    fs::path filePath = dir / (baseName + ".glsl");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".glsl");
+
+    // A working unlit, textured template. The `// @var` lines tell the material
+    // inspector which uniforms to expose (and which control to draw).
+    static const char *kTemplate =
+        "// --- VERTEX ---\n"
+        "#version 330 core\n"
+        "layout(location = 0) in vec3 vertexPosition;\n"
+        "layout(location = 2) in vec2 texCoord;\n"
+        "uniform mat4 modelMatrix;\n"
+        "uniform mat4 viewMatrix;\n"
+        "uniform mat4 projectionMatrix;\n"
+        "out vec2 texCoordFrag;\n"
+        "void main()\n"
+        "{\n"
+        "    texCoordFrag = texCoord;\n"
+        "    gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(vertexPosition, 1.0);\n"
+        "}\n"
+        "\n"
+        "// --- FRAGMENT ---\n"
+        "#version 330 core\n"
+        "in vec2 texCoordFrag;\n"
+        "out vec4 fragColor;\n"
+        "\n"
+        "// Material parameters exposed to the inspector:\n"
+        "// @var vec3      tint      Tint\n"
+        "// @var sampler2D albedoMap Albedo\n"
+        "uniform vec3      tint;\n"
+        "uniform sampler2D albedoMap;\n"
+        "uniform bool      has_albedoMap;\n"
+        "\n"
+        "void main()\n"
+        "{\n"
+        "    vec4 base = has_albedoMap ? texture(albedoMap, texCoordFrag) : vec4(1.0);\n"
+        "    fragColor = vec4(tint, 1.0) * base;\n"
+        "}\n";
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create shader file: " << filePath << "\n";
+        return;
+    }
+    f << kTemplate;
+    f.close();
+
+    checkAssetChange();
+    selectProjectAssetByPath(filePath);
 }
 
 void Manager::createNewFolder()
@@ -2043,6 +2099,14 @@ void Manager::createNewFolder()
         return;
     }
     checkAssetChange();
+
+    // Select the new folder. Folders aren't tracked in fileMap/uuidMap; their
+    // view node UUID is "Folder_<name>", which is what pendingSelectUuid matches.
+    if (panelProject)
+    {
+        panelProject->pendingSelectUuid = "Folder_" + folderPath.filename().string();
+        panelProject->triggerRefresh();
+    }
 }
 
 void Manager::createNewShader()
@@ -2072,6 +2136,7 @@ void Manager::createNewShader()
     f.close();
 
     checkAssetChange();
+    selectProjectAssetByPath(filePath);
 }
 
 void Manager::createNewScript()
@@ -2102,6 +2167,7 @@ void Manager::createNewScript()
     f.close();
 
     checkAssetChange();
+    selectProjectAssetByPath(filePath);
 }
 
 void Manager::createNewLogicGraph()
@@ -2131,6 +2197,7 @@ void Manager::createNewLogicGraph()
     f.close();
 
     checkAssetChange();
+    selectProjectAssetByPath(filePath);
 }
 
 bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
@@ -2166,9 +2233,44 @@ bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
         return false;
     }
 
-    // The file's content — including its embedded UUID — is untouched; only
-    // the path changed. checkAssetChange() refreshes Manager::fileMap so the
-    // new location is the one resolved by findAssetPathByUuid().
+    // Carry the asset's UUID to its new path in assets.json. Without this,
+    // checkAssetChange() (which keys the registry by path) would treat the moved
+    // file as brand new, assign a fresh UUID, and orphan the old one — breaking
+    // every material/reference that points at the original UUID.
+    {
+        fs::path assetsPath     = projectPath / "Assets";
+        fs::path assetsJsonFile = projectPath / "Library" / "assets.json";
+        kString  oldRel = fs::relative(srcPath, assetsPath, ec).generic_string();
+        kString  newRel = fs::relative(newPath, assetsPath, ec).generic_string();
+        if (!oldRel.empty() && !newRel.empty() && fs::exists(assetsJsonFile))
+        {
+            try
+            {
+                nlohmann::json j;
+                { std::ifstream ifs(assetsJsonFile); ifs >> j; }
+                if (j.contains("files") && j["files"].is_array())
+                {
+                    for (auto& entry : j["files"])
+                    {
+                        if (entry.value("name", std::string()) == oldRel)
+                        {
+                            entry["name"] = newRel; // same uuid/checksum/type
+                            break;
+                        }
+                    }
+                    std::ofstream ofs(assetsJsonFile);
+                    ofs << j.dump(4);
+                }
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << "Move: failed to update assets.json (" << e.what() << ")\n";
+            }
+        }
+    }
+
+    // Rebuild Manager::fileMap from the patched assets.json. The moved file now
+    // matches an existing path+checksum, so no re-import and the UUID is kept.
     checkAssetChange();
     return true;
 }
@@ -2461,10 +2563,29 @@ static void applyLightIconLoad(kLight *light, kAssetManager *am, const char *giz
 {
     kShader    *shader = am->loadGlslFromResource("SHADER_ICON");
     kMaterial  *mat    = am->createMaterial(shader);
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND); // blend so the icon's drop shadow / soft edges show
     kTexture2D *tex    = am->loadTexture2DFromResource(gizmoResource, "albedoMap",
                                                         kTextureFormat::TEX_FORMAT_RGBA);
     mat->addTexture(tex);
     light->setMaterial(mat);
+}
+
+// Resolve an import-child sub-mesh by the index-path produced by
+// kObject::serialize (collectSubmeshMaterials). Mirrors that traversal: count
+// only import-child siblings, descend per dotted segment.
+static kObject* resolveSubmeshByPath(kObject *node, const std::vector<int> &path, size_t depth)
+{
+    if (!node || depth >= path.size()) return nullptr;
+    int idx = 0;
+    for (kObject *c : node->getChildren())
+    {
+        if (!c->getImportChild()) continue;
+        if (idx == path[depth])
+            return (depth + 1 == path.size()) ? c
+                                              : resolveSubmeshByPath(c, path, depth + 1);
+        ++idx;
+    }
+    return nullptr;
 }
 
 static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world,
@@ -2512,7 +2633,13 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
 
         kMesh *mesh = nullptr;
         if (!meshPath.empty() && fs::exists(meshPath))
+        {
             mesh = am->loadMesh(meshPath.string());
+            // Give the model (and its sub-meshes) the default material so it is
+            // never invisible after a load. A stored material_uuid, if any, is
+            // re-applied afterwards by reapplyStoredMaterials and overrides this.
+            if (mesh && am) applyDefaultMaterial(mesh, am);
+        }
 
         // Procedurally-generated primitive (cube / sphere / etc.) — used by
         // res/default.world to seed a startup scene without shipping a model
@@ -2683,6 +2810,28 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         // (which has the fileMap needed to resolve the UUID to a .mat path).
         if (obj.contains("material_uuid"))
             result->setMaterialUuid(obj["material_uuid"].get<std::string>());
+
+        // Per-sub-mesh material overrides for import-derived sub-meshes. Set the
+        // UUID on each resolved sub-mesh; reapplyStoredMaterials (run after the
+        // full load) recurses into import-children and builds the materials.
+        if (obj.contains("submesh_materials") && obj["submesh_materials"].is_array())
+        {
+            for (const json &sm : obj["submesh_materials"])
+            {
+                std::string ps = sm.value("path", std::string(""));
+                std::string mu = sm.value("material_uuid", std::string(""));
+                if (ps.empty() || mu.empty()) continue;
+
+                std::vector<int> path;
+                std::stringstream ss(ps);
+                std::string seg;
+                while (std::getline(ss, seg, '.'))
+                    if (!seg.empty()) path.push_back(std::stoi(seg));
+
+                if (kObject *sub = resolveSubmeshByPath(result, path, 0))
+                    sub->setMaterialUuid(mu);
+            }
+        }
 
         // Physics body descriptor — fields mirror kPhysicsObjectDesc; missing
         // fields fall back to descriptor defaults.
@@ -2856,6 +3005,11 @@ void Manager::loadWorld(const kString &path)
         scene->setShadowSoftness(sceneJson.value("shadow_softness", 1.5f));
         scene->setSkyboxAmbientEnabled(sceneJson.value("skybox_ambient_enabled", false));
         scene->setSkyboxAmbientStrength(sceneJson.value("skybox_ambient_strength", 1.0f));
+
+        // Ensure every loaded scene has the default skybox so the editor view is
+        // never sky-less (the .world doesn't yet persist a custom skybox).
+        if (scene->getSkyboxMaterial() == nullptr)
+            applyDefaultSkybox(scene);
 
         if (sceneJson.contains("objects") && sceneJson["objects"].is_array())
         {
@@ -4099,6 +4253,283 @@ void Manager::unpackPrefabInstance(kObject *instanceRoot)
     undoRedo.push(std::move(cmd));
 }
 
+kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString &uniformName)
+{
+    if (textureUuid.empty()) return nullptr;
+    auto cit = textureCache.find(textureUuid);
+    if (cit != textureCache.end())
+        return cit->second;
+
+    kAssetManager *am = getAssetManager();
+    if (!am) return nullptr;
+
+    kTexture2D *tex = nullptr;
+    auto fit = fileMap.find(textureUuid);
+    if (fit != fileMap.end() && fit->second.type == "image")
+    {
+        // Per-texture import settings written by the Image Import Settings panel.
+        bool sRGB = true; int wrapMode = 0; int filterMode = 1;
+        fs::path metaPath = projectPath / "Library" / "Metadata" / (textureUuid + ".json");
+        if (fs::exists(metaPath))
+        {
+            try
+            {
+                std::ifstream mf(metaPath);
+                nlohmann::json mj; mf >> mj;
+                // Channel: 0=sRGB, 1=Linear Color, 2=Linear Grayscale (migrate old bool).
+                int channel = mj.value("channel", mj.value("sRGB", true) ? 0 : 1);
+                sRGB       = (channel == 0);
+                wrapMode   = mj.value("wrapMode", 0);
+                filterMode = mj.value("filterMode", 1);
+            }
+            catch (...) {}
+        }
+
+        // Prefer the imported .dds in Library (resized/compressed per settings).
+        // Fall back to the original image in Assets/ if it isn't imported yet
+        // (loadTexture2D reads PNG/JPG via stb_image but not .dds).
+        fs::path ddsPath = projectPath / "Library" / "ImportedAssets" / (textureUuid + ".dds");
+        if (fs::exists(ddsPath))
+            tex = am->loadTexture2DDDS(ddsPath.string(), uniformName, sRGB, wrapMode, filterMode);
+
+        if (!tex)
+        {
+            fs::path imgPath = projectPath / "Assets" / fit->second.path;
+            if (fs::exists(imgPath))
+                tex = am->loadTexture2D(imgPath.string(), uniformName,
+                                        sRGB ? kTextureFormat::TEX_FORMAT_SRGBA
+                                             : kTextureFormat::TEX_FORMAT_RGBA);
+        }
+    }
+    textureCache[textureUuid] = tex; // cache even if null, to avoid re-probing
+    return tex;
+}
+
+bool Manager::reimportTexture(const kString &textureUuid)
+{
+    auto fit = fileMap.find(textureUuid);
+    if (fit == fileMap.end() || fit->second.type != "image") return false;
+
+    fs::path srcPath = projectPath / "Assets" / fit->second.path;
+    if (!fs::exists(srcPath)) return false;
+
+    fs::path ddsPath  = projectPath / "Library" / "ImportedAssets" / (textureUuid + ".dds");
+    fs::path metaPath = projectPath / "Library" / "Metadata"       / (textureUuid + ".json");
+
+    // Map the inspector's import settings to converter options. (sRGB, wrap and
+    // filter are load-time only, so they're not passed to the converter here —
+    // getProjectTexture reads them straight from the .meta.)
+    ImageImportOptions opt;
+    if (fs::exists(metaPath))
+    {
+        try
+        {
+            std::ifstream mf(metaPath);
+            nlohmann::json mj; mf >> mj;
+            static const int kSizes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
+            int sizeIdx = mj.value("maxSizeIndex", 7);
+            sizeIdx = std::max(0, std::min(7, sizeIdx));
+            opt.maxSize        = kSizes[sizeIdx];
+            opt.compression    = mj.value("compression", 2);
+            opt.alphaSource    = mj.value("alphaSource", 0);
+            // Channel: 0=sRGB, 1=Linear Color, 2=Linear Grayscale (migrate old bool).
+            int channel        = mj.value("channel", mj.value("sRGB", true) ? 0 : 1);
+            opt.sRGB           = (channel == 0);
+            opt.grayscale      = (channel == 2);
+            opt.generateMipmap = mj.value("generateMipmap", true);
+            opt.flipVertical   = mj.value("flipVertical", false);
+
+            // Normal map (imageType 3): linear data, with its own options.
+            opt.isNormalMap    = (mj.value("imageType", 0) == 3);
+            opt.flipGreen      = mj.value("flipGreen", false);
+            opt.fromGrayscale  = mj.value("fromGrayscale", false);
+            opt.bumpiness      = mj.value("bumpiness", 1.0f);
+            opt.normalFilter   = mj.value("normalFilter", 0);
+        }
+        catch (...) {}
+    }
+
+    std::error_code ec;
+    fs::create_directories(ddsPath.parent_path(), ec);
+    if (!convertImageToDDS(srcPath, ddsPath, opt))
+        return false;
+
+    // Drop the cached GPU texture so the next material build reloads the new
+    // .dds, then rebuild every object's material so the change shows live.
+    textureCache.erase(textureUuid);
+    reapplyStoredMaterials();
+    return true;
+}
+
+kShader *Manager::getRawShader(const kString &shaderUuid)
+{
+    if (shaderUuid.empty()) return nullptr;
+    auto cit = shaderCache.find(shaderUuid);
+    if (cit != shaderCache.end()) return cit->second;
+
+    kShader *shader = nullptr;
+    auto fit = fileMap.find(shaderUuid);
+    if (fit != fileMap.end() && fit->second.type == "shader")
+    {
+        fs::path path = projectPath / "Assets" / fit->second.path;
+        std::ifstream f(path);
+        if (f)
+        {
+            std::stringstream ss; ss << f.rdbuf();
+            shader = new kShader();
+            shader->loadGlslCode(ss.str());
+            if (shader->getShaderProgram() == 0) { delete shader; shader = nullptr; }
+        }
+    }
+    shaderCache[shaderUuid] = shader; // cache misses too, to avoid re-probing
+    return shader;
+}
+
+kString Manager::getMaterialShaderSource(const nlohmann::json &matJson)
+{
+    kString shaderUuid = matJson.value("shader_uuid", std::string(""));
+    if (!shaderUuid.empty())
+    {
+        auto fit = fileMap.find(shaderUuid);
+        if (fit != fileMap.end() && fit->second.type == "shader")
+        {
+            std::ifstream f(projectPath / "Assets" / fit->second.path);
+            if (f) { std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
+        }
+        return "";
+    }
+    kString resName = builtinShaderResource(matJson.value("shader", std::string("Phong")));
+    return resName.empty() ? kString("") : getEmbeddedResourceText(resName);
+}
+
+kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
+{
+    kAssetManager *am = getAssetManager();
+    if (!am) return nullptr;
+
+    // Resolve the shader: a referenced raw shader asset, else a built-in.
+    kString shaderUuid = matJson.value("shader_uuid", std::string(""));
+    kShader *shader    = nullptr;
+    if (!shaderUuid.empty())
+    {
+        shader = getRawShader(shaderUuid);
+    }
+    else
+    {
+        kString resName = builtinShaderResource(matJson.value("shader", std::string("Phong")));
+        if (resName.empty()) resName = "SHADER_MESH_PHONG";
+        shader = am->loadGlslFromResource(resName.c_str());
+    }
+    if (!shader || shader->getShaderProgram() == 0) return nullptr;
+
+    kString source = getMaterialShaderSource(matJson);
+
+    // The material itself is caller-owned (the preview deletes it each rebuild;
+    // object assignment keeps it). Its shader and textures stay asset-manager-
+    // owned, so deleting a material never frees those shared GPU resources.
+    kMaterial *mat = new kMaterial();
+    mat->setShader(shader);
+
+    const nlohmann::json *params =
+        (matJson.contains("params") && matJson["params"].is_object()) ? &matJson["params"] : nullptr;
+
+    // Legacy top-level .mat key for a built-in @var name, so materials saved
+    // before the @var system keep their look until re-saved.
+    auto legacyKey = [](const kString &name) -> kString {
+        if (name == "material.diffuse")   return "diffuse";
+        if (name == "material.ambient")   return "ambient";
+        if (name == "material.specular")  return "specular";
+        if (name == "material.shininess")  return "shininess";
+        if (name == "material.metallic")   return "metallic";
+        if (name == "material.roughness")  return "roughness";
+        if (name == "material.glossiness") return "glossiness";
+        if (name == "material.tiling")     return "uv_tiling";
+        if (name == "albedoMap")           return "texture_albedo";
+        if (name == "normalMap")           return "texture_normal";
+        if (name == "specularMap")         return "texture_specular";
+        if (name == "glossinessMap")       return "texture_glossiness";
+        if (name == "emissiveMap")         return "texture_emissive";
+        return "";
+    };
+    auto valueFor = [&](const ShaderVar &v) -> const nlohmann::json * {
+        if (params && params->contains(v.name)) return &params->at(v.name);
+        kString lk = legacyKey(v.name);
+        if (!lk.empty() && matJson.contains(lk)) return &matJson.at(lk);
+        return nullptr;
+    };
+    auto readVecN = [](const nlohmann::json *j, int n, kVec4 def) -> kVec4 {
+        if (j && j->is_array() && (int)j->size() >= n)
+            for (int i = 0; i < n && i < 4; ++i) def[i] = (*j)[i].get<float>();
+        return def;
+    };
+
+    for (const ShaderVar &v : parseShaderVars(source))
+    {
+        const nlohmann::json *j = valueFor(v);
+        if (v.type == "float")
+        {
+            float def = (v.name == "material.shininess")  ? 32.0f
+                      : (v.name == "material.roughness")  ? 0.5f
+                      : (v.name == "material.glossiness") ? 1.0f : 0.0f;
+            mat->setParamFloat(v.name, (j && j->is_number()) ? j->get<float>() : def);
+        }
+        else if (v.type == "int")
+            mat->setParamInt(v.name, (j && j->is_number()) ? j->get<int>() : 0);
+        else if (v.type == "bool")
+            mat->setParamBool(v.name, (j && j->is_boolean()) ? j->get<bool>() : false);
+        else if (v.type == "vec2")
+        {
+            kVec4 c = readVecN(j, 2, kVec4(1, 1, 0, 0));
+            mat->setParamVec2(v.name, kVec2(c.x, c.y));
+        }
+        else if (v.type == "vec3")
+        {
+            kVec4 c = readVecN(j, 3, kVec4(1, 1, 1, 0));
+            mat->setParamVec3(v.name, kVec3(c.x, c.y, c.z));
+        }
+        else if (v.type == "vec4")
+            mat->setParamVec4(v.name, readVecN(j, 4, kVec4(1, 1, 1, 1)));
+        else if (v.type == "sampler2D" || v.type == "samplerCube")
+        {
+            kString uuid = (j && j->is_string()) ? j->get<std::string>() : kString("");
+            kTexture2D *tex = getProjectTexture(uuid, v.name);
+            if (tex)
+            {
+                if (v.type == "sampler2D") mat->setParamSampler2D(v.name, tex);
+                else                       mat->setParamSamplerCube(v.name, tex);
+            }
+        }
+    }
+
+    mat->setSingleSided(matJson.value("single_sided", true));
+
+    // [TEMP DIAGNOSTIC] Dump what the build produced, to chase params/textures
+    // not taking effect. Remove once resolved.
+    {
+        static int s_dbg = 0;
+        if (s_dbg++ < 40)
+        {
+            std::ofstream log("d:/Projects/Kemena3D/material_debug.log", std::ios::app);
+            log << "buildMaterial shader=" << matJson.value("shader", std::string("?"))
+                << " srcLen=" << source.size()
+                << " vars=" << parseShaderVars(source).size()
+                << " params=" << mat->getParams().size() << "\n";
+            for (const auto &kv : mat->getParams())
+            {
+                log << "   " << kv.first << " type=" << (int)kv.second.type;
+                if (kv.second.type == kMaterialParamType::SAMPLER2D ||
+                    kv.second.type == kMaterialParamType::SAMPLERCUBE)
+                    log << " tex=" << (kv.second.texture ? kv.second.texture->getTextureID() : 0);
+                else
+                    log << " val=(" << kv.second.value.x << "," << kv.second.value.y << ","
+                        << kv.second.value.z << ")";
+                log << "\n";
+            }
+        }
+    }
+    return mat;
+}
+
 bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
                                     const kString &materialUuid)
 {
@@ -4118,34 +4549,14 @@ bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
     }
     catch (...) { return false; }
 
-    kString shaderName = matJson.value("shader", "Phong");
-    kShader *shader = nullptr;
-    if      (shaderName == "Unlit") shader = am->loadGlslFromResource("SHADER_MESH_FLAT");
-    else if (shaderName == "Phong") shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
-    else if (shaderName == "PBR")   shader = am->loadGlslFromResource("SHADER_MESH_PBR");
-    if (!shader) return false;
+    kMaterial *mat = buildMaterialFromJson(matJson);
+    if (!mat) return false;
 
-    auto readVec3 = [&](const char *key, kVec3 def) -> kVec3 {
-        if (matJson.contains(key) && matJson[key].is_array() && matJson[key].size() >= 3)
-            return kVec3(matJson[key][0].get<float>(),
-                         matJson[key][1].get<float>(),
-                         matJson[key][2].get<float>());
-        return def;
-    };
-
-    kMaterial *mat = am->createMaterial(shader);
-    mat->setDiffuseColor (readVec3("diffuse",  kVec3(1.0f)));
-    mat->setAmbientColor (readVec3("ambient",  kVec3(1.0f)));
-    mat->setSpecularColor(readVec3("specular", kVec3(1.0f)));
-    mat->setShininess(matJson.value("shininess", 32.0f));
-    mat->setMetallic (matJson.value("metallic",  0.0f));
-    mat->setRoughness(matJson.value("roughness", 0.5f));
-
-    // Apply to the object AND its sub-meshes. Imported models keep their
-    // geometry in import-derived child meshes, so applying only to the root
-    // would have no visible effect. MaterialCommand snapshots the whole
-    // subtree, so undo still restores per-part materials cleanly.
-    obj->setMaterial(mat, /*setChildren*/ true);
+    // Apply to THIS node only (not its children). Material assignment is now
+    // per-sub-mesh: drag-drop targets the exact sub-mesh hit by Object ID, and
+    // the inspector picker targets the selected mesh. The geometry-less parent
+    // of an imported model is never the target.
+    obj->setMaterial(mat, /*setChildren*/ false);
     // Record the source asset UUID on the root so the assignment is persisted
     // on save and can be re-applied (and re-propagated) on load.
     obj->setMaterialUuid(materialUuid);
@@ -4165,7 +4576,7 @@ void Manager::applyDefaultMaterialToObject(kObject *obj)
     kMaterial *mat    = am->createMaterial(shader);
     mat->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
     mat->setDiffuseColor(kVec3(0.5f, 0.5f, 0.5f));
-    obj->setMaterial(mat, /*setChildren*/ true);
+    obj->setMaterial(mat, /*setChildren*/ false);
     obj->setMaterialUuid("");
     projectSaved = false;
     refreshWindowTitle();

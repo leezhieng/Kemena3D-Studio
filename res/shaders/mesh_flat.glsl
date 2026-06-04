@@ -52,6 +52,10 @@ struct Material {
     float metallic;
     float roughness;
 };
+// Material parameters exposed to the editor's material inspector.
+// @var vec3      material.diffuse Color
+// @var vec2      material.tiling  UV Tiling
+// @var sampler2D albedoMap        Albedo
 uniform Material  material;
 uniform sampler2D albedoMap;
 uniform bool      has_albedoMap;

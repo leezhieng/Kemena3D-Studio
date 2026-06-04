@@ -149,6 +149,7 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 			{
 				if (ImGui::MenuItem("Folder"))      manager->createNewFolder();
 				if (ImGui::MenuItem("Shader"))      manager->createNewShader();
+				if (ImGui::MenuItem("Raw Shader"))  manager->createNewRawShader();
 				if (ImGui::MenuItem("Material"))    manager->createNewMaterial();
 				if (ImGui::MenuItem("Script"))      manager->createNewScript();
 				if (ImGui::MenuItem("Logic Graph")) manager->createNewLogicGraph();

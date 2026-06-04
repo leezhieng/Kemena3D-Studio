@@ -93,6 +93,7 @@ struct Material {
     float shininess;
     float metallic;
     float roughness;
+    float glossiness;
 };
 
 struct SunLight {
@@ -125,16 +126,30 @@ struct SpotLight {
     vec3  specular;
 };
 
+// Material parameters exposed to the editor's material inspector.
+// @var vec3      material.diffuse   Diffuse
+// @var vec3      material.ambient   Ambient
+// @var vec3      material.specular   Specular
+// @var float     material.shininess  Shininess
+// @var float     material.glossiness Glossiness
+// @var vec2      material.tiling     UV Tiling
+// @var sampler2D albedoMap           Albedo
+// @var sampler2D normalMap           Normal
+// @var sampler2D specularMap         Specular Map
+// @var sampler2D glossinessMap       Glossiness Map
+// @var sampler2D emissiveMap         Emissive
 uniform Material  material;
 uniform vec3      viewPos;
 
 uniform sampler2D albedoMap;
 uniform sampler2D normalMap;
 uniform sampler2D specularMap;
+uniform sampler2D glossinessMap;
 uniform sampler2D emissiveMap;
 uniform bool      has_albedoMap;
 uniform bool      has_normalMap;
 uniform bool      has_specularMap;
+uniform bool      has_glossinessMap;
 uniform bool      has_emissiveMap;
 
 uniform vec3        sceneAmbient;
@@ -211,21 +226,21 @@ float calcShadow(vec3 worldPos, vec3 norm, vec3 sunDir)
     return shadow / 25.0;
 }
 
-vec3 calcSunLight(SunLight light, vec3 norm, vec3 vdir, vec3 specTex)
+vec3 calcSunLight(SunLight light, vec3 norm, vec3 vdir, vec3 specTex, float shininess)
 {
     vec3  ldir  = normalize(-light.direction);
     float diff  = max(dot(norm, ldir), 0.0);
-    float shine = max(material.shininess, 1.0);
+    float shine = max(shininess, 1.0);
     float spec  = pow(max(dot(vdir, reflect(-ldir, norm)), 0.001), shine);
     return (light.diffuse * material.diffuse * diff +
             light.specular * material.specular * spec * specTex) * light.power;
 }
 
-vec3 calcPointLight(PointLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 specTex)
+vec3 calcPointLight(PointLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 specTex, float shininess)
 {
     vec3  ldir  = normalize(light.position - fragPos);
     float diff  = max(dot(norm, ldir), 0.0);
-    float shine = max(material.shininess, 1.0);
+    float shine = max(shininess, 1.0);
     float spec  = pow(max(dot(vdir, reflect(-ldir, norm)), 0.001), shine);
     float dist  = length(light.position - fragPos);
     float att   = light.power / (light.constant + light.linear * dist + light.quadratic * dist * dist);
@@ -233,11 +248,11 @@ vec3 calcPointLight(PointLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 s
             light.specular * material.specular * spec * specTex) * att;
 }
 
-vec3 calcSpotLight(SpotLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 specTex)
+vec3 calcSpotLight(SpotLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 specTex, float shininess)
 {
     vec3  ldir    = normalize(light.position - fragPos);
     float diff    = max(dot(norm, ldir), 0.0);
-    float shine   = max(material.shininess, 1.0);
+    float shine   = max(shininess, 1.0);
     float spec    = pow(max(dot(vdir, reflect(-ldir, norm)), 0.001), shine);
     float theta   = dot(ldir, normalize(-light.direction));
     float eps     = light.cutOff - light.outerCutOff;
@@ -254,8 +269,13 @@ void main()
 
     vec4 diffuseTex  = has_albedoMap   ? texture(albedoMap,   uv) : vec4(1.0);
     vec4 normalTex   = has_normalMap   ? texture(normalMap,   uv) : vec4(0.5, 0.5, 1.0, 1.0);
-    vec4 specularTex = has_specularMap ? texture(specularMap, uv) : vec4(0.0);
+    vec4 specularTex = has_specularMap ? texture(specularMap, uv) : vec4(1.0);
     vec4 emissiveTex = has_emissiveMap ? texture(emissiveMap, uv) : vec4(0.0);
+
+    // Glossiness scales the specular power (highlight sharpness). The optional
+    // map modulates it per-pixel via its red channel.
+    float gloss     = material.glossiness * (has_glossinessMap ? texture(glossinessMap, uv).r : 1.0);
+    float shininess = material.shininess * gloss;
 
     vec3 Tn = normalize(v_T);
     vec3 Bn = normalize(v_B);
@@ -274,13 +294,13 @@ void main()
 
     for (int i = 0; i < sunLightNum; i++)
     {
-        vec3 contrib = calcSunLight(sunLights[i], norm, vdir, specularTex.xyz);
+        vec3 contrib = calcSunLight(sunLights[i], norm, vdir, specularTex.xyz, shininess);
         if (i == 0) // Renderer only casts shadow from the first active sun light.
             contrib *= 1.0 - calcShadow(v_worldPos, norm, sunLights[i].direction);
         result += contrib;
     }
-    for (int i = 0; i < pointLightNum; i++) result += calcPointLight(pointLights[i], norm, v_worldPos, vdir, specularTex.xyz);
-    for (int i = 0; i < spotLightNum;  i++) result += calcSpotLight (spotLights[i],  norm, v_worldPos, vdir, specularTex.xyz);
+    for (int i = 0; i < pointLightNum; i++) result += calcPointLight(pointLights[i], norm, v_worldPos, vdir, specularTex.xyz, shininess);
+    for (int i = 0; i < spotLightNum;  i++) result += calcSpotLight (spotLights[i],  norm, v_worldPos, vdir, specularTex.xyz, shininess);
 
     fragColor = vec4(clamp(result, 0.0, 1.0), 1.0) * diffuseTex + emissiveTex;
 }

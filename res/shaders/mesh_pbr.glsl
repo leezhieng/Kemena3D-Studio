@@ -125,6 +125,17 @@ struct SpotLight {
     vec3  specular;
 };
 
+// Material parameters exposed to the editor's material inspector.
+// @var vec3      material.diffuse     Base Color
+// @var vec3      material.ambient     Ambient
+// @var float     material.metallic    Metallic
+// @var float     material.roughness   Roughness
+// @var vec2      material.tiling      UV Tiling
+// @var sampler2D albedoMap            Albedo
+// @var sampler2D normalMap            Normal
+// @var sampler2D metallicRoughnessMap Metal/Rough
+// @var sampler2D aoMap                AO
+// @var sampler2D emissiveMap          Emissive
 uniform Material  material;
 uniform vec3      viewPos;
 

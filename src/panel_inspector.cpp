@@ -1,9 +1,11 @@
 #include "panel_inspector.h"
+#include "util.h"
 #include "panel_project.h"
 #include "commands.h"
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <regex>
 #include <GL/glew.h>
@@ -743,39 +745,14 @@ void PanelInspector::updateMatViewLight()
 
 void PanelInspector::rebuildMatViewMaterial(const nlohmann::json& matJson)
 {
-    delete matViewMat;
+    delete matViewMat;       // inspector owns the preview material (shader/textures are shared)
     matViewMat = nullptr;
     if (!matViewMesh) return;
     if (!matJson.is_object()) return;
 
-    kAssetManager* am = manager->getAssetManager();
-    kString shaderName = matJson.value("shader", "Phong");
-    kShader* shader = nullptr;
-
-    if (am)
-    {
-        if      (shaderName == "Unlit") shader = am->loadGlslFromResource("SHADER_MESH_FLAT");
-        else if (shaderName == "Phong") shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
-        else if (shaderName == "PBR")   shader = am->loadGlslFromResource("SHADER_MESH_PBR");
-    }
-    if (!shader || shader->getShaderProgram() == 0) return;
-
-    auto readVec3 = [&](const char* key, kVec3 def) -> kVec3 {
-        if (matJson.contains(key) && matJson[key].is_array() && matJson[key].size() >= 3)
-            return kVec3(matJson[key][0].get<float>(), matJson[key][1].get<float>(), matJson[key][2].get<float>());
-        return def;
-    };
-
-    matViewMat = new kMaterial();
-    matViewMat->setShader(shader);
-    matViewMat->setDiffuseColor (readVec3("diffuse",  kVec3(1.0f)));
-    matViewMat->setAmbientColor (readVec3("ambient",  kVec3(1.0f)));
-    matViewMat->setSpecularColor(readVec3("specular", kVec3(1.0f)));
-    matViewMat->setShininess(matJson.value("shininess", 32.0f));
-    matViewMat->setMetallic (matJson.value("metallic",  0.0f));
-    matViewMat->setRoughness(matJson.value("roughness", 0.5f));
-
-    matViewMesh->setMaterial(matViewMat);
+    matViewMat = manager->buildMaterialFromJson(matJson);
+    if (matViewMat)
+        matViewMesh->setMaterial(matViewMat);
 }
 
 void PanelInspector::drawMaterialViewer(const PanelProject::SelectedProjectAsset& asset)
@@ -1060,6 +1037,12 @@ static void drawTransformSection(kGuiManager *gui, kObject *obj, Manager *mgr)
 // ---------------------------------------------------------------------------
 static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr)
 {
+    // Geometry-less mesh nodes — e.g. the empty root of an imported multi-mesh
+    // model, whose geometry lives in its sub-meshes — carry no drawable data, so
+    // a File / Material / shadow UI on them is meaningless. Skip the section.
+    if (mesh->getVertexCount() <= 0)
+        return;
+
     if (!gui->collapsingHeader("Mesh", ImGuiTreeNodeFlags_DefaultOpen))
         return;
 
@@ -1144,6 +1127,7 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr)
                     ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
             {
                 std::string dropped((const char *)payload->Data);
+                { auto nl = dropped.find('\n'); if (nl != std::string::npos) dropped = dropped.substr(0, nl); }
                 auto it = mgr->fileMap.find(dropped);
                 if (it != mgr->fileMap.end() && it->second.type == "material")
                 {
@@ -2559,8 +2543,8 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         gui->endDisabled();
 }
 
-// Image type options
-static const char *kImgTypeItems[] = {"Texture", "GUI", "Sprite"};
+// Image type options ("Normal Map" = index 3; treated as linear tangent-space data)
+static const char *kImgTypeItems[] = {"Texture", "GUI", "Sprite", "Normal Map"};
 // Max size options
 static const char *kMaxSizeItems[] = {"32", "64", "128", "256", "512", "1024", "2048", "4096"};
 // Compression options
@@ -2571,41 +2555,62 @@ static const char *kAlphaSrcItems[] = {"None", "Input Alpha", "From Grayscale"};
 static const char *kWrapModeItems[] = {"Repeat", "Clamp", "Mirror"};
 // Filter mode options
 static const char *kFilterModeItems[] = {"Point", "Bilinear", "Trilinear"};
+// Normal-map gradient filtering (grayscale -> normal)
+static const char *kNormalFilterItems[] = {"Sharp", "Smooth"};
+// Channel / colour-space options
+static const char *kChannelItems[] = {"sRGB", "Linear Color", "Linear Grayscale"};
 
-static void loadImageSettings(const fs::path &metaPath,
-                              int &imageType, int &maxSizeIndex, int &compression,
-                              int &alphaSource, bool &sRGB, bool &generateMipmap, int &wrapMode, int &filterMode)
+static constexpr int kImgTypeNormalMap = 3;
+
+// Backing state for the image import-settings panel.
+struct ImgImportState
+{
+    int   imageType      = 0;
+    int   maxSizeIndex   = 5;
+    int   compression    = 2;
+    int   alphaSource    = 0;
+    int   channel        = 0;   ///< 0=sRGB, 1=Linear Color, 2=Linear Grayscale.
+    bool  generateMipmap = true;
+    int   wrapMode       = 0;
+    int   filterMode     = 1;
+    bool  flipVertical   = false;
+    // Normal-map-only
+    bool  flipGreen      = false;
+    bool  fromGrayscale  = false;
+    float bumpiness      = 1.0f;
+    int   normalFilter   = 0;
+};
+
+static void loadImageSettings(const fs::path &metaPath, ImgImportState &s)
 {
     auto j = loadMetaJson(metaPath);
-    imageType = j.value("imageType", 0);
-    maxSizeIndex = j.value("maxSizeIndex", 5);
-    compression = j.value("compression", 2);
-    alphaSource = j.value("alphaSource", 0);
-    sRGB = j.value("sRGB", true);
-    generateMipmap = j.value("generateMipmap", true);
-    wrapMode = j.value("wrapMode", 0);
-    filterMode = j.value("filterMode", 1);
+    s.imageType      = j.value("imageType", 0);
+    s.maxSizeIndex   = j.value("maxSizeIndex", 5);
+    s.compression    = j.value("compression", 2);
+    s.alphaSource    = j.value("alphaSource", 0);
+    // Migrate the old boolean sRGB flag: true -> sRGB (0), false -> Linear Color (1).
+    s.channel        = j.value("channel", j.value("sRGB", true) ? 0 : 1);
+    s.generateMipmap = j.value("generateMipmap", true);
+    s.wrapMode       = j.value("wrapMode", 0);
+    s.filterMode     = j.value("filterMode", 1);
+    s.flipVertical   = j.value("flipVertical", false);
+    s.flipGreen      = j.value("flipGreen", false);
+    s.fromGrayscale  = j.value("fromGrayscale", false);
+    s.bumpiness      = j.value("bumpiness", 1.0f);
+    s.normalFilter   = j.value("normalFilter", 0);
 }
 
 static void drawImageImportSettings(kGuiManager *gui, const PanelProject::SelectedProjectAsset &asset, Manager *mgr)
 {
     static kString lastUuid;
-    static int imageType = 0;
-    static int maxSizeIndex = 5;
-    static int compression = 2;
-    static int alphaSource = 0;
-    static bool sRGB = true;
-    static bool generateMipmap = true;
-    static int wrapMode = 0;
-    static int filterMode = 1;
+    static ImgImportState s;
     static bool dirty = false;
 
     if (asset.uuid != lastUuid)
     {
         lastUuid = asset.uuid;
         dirty = false;
-        loadImageSettings(asset.metaPath, imageType, maxSizeIndex, compression,
-                          alphaSource, sRGB, generateMipmap, wrapMode, filterMode);
+        loadImageSettings(asset.metaPath, s);
     }
 
     if (!gui->collapsingHeader("Import Settings", ImGuiTreeNodeFlags_DefaultOpen))
@@ -2613,42 +2618,87 @@ static void drawImageImportSettings(kGuiManager *gui, const PanelProject::Select
     if (!beginPropTable(gui, "ImageImportTable"))
         return;
 
+    const bool isNormal = (s.imageType == kImgTypeNormalMap);
+
     propLabel(gui, "Image Type");
     gui->setNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##ImgType", &imageType, kImgTypeItems, IM_ARRAYSIZE(kImgTypeItems)))
+    if (ImGui::Combo("##ImgType", &s.imageType, kImgTypeItems, IM_ARRAYSIZE(kImgTypeItems)))
+    {
         dirty = true;
+        // Normal maps are linear data — default the Channel to Linear Color when
+        // switching to Normal Map (the user can still override it).
+        if (s.imageType == kImgTypeNormalMap && s.channel == 0)
+            s.channel = 1;
+    }
+
+    // Normal-map-specific options.
+    if (isNormal)
+    {
+        propLabel(gui, "Flip Green Channel");
+        if (ImGui::Checkbox("##FlipGreen", &s.flipGreen))
+            dirty = true;
+
+        propLabel(gui, "Create From Grayscale");
+        if (ImGui::Checkbox("##FromGray", &s.fromGrayscale))
+            dirty = true;
+
+        propLabel(gui, "Bumpiness");
+        gui->setNextItemWidth(-FLT_MIN);
+        if (!s.fromGrayscale) gui->beginDisabled(true);
+        if (ImGui::DragFloat("##Bumpiness", &s.bumpiness, 0.05f, 0.0f, 20.0f))
+            dirty = true;
+        if (!s.fromGrayscale) gui->endDisabled();
+
+        propLabel(gui, "Filtering");
+        gui->setNextItemWidth(-FLT_MIN);
+        // Filtering only affects the grayscale->normal gradient, so it's inert
+        // for an already-authored normal map.
+        if (!s.fromGrayscale) gui->beginDisabled(true);
+        if (ImGui::Combo("##NormalFilter", &s.normalFilter, kNormalFilterItems, IM_ARRAYSIZE(kNormalFilterItems)))
+            dirty = true;
+        if (!s.fromGrayscale) gui->endDisabled();
+    }
 
     propLabel(gui, "Max Size");
     gui->setNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##MaxSize", &maxSizeIndex, kMaxSizeItems, IM_ARRAYSIZE(kMaxSizeItems)))
+    if (ImGui::Combo("##MaxSize", &s.maxSizeIndex, kMaxSizeItems, IM_ARRAYSIZE(kMaxSizeItems)))
         dirty = true;
 
     propLabel(gui, "Compression");
     gui->setNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##ImgComp", &compression, kImgCompItems, IM_ARRAYSIZE(kImgCompItems)))
+    if (ImGui::Combo("##ImgComp", &s.compression, kImgCompItems, IM_ARRAYSIZE(kImgCompItems)))
         dirty = true;
 
-    propLabel(gui, "Alpha Source");
+    // Alpha source doesn't apply to normal maps (no alpha channel).
+    if (!isNormal)
+    {
+        propLabel(gui, "Alpha Source");
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##AlphaSrc", &s.alphaSource, kAlphaSrcItems, IM_ARRAYSIZE(kAlphaSrcItems)))
+            dirty = true;
+    }
+
+    propLabel(gui, "Channel");
     gui->setNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##AlphaSrc", &alphaSource, kAlphaSrcItems, IM_ARRAYSIZE(kAlphaSrcItems)))
-        dirty = true;
-
-    propLabel(gui, "sRGB");
-    if (ImGui::Checkbox("##sRGB", &sRGB))
+    if (ImGui::Combo("##Channel", &s.channel, kChannelItems, IM_ARRAYSIZE(kChannelItems)))
         dirty = true;
 
     propLabel(gui, "Generate Mipmap");
-    if (ImGui::Checkbox("##GenMipmap", &generateMipmap))
+    if (ImGui::Checkbox("##GenMipmap", &s.generateMipmap))
+        dirty = true;
+
+    propLabel(gui, "Flip Vertically");
+    if (ImGui::Checkbox("##FlipVert", &s.flipVertical))
         dirty = true;
 
     propLabel(gui, "Wrap Mode");
     gui->setNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##WrapMode", &wrapMode, kWrapModeItems, IM_ARRAYSIZE(kWrapModeItems)))
+    if (ImGui::Combo("##WrapMode", &s.wrapMode, kWrapModeItems, IM_ARRAYSIZE(kWrapModeItems)))
         dirty = true;
 
     propLabel(gui, "Filter Mode");
     gui->setNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##FilterMode", &filterMode, kFilterModeItems, IM_ARRAYSIZE(kFilterModeItems)))
+    if (ImGui::Combo("##FilterMode", &s.filterMode, kFilterModeItems, IM_ARRAYSIZE(kFilterModeItems)))
         dirty = true;
 
     gui->tableEnd();
@@ -2661,22 +2711,32 @@ static void drawImageImportSettings(kGuiManager *gui, const PanelProject::Select
     if (ImGui::Button("Apply##Image", ImVec2(btnW, 0)) && !asset.metaPath.empty())
     {
         auto j = loadMetaJson(asset.metaPath);
-        j["imageType"] = imageType;
-        j["maxSizeIndex"] = maxSizeIndex;
-        j["compression"] = compression;
-        j["alphaSource"] = alphaSource;
-        j["sRGB"] = sRGB;
-        j["generateMipmap"] = generateMipmap;
-        j["wrapMode"] = wrapMode;
-        j["filterMode"] = filterMode;
+        j["imageType"]      = s.imageType;
+        j["maxSizeIndex"]   = s.maxSizeIndex;
+        j["compression"]    = s.compression;
+        j["alphaSource"]    = s.alphaSource;
+        j["channel"]        = s.channel;
+        j["sRGB"]           = (s.channel == 0); // keep legacy flag in sync
+        j["generateMipmap"] = s.generateMipmap;
+        j["wrapMode"]       = s.wrapMode;
+        j["filterMode"]     = s.filterMode;
+        j["flipVertical"]   = s.flipVertical;
+        j["flipGreen"]      = s.flipGreen;
+        j["fromGrayscale"]  = s.fromGrayscale;
+        j["bumpiness"]      = s.bumpiness;
+        j["normalFilter"]   = s.normalFilter;
         saveMetaJson(asset.metaPath, j);
         dirty = false;
+
+        // Re-process the source image into Library/ImportedAssets with these
+        // settings, then reload it and refresh every material using it.
+        if (mgr && !asset.uuid.empty())
+            mgr->reimportTexture(asset.uuid);
     }
     gui->sameLine(0, 4.0f);
     if (ImGui::Button("Revert##Image", ImVec2(btnW, 0)))
     {
-        loadImageSettings(asset.metaPath, imageType, maxSizeIndex, compression,
-                          alphaSource, sRGB, generateMipmap, wrapMode, filterMode);
+        loadImageSettings(asset.metaPath, s);
         dirty = false;
     }
     if (wasDisabled)
@@ -2705,6 +2765,32 @@ static void saveMaterialJson(const fs::path &srcPath, const nlohmann::json &j)
     if (f.is_open()) f << j.dump(4);
 }
 
+// Bring a pre-@var .mat (hardcoded top-level keys) into the new params format so
+// the dynamic inspector shows its existing values. No-op if already migrated.
+static void migrateLegacyMaterialJson(nlohmann::json &m)
+{
+    if (!m.is_object()) return;
+    if (m.contains("params") && m["params"].is_object()) return;
+    nlohmann::json p = nlohmann::json::object();
+    auto move = [&](const char *legacy, const char *var) {
+        if (m.contains(legacy)) p[var] = m[legacy];
+    };
+    move("diffuse",          "material.diffuse");
+    move("ambient",          "material.ambient");
+    move("specular",         "material.specular");
+    move("shininess",        "material.shininess");
+    move("metallic",          "material.metallic");
+    move("roughness",         "material.roughness");
+    move("glossiness",        "material.glossiness");
+    move("uv_tiling",         "material.tiling");
+    move("texture_albedo",    "albedoMap");
+    move("texture_normal",    "normalMap");
+    move("texture_specular",  "specularMap");
+    move("texture_glossiness","glossinessMap");
+    move("texture_emissive",  "emissiveMap");
+    m["params"] = p;
+}
+
 void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAsset& asset)
 {
     // Reload from file when selection changes
@@ -2717,6 +2803,7 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
         if (it != manager->fileMap.end())
             srcPath = manager->projectPath / "Assets" / it->second.path;
         loadMaterialJson(srcPath, matInspJson);
+        migrateLegacyMaterialJson(matInspJson);
         ++matInspVersion;
     }
 
@@ -2727,104 +2814,180 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
 
     auto changed = [&]() { matInspDirty = true; ++matInspVersion; };
 
-    // --- Shader ---
+    // --- Shader (built-ins + hand-written raw shader assets) ---
     {
         propLabel(gui, "Shader");
-        static const char *kShaderOptions[] = { "Unlit", "Phong", "PBR", "Custom" };
-        kString current = matInspJson.value("shader", "Phong");
-        int selected = 1;
-        for (int i = 0; i < 4; i++)
-            if (current == kShaderOptions[i]) { selected = i; break; }
-        if (ImGui::Combo("##MatShader", &selected, kShaderOptions, 4))
-        { matInspJson["shader"] = kString(kShaderOptions[selected]); changed(); }
+
+        // Options: the three built-ins, then every raw .glsl/.hlsl shader asset.
+        std::vector<std::string> labels  = { "Unlit", "Phong", "PBR" };
+        std::vector<std::string> uuids   = { "", "", "" }; // built-ins have no asset UUID
+        for (const auto &kv : manager->fileMap)
+        {
+            if (kv.second.type != "shader") continue;
+            labels.push_back(fs::path(kv.second.path).stem().string());
+            uuids.push_back(kv.first);
+        }
+
+        // Current selection: a referenced raw shader (by UUID) wins; else the
+        // built-in name.
+        std::string curUuid = matInspJson.value("shader_uuid", std::string(""));
+        std::string curName = matInspJson.value("shader", std::string("Phong"));
+        int selected = 1; // Phong
+        if (!curUuid.empty())
+        {
+            for (size_t i = 0; i < uuids.size(); ++i)
+                if (uuids[i] == curUuid) { selected = (int)i; break; }
+        }
+        else
+        {
+            for (size_t i = 0; i < 3; ++i)
+                if (labels[i] == curName) { selected = (int)i; break; }
+        }
+
+        std::vector<const char *> ptrs; ptrs.reserve(labels.size());
+        for (auto &l : labels) ptrs.push_back(l.c_str());
+
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##MatShader", &selected, ptrs.data(), (int)ptrs.size()))
+        {
+            if (uuids[selected].empty())
+            {
+                matInspJson["shader"] = labels[selected]; // built-in
+                matInspJson["shader_uuid"] = "";
+            }
+            else
+            {
+                matInspJson["shader"] = "Custom";
+                matInspJson["shader_uuid"] = uuids[selected]; // raw shader asset
+            }
+            changed();
+        }
     }
 
-    // --- Diffuse ---
+    // --- Dynamic parameters, driven by the shader's `// @var` annotations ---
     {
-        propLabel(gui, "Diffuse");
-        float c[3] = {1,1,1};
-        if (matInspJson.contains("diffuse") && matInspJson["diffuse"].is_array() && matInspJson["diffuse"].size() >= 3)
-        { c[0] = matInspJson["diffuse"][0]; c[1] = matInspJson["diffuse"][1]; c[2] = matInspJson["diffuse"][2]; }
-        if (ImGui::ColorEdit3("##MatDiff", c))
-        { matInspJson["diffuse"] = {c[0], c[1], c[2]}; changed(); }
+        std::string src = manager->getMaterialShaderSource(matInspJson);
+        std::vector<ShaderVar> vars = parseShaderVars(src);
+
+        // Ensure a params object so writes land in the new (@var) format.
+        if (!matInspJson.contains("params") || !matInspJson["params"].is_object())
+            matInspJson["params"] = nlohmann::json::object();
+        nlohmann::json &params = matInspJson["params"];
+
+        // Texture-asset dropdown list — texture-type images only (imageType 0).
+        bool hasSampler = false;
+        for (const ShaderVar &v : vars)
+            if (v.type == "sampler2D" || v.type == "samplerCube") { hasSampler = true; break; }
+
+        std::vector<std::string> texUuids = {""};
+        std::vector<std::string> texNames = {"(None)"};
+        if (hasSampler)
+        {
+            // Collect first, then sort by display name (case-insensitive) so the
+            // dropdown lists textures alphabetically; "(None)" stays at the top.
+            std::vector<std::pair<std::string, std::string>> tex; // {name, uuid}
+            for (const auto &kv : manager->fileMap)
+            {
+                if (kv.second.type != "image") continue;
+                int imgType = 0;
+                fs::path mp = manager->projectPath / "Library" / "Metadata" / (kv.first + ".json");
+                try { std::ifstream mf(mp); if (mf) { nlohmann::json mj; mf >> mj; imgType = mj.value("imageType", 0); } }
+                catch (...) {}
+                // 0 = Texture, 3 = Normal Map (both used by materials); skip GUI/Sprite.
+                if (imgType != 0 && imgType != 3) continue;
+                tex.emplace_back(fs::path(kv.second.path).stem().string(), kv.first);
+            }
+            std::sort(tex.begin(), tex.end(), [](const auto &a, const auto &b) {
+                const std::string &x = a.first, &y = b.first;
+                return std::lexicographical_compare(
+                    x.begin(), x.end(), y.begin(), y.end(),
+                    [](unsigned char c1, unsigned char c2) { return std::tolower(c1) < std::tolower(c2); });
+            });
+            for (auto &t : tex) { texNames.push_back(t.first); texUuids.push_back(t.second); }
+        }
+
+        if (vars.empty())
+            gui->textDisabled("No @var parameters in shader");
+
+        for (const ShaderVar &v : vars)
+        {
+            propLabel(gui, v.label.c_str());
+            kString id = "##mp_" + v.name;
+
+            if (v.type == "vec3" || v.type == "vec4")
+            {
+                int n = (v.type == "vec4") ? 4 : 3;
+                float c[4] = {1, 1, 1, 1};
+                if (params.contains(v.name) && params[v.name].is_array())
+                    for (int i = 0; i < n && i < (int)params[v.name].size(); ++i) c[i] = params[v.name][i];
+                bool ch = (n == 4) ? ImGui::ColorEdit4(id.c_str(), c) : ImGui::ColorEdit3(id.c_str(), c);
+                if (ch) { if (n == 4) params[v.name] = {c[0], c[1], c[2], c[3]}; else params[v.name] = {c[0], c[1], c[2]}; changed(); }
+            }
+            else if (v.type == "vec2")
+            {
+                float t[2] = {1, 1};
+                if (params.contains(v.name) && params[v.name].is_array())
+                    for (int i = 0; i < 2 && i < (int)params[v.name].size(); ++i) t[i] = params[v.name][i];
+                gui->setNextItemWidth(-FLT_MIN);
+                if (ImGui::DragFloat2(id.c_str(), t, 0.01f)) { params[v.name] = {t[0], t[1]}; changed(); }
+            }
+            else if (v.type == "float")
+            {
+                float fdef = (v.name == "material.shininess")  ? 32.0f
+                           : (v.name == "material.roughness")  ? 0.5f
+                           : (v.name == "material.glossiness") ? 1.0f : 0.0f;
+                float f = (params.contains(v.name) && params[v.name].is_number()) ? params[v.name].get<float>() : fdef;
+                gui->setNextItemWidth(-FLT_MIN);
+                if (ImGui::DragFloat(id.c_str(), &f, 0.01f)) { params[v.name] = f; changed(); }
+            }
+            else if (v.type == "int")
+            {
+                int iv = (params.contains(v.name) && params[v.name].is_number()) ? params[v.name].get<int>() : 0;
+                gui->setNextItemWidth(-FLT_MIN);
+                if (ImGui::DragInt(id.c_str(), &iv)) { params[v.name] = iv; changed(); }
+            }
+            else if (v.type == "bool")
+            {
+                bool b = (params.contains(v.name) && params[v.name].is_boolean()) ? params[v.name].get<bool>() : false;
+                if (ImGui::Checkbox(id.c_str(), &b)) { params[v.name] = b; changed(); }
+            }
+            else if (v.type == "sampler2D" || v.type == "samplerCube")
+            {
+                std::string cur = (params.contains(v.name) && params[v.name].is_string()) ? params[v.name].get<std::string>() : "";
+                int sel = 0;
+                for (size_t i = 0; i < texUuids.size(); ++i) if (texUuids[i] == cur) { sel = (int)i; break; }
+                std::vector<const char *> ptrs; ptrs.reserve(texNames.size());
+                for (auto &nm : texNames) ptrs.push_back(nm.c_str());
+                gui->setNextItemWidth(-FLT_MIN);
+                if (ImGui::Combo(id.c_str(), &sel, ptrs.data(), (int)ptrs.size()))
+                { params[v.name] = texUuids[sel]; changed(); }
+                if (ImGui::BeginDragDropTarget())
+                {
+                    if (const ImGuiPayload *pl = ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+                    {
+                        std::string dropped((const char *)pl->Data);
+                        { auto nl = dropped.find('\n'); if (nl != std::string::npos) dropped = dropped.substr(0, nl); }
+                        auto fit = manager->fileMap.find(dropped);
+                        if (fit != manager->fileMap.end() && fit->second.type == "image")
+                        { params[v.name] = dropped; changed(); }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+            }
+            else
+            {
+                gui->textDisabled(("unsupported: " + v.type).c_str());
+            }
+        }
     }
 
-    // --- Ambient ---
-    {
-        propLabel(gui, "Ambient");
-        float c[3] = {1,1,1};
-        if (matInspJson.contains("ambient") && matInspJson["ambient"].is_array() && matInspJson["ambient"].size() >= 3)
-        { c[0] = matInspJson["ambient"][0]; c[1] = matInspJson["ambient"][1]; c[2] = matInspJson["ambient"][2]; }
-        if (ImGui::ColorEdit3("##MatAmb", c))
-        { matInspJson["ambient"] = {c[0], c[1], c[2]}; changed(); }
-    }
-
-    // --- Specular ---
-    {
-        propLabel(gui, "Specular");
-        float c[3] = {1,1,1};
-        if (matInspJson.contains("specular") && matInspJson["specular"].is_array() && matInspJson["specular"].size() >= 3)
-        { c[0] = matInspJson["specular"][0]; c[1] = matInspJson["specular"][1]; c[2] = matInspJson["specular"][2]; }
-        if (ImGui::ColorEdit3("##MatSpec", c))
-        { matInspJson["specular"] = {c[0], c[1], c[2]}; changed(); }
-    }
-
-    // --- Shininess ---
-    {
-        propLabel(gui, "Shininess");
-        float v = matInspJson.value("shininess", 32.0f);
-        if (ImGui::DragFloat("##MatShine", &v, 0.5f, 0.0f, 512.0f))
-        { matInspJson["shininess"] = v; changed(); }
-    }
-
-    // --- Metallic ---
-    {
-        propLabel(gui, "Metallic");
-        float v = matInspJson.value("metallic", 0.0f);
-        if (ImGui::DragFloat("##MatMetal", &v, 0.01f, 0.0f, 1.0f))
-        { matInspJson["metallic"] = v; changed(); }
-    }
-
-    // --- Roughness ---
-    {
-        propLabel(gui, "Roughness");
-        float v = matInspJson.value("roughness", 0.5f);
-        if (ImGui::DragFloat("##MatRough", &v, 0.01f, 0.0f, 1.0f))
-        { matInspJson["roughness"] = v; changed(); }
-    }
-
-    // --- UV Tiling ---
-    {
-        propLabel(gui, "UV Tiling");
-        float t[2] = {1,1};
-        if (matInspJson.contains("uv_tiling") && matInspJson["uv_tiling"].is_array() && matInspJson["uv_tiling"].size() >= 2)
-        { t[0] = matInspJson["uv_tiling"][0]; t[1] = matInspJson["uv_tiling"][1]; }
-        if (ImGui::DragFloat2("##MatUV", t, 0.01f, 0.0f, 100.0f))
-        { matInspJson["uv_tiling"] = {t[0], t[1]}; changed(); }
-    }
-
-    // --- Single Sided ---
+    // --- Single Sided (material render state, not a shader uniform) ---
     {
         propLabel(gui, "Single Sided");
         bool v = matInspJson.value("single_sided", true);
         if (ImGui::Checkbox("##MatSingle", &v))
         { matInspJson["single_sided"] = v; changed(); }
     }
-
-    // --- Textures ---
-    auto textureField = [&](const char *label, const char *key) {
-        propLabel(gui, label);
-        char buf[256] = {};
-        kString sv = matInspJson.value(key, "");
-        strncpy_s(buf, sizeof(buf), sv.c_str(), _TRUNCATE);
-        if (ImGui::InputText((kString("##") + key).c_str(), buf, sizeof(buf)))
-        { matInspJson[key] = kString(buf); changed(); }
-    };
-    textureField("Albedo",      "texture_albedo");
-    textureField("Normal",      "texture_normal");
-    textureField("Metal/Rough", "texture_metallic_roughness");
-    textureField("AO",          "texture_ao");
-    textureField("Emissive",    "texture_emissive");
 
     gui->tableEnd();
     gui->spacing();
@@ -2862,6 +3025,7 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
         if (it != manager->fileMap.end())
             srcPath = manager->projectPath / "Assets" / it->second.path;
         loadMaterialJson(srcPath, matInspJson);
+        migrateLegacyMaterialJson(matInspJson);
         matInspDirty = false;
         ++matInspVersion;
     }

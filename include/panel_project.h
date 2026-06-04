@@ -171,6 +171,42 @@ class PanelProject
 		void clearSelection();
 
 		/**
+		 * @brief Applies a click to the selection honouring Ctrl/Shift modifiers.
+		 *
+		 * Plain click selects only @p clicked; Ctrl toggles it within the current
+		 * selection; Shift selects the contiguous range (in depth-first display
+		 * order) between the anchor and @p clicked. The anchor is the last item
+		 * single- or Ctrl-clicked.
+		 * @param root    Active view root (rootThumbnail or rootTree).
+		 * @param clicked The node that was clicked.
+		 */
+		void handleSelectionClick(Node& root, Node& clicked);
+
+		/**
+		 * @brief Begins an ImGui drag carrying every selected file asset's UUID.
+		 *
+		 * If @p node isn't part of the current selection it becomes the sole
+		 * selection first. The payload ("PROJECT_ASSET") is a newline-separated
+		 * list of UUIDs so multiple files can be moved at once.
+		 * @param node The node the drag started on.
+		 */
+		void beginAssetDragSource(Node& node);
+
+		/**
+		 * @brief Drop target that moves every dragged asset UUID into @p targetDir.
+		 * @param targetDir Destination folder for the dropped assets.
+		 */
+		void acceptAssetDropInto(const fs::path& targetDir);
+
+		/// UUID of the selection anchor used for Shift range-selection.
+		kString selectionAnchorUuid;
+
+		/// List-view only: a plain click on an already-selected row is deferred to
+		/// mouse-release (so pressing to start a drag keeps the whole selection).
+		/// Holds that row's UUID between press and release; cleared if a drag starts.
+		kString clickPendingUuid;
+
+		/**
 		 * @brief Draws the full project panel contents (tree and thumbnail views).
 		 * @param rootTree Folder tree root to render.
 		 * @param rootThumbnail Current folder's thumbnail-grid root to render.

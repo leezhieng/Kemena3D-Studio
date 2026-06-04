@@ -106,6 +106,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 "PROJECT_ASSET", ImGuiDragDropFlags_AcceptBeforeDelivery))
         {
             kString assetUuid((const char *)payload->Data);
+            // The project panel may pack several newline-separated UUIDs when
+            // multiple files are dragged; this target acts on the first one.
+            { auto nl = assetUuid.find('\n'); if (nl != kString::npos) assetUuid = assetUuid.substr(0, nl); }
             auto it = manager->fileMap.find(assetUuid);
             if (it != manager->fileMap.end())
             {
@@ -116,15 +119,13 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 kVec2 imMouse = gui->getMousePos();
                 int vpMouseX = (int)((imMouse.x - panelPos.x) * 2.0f);
                 int vpMouseY = (int)((imMouse.y - panelPos.y) * 2.0f);
+                // The exact object (sub-mesh) under the cursor, by Object ID.
+                // Material drops apply to THIS node directly — not the whole
+                // model — so each sub-mesh of a multi-mesh import can have its
+                // own material.
                 kObject *hovObj = renderer->pickObject(
                     manager->getWorld(), manager->getScene(),
                     vpMouseX, vpMouseY, width * 2, height * 2);
-                if (hovObj != nullptr)
-                {
-                    kObject *sceneRoot = manager->getScene()->getRootNode();
-                    while (hovObj->getParent() != nullptr && hovObj->getParent() != sceneRoot)
-                        hovObj = hovObj->getParent();
-                }
                 manager->dragHoverObjectUuid = hovObj ? hovObj->getUuid() : kString("");
 
                 if (info.type == "material")

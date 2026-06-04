@@ -1,6 +1,9 @@
 #include "panel_project.h"
 
 #include <cstring>
+#include <functional>
+#include <vector>
+#include <algorithm>
 
 using namespace kemena;
 
@@ -154,6 +157,141 @@ void PanelProject::clearSelection()
 {
 	deselectAll(rootTree);
 	deselectAll(rootThumbnail);
+	pendingSelectUuid = ""; // drop any pending re-selection too
+	selectionAnchorUuid = "";
+}
+
+void PanelProject::handleSelectionClick(Node& root, Node& clicked)
+{
+	const bool ctrl  = ImGui::GetIO().KeyCtrl;
+	const bool shift = ImGui::GetIO().KeyShift;
+
+	if (shift && !selectionAnchorUuid.empty())
+	{
+		// Flatten the view in depth-first display order, then select the
+		// inclusive range between the anchor and the clicked node.
+		std::vector<Node*> order;
+		std::function<void(Node&)> flatten = [&](Node& n) {
+			for (auto& c : n.children) { order.push_back(c.get()); flatten(*c); }
+		};
+		flatten(root);
+
+		int ai = -1, ci = -1;
+		for (int i = 0; i < (int)order.size(); ++i)
+		{
+			if (order[i]->uuid == selectionAnchorUuid && ai < 0) ai = i;
+			if (order[i] == &clicked) ci = i;
+		}
+
+		if (ai >= 0 && ci >= 0)
+		{
+			if (!ctrl) deselectAll(root); // Shift replaces; Ctrl+Shift extends
+			int lo = std::min(ai, ci), hi = std::max(ai, ci);
+			for (int i = lo; i <= hi; ++i) order[i]->isSelected = true;
+		}
+		else
+		{
+			deselectAll(root);
+			clicked.isSelected = true;
+			selectionAnchorUuid = clicked.uuid;
+		}
+	}
+	else if (ctrl)
+	{
+		clicked.isSelected = !clicked.isSelected; // toggle, keep others
+		selectionAnchorUuid = clicked.uuid;
+	}
+	else
+	{
+		deselectAll(root);
+		clicked.isSelected = true;
+		selectionAnchorUuid = clicked.uuid;
+	}
+
+	// Selecting a project asset clears any scene/world selection.
+	manager->selectedObjects.clear();
+	manager->selectedObject = nullptr;
+	manager->selectedScene  = nullptr;
+	manager->worldSelected  = false;
+	pendingSelectUuid = "";
+}
+
+void PanelProject::beginAssetDragSource(Node& node)
+{
+	// A drag started, so the deferred plain-click must not fire on release and
+	// collapse the selection to a single row.
+	clickPendingUuid = "";
+
+	// Drag the whole selection when the grabbed node is part of it; otherwise
+	// the grabbed node becomes the sole selection and is dragged alone.
+	if (!node.isSelected)
+	{
+		deselectAll(rootTree);
+		deselectAll(rootThumbnail);
+		node.isSelected = true;
+		selectionAnchorUuid = node.uuid;
+	}
+
+	// Gather every selected *file* UUID from the active view.
+	std::vector<kString> uuids;
+	std::function<void(Node&)> collect = [&](Node& n) {
+		for (auto& c : n.children)
+		{
+			if (c->isSelected && c->type == 1 && !c->uuid.empty())
+				uuids.push_back(c->uuid);
+			collect(*c);
+		}
+	};
+	collect(displayThumbnail ? rootThumbnail : rootTree);
+	if (uuids.empty() && node.type == 1 && !node.uuid.empty())
+		uuids.push_back(node.uuid);
+
+	// Payload is a newline-separated UUID list (multi-file move).
+	kString payload;
+	for (size_t i = 0; i < uuids.size(); ++i)
+	{
+		if (i) payload += "\n";
+		payload += uuids[i];
+	}
+
+	ImGui::SetDragDropPayload("PROJECT_ASSET", payload.c_str(), payload.size() + 1);
+	ImGui::Image(node.icon, ImVec2(16, 16));
+	ImGui::SameLine();
+	if (uuids.size() > 1)
+		ImGui::Text("%d items", (int)uuids.size());
+	else
+		ImGui::TextUnformatted(node.name.c_str());
+}
+
+void PanelProject::acceptAssetDropInto(const fs::path& targetDir)
+{
+	if (!ImGui::BeginDragDropTarget()) return;
+	if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+	{
+		// Split the newline-separated UUID list and move each asset.
+		kString data(static_cast<const char*>(payload->Data));
+		bool moved = false;
+		size_t start = 0;
+		while (start <= data.size())
+		{
+			size_t nl = data.find('\n', start);
+			kString uuid = data.substr(start, nl == kString::npos ? kString::npos : nl - start);
+			if (!uuid.empty())
+			{
+				fs::path src = manager->findAssetPathByUuid(uuid);
+				if (!src.empty() && manager->moveAsset(src, targetDir))
+					moved = true;
+			}
+			if (nl == kString::npos) break;
+			start = nl + 1;
+		}
+		if (moved)
+		{
+			clearSelection();
+			needRefreshList = true;
+		}
+	}
+	ImGui::EndDragDropTarget();
 }
 
 void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* opened)
@@ -303,6 +441,11 @@ void PanelProject::draw(bool& opened)
 
 			if (!pendingSelectUuid.empty())
 			{
+				// Re-assert the pending selection on every rebuild so it survives
+				// the refreshes triggered by thumbnail (re)generation. It persists
+				// until the user explicitly selects another asset (the click
+				// handlers and clearSelection() reset it); this is what keeps a
+				// material focused in the inspector after pressing Apply.
 				std::function<void(Node&)> sel = [&](Node& n) {
 					for (auto& child : n.children) {
 						if (child->uuid == pendingSelectUuid) child->isSelected = true;
@@ -310,13 +453,6 @@ void PanelProject::draw(bool& opened)
 					}
 				};
 				sel(displayThumbnail ? rootThumbnail : rootTree);
-
-				// Keep pending until thumbnail is stable so subsequent
-				// thumbnail-triggered refreshes don't erase the selection
-				fs::path thumbPath = manager->projectPath / "Library" / "Thumbnails"
-				                     / (pendingSelectUuid + ".png");
-				if (fs::exists(thumbPath))
-					pendingSelectUuid = "";
 			}
 		}
 
@@ -364,6 +500,7 @@ void PanelProject::refreshTreeList()
 	rootTree.icon = iconFolder;
 	rootTree.type = 0;
 	rootTree.isSelected = false;
+	rootTree.fullPath = fullPath; // so dropping on the root moves into Assets/
 	rootTree.children.clear();
 
 	// Fill recursively
@@ -392,28 +529,45 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 		std::cout << "Double-clicked: " << node.uuid.c_str() << " ,Level:" << level << std::endl;
 	}
 
-	if (gui->isItemClicked())
+	// Selection. A plain click on an already-selected row is deferred to release
+	// so that pressing it to start a drag keeps the whole multi-selection
+	// (mirrors how the thumbnail view's Selectable behaves). Ctrl/Shift and
+	// clicks on unselected rows act immediately.
 	{
-		if (!gui->isKeyShift())
-			deselectAll(rootTree);
-		node.isSelected = !node.isSelected || gui->isKeyShift();
-		manager->selectedObjects.clear();
-		manager->selectedObject = nullptr;
-		manager->selectedScene  = nullptr;
-		manager->worldSelected  = false;
+		const bool ctrl  = ImGui::GetIO().KeyCtrl;
+		const bool shift = ImGui::GetIO().KeyShift;
+		if (gui->isItemClicked())
+		{
+			if (ctrl || shift || !node.isSelected)
+			{
+				handleSelectionClick(rootTree, node);
+				clickPendingUuid = "";
+			}
+			else
+			{
+				clickPendingUuid = node.uuid; // maybe a drag — decide on release
+			}
+		}
+		if (!clickPendingUuid.empty() && clickPendingUuid == node.uuid &&
+			ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+		{
+			if (ImGui::IsItemHovered())
+				handleSelectionClick(rootTree, node); // released without dragging
+			clickPendingUuid = "";
+		}
 	}
 
-	// Drag source for file items in the tree view.
+	// Drag source for file items in the tree view (carries the whole selection).
 	if (node.type == 1 && !node.uuid.empty() &&
 		ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
 	{
-		ImGui::SetDragDropPayload("PROJECT_ASSET",
-			node.uuid.c_str(), node.uuid.size() + 1);
-		ImGui::Image(node.icon, ImVec2(16, 16));
-		ImGui::SameLine();
-		ImGui::TextUnformatted(node.name.c_str());
+		beginAssetDragSource(node);
 		ImGui::EndDragDropSource();
 	}
+
+	// Drop target — dropping asset(s) onto a folder moves them into it.
+	if (node.type == 0)
+		acceptAssetDropInto(node.fullPath);
 
 	if (ImGui::BeginPopupContextItem("##TreeCtx"))
 	{
@@ -690,29 +844,20 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 				// Full-cell selectable
 				bool selected = child->isSelected;
 				if (gui->selectable("##thumb", selected, 0, kVec2(columnWidth, cellHeight)))
-				{
-					if (!gui->isKeyShift())
-						deselectAll(rootThumbnail);
-					child->isSelected = !child->isSelected || gui->isKeyShift();
-					manager->selectedObjects.clear();
-					manager->selectedObject = nullptr;
-					manager->selectedScene  = nullptr;
-					manager->worldSelected  = false;
-					pendingSelectUuid = "";
-				}
+					handleSelectionClick(rootThumbnail, *child);
 
 				// Drag source — file items only (folders aren't draggable assets).
-				// Payload is the asset UUID; the receiver looks up type via Manager::fileMap.
+				// Payload carries every selected file's UUID (multi-file move).
 				if (child->type == 1 && !child->uuid.empty() &&
 					ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
 				{
-					ImGui::SetDragDropPayload("PROJECT_ASSET",
-						child->uuid.c_str(), child->uuid.size() + 1);
-					ImGui::Image(child->icon, ImVec2(32, 32));
-					ImGui::SameLine();
-					ImGui::TextUnformatted(child->name.c_str());
+					beginAssetDragSource(*child);
 					ImGui::EndDragDropSource();
 				}
+
+				// Drop target — dropping asset(s) onto a folder moves them into it.
+				if (child->type == 0)
+					acceptAssetDropInto(child->fullPath);
 
 				// Handle double-click
 				if (gui->isItemHovered() && gui->isMouseDoubleClicked(ImGuiMouseButton_Left))
@@ -796,6 +941,8 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 					{ manager->createNewFolder();     needRefreshList = true; }
 				if (ImGui::MenuItem("Shader"))
 					{ manager->createNewShader();     needRefreshList = true; }
+				if (ImGui::MenuItem("Raw Shader"))
+					{ manager->createNewRawShader();  needRefreshList = true; }
 				if (ImGui::MenuItem("Material"))
 					{ manager->createNewMaterial();   needRefreshList = true; }
 				if (ImGui::MenuItem("Script"))
@@ -876,11 +1023,40 @@ void PanelProject::drawRenameModal()
 	{
 		ImGui::TextUnformatted("New name:");
 
+		// Focus the field when the popup opens and, on that first focused frame,
+		// pre-select just the file stem (the name before the last '.') so typing
+		// replaces the name but keeps the extension instead of selecting it too.
+		static bool selectStem = false;
 		if (ImGui::IsWindowAppearing())
+		{
 			ImGui::SetKeyboardFocusHere();
+			selectStem = true;
+		}
+
+		struct RenameSelect
+		{
+			static int cb(ImGuiInputTextCallbackData *data)
+			{
+				bool *want = static_cast<bool *>(data->UserData);
+				if (want && *want)
+				{
+					int stem = data->BufTextLen;
+					for (int i = data->BufTextLen - 1; i > 0; --i)
+						if (data->Buf[i] == '.') { stem = i; break; }
+					data->CursorPos      = stem;
+					data->SelectionStart = 0;
+					data->SelectionEnd   = stem;
+					*want = false;
+				}
+				return 0;
+			}
+		};
+
 		ImGui::SetNextItemWidth(320.0f);
 		bool commit = ImGui::InputText("##renameinput", renameBuffer, sizeof(renameBuffer),
-		                               ImGuiInputTextFlags_EnterReturnsTrue);
+		                               ImGuiInputTextFlags_EnterReturnsTrue |
+		                               ImGuiInputTextFlags_CallbackAlways,
+		                               RenameSelect::cb, &selectStem);
 
 		ImGui::Spacing();
 		bool doRename = ImGui::Button("Rename", ImVec2(120, 0)) || commit;
@@ -917,24 +1093,7 @@ void PanelProject::drawBreadcrumb()
 		// Make the breadcrumb button just submitted accept dragged file assets
 		// and move them into `targetDir` on drop. The file's UUID lives in its
 		// JSON content, so moving the file preserves it.
-		auto acceptDropInto = [&](const fs::path& targetDir)
-		{
-			if (ImGui::BeginDragDropTarget())
-			{
-				if (const ImGuiPayload* payload =
-				        ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
-				{
-					kString uuid(static_cast<const char*>(payload->Data));
-					fs::path src = manager->findAssetPathByUuid(uuid);
-					if (!src.empty() && manager->moveAsset(src, targetDir))
-					{
-						clearSelection();
-						needRefreshList = true;
-					}
-				}
-				ImGui::EndDragDropTarget();
-			}
-		};
+		auto acceptDropInto = [&](const fs::path& targetDir) { acceptAssetDropInto(targetDir); };
 
 		// "Assets" — root of the project's asset tree.
 		if (gui->button("Assets"))

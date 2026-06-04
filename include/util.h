@@ -111,16 +111,99 @@ kString fitTextWithEllipsisUtf8(kGuiManager *gui, const kString& text, float max
 bool convertMeshToGlb(const fs::path& inputPath, const fs::path& outputPath);
 
 /**
- * @brief Convert an image file to a DXT5-compressed DDS texture.
+ * @brief Per-texture import settings that affect the generated .dds bytes.
  *
- * Loads @p inputPath as RGBA, compresses it block-by-block to DXT5, and writes a
- * .dds file (with a DDSHeader) to @p outputPath.
+ * Colour-space (sRGB), wrap and filter modes are *not* baked into the file —
+ * they are applied by the loader at upload time and stored separately in the
+ * texture's .meta. `sRGB` appears here only to pick the correct colour space
+ * for gamma-aware resizing/mip generation.
+ */
+struct ImageImportOptions
+{
+    int  maxSize        = 4096; ///< Clamp the longest edge to this (downscale only).
+    int  compression    = 2;    ///< 0=None (uncompressed RGBA8), 1=Low, 2=Normal, 3=High (DXT5).
+    int  alphaSource    = 1;    ///< 0=None (opaque), 1=Input Alpha, 2=From Grayscale.
+    bool sRGB           = true; ///< Treat colour as sRGB when resizing/generating mips (Channel = sRGB).
+    bool grayscale      = false;///< Collapse RGB to luma before encoding (Channel = Linear Grayscale).
+    bool generateMipmap = true; ///< Bake a full mip chain into the .dds.
+    bool flipVertical   = false;///< Flip the source image vertically on load.
+
+    // --- Normal-map options (only consulted when isNormalMap is true) -------
+    bool  isNormalMap   = false;///< Treat this image as a tangent-space normal map.
+    bool  flipGreen     = false;///< Invert the green channel (DirectX<->OpenGL convention).
+    bool  fromGrayscale = false;///< Generate a normal map from a grayscale height map.
+    float bumpiness     = 1.0f; ///< Height-to-normal strength (only when fromGrayscale).
+    int   normalFilter  = 0;    ///< Grayscale gradient kernel: 0=Sharp, 1=Smooth.
+};
+
+/**
+ * @brief Convert an image file to a DDS texture honouring import settings.
+ *
+ * Loads @p inputPath as RGBA, applies the alpha-source rule, optionally
+ * downscales to @p opt.maxSize, builds a mip chain, and writes either DXT5 or
+ * uncompressed RGBA8 (per @p opt.compression) as a .dds at @p outputPath.
  *
  * @param inputPath  Path to the source image file.
- * @param outputPath Destination path for the generated DXT5 .dds file.
- * @return True on successful conversion, false if the image could not be loaded or written.
+ * @param outputPath Destination path for the generated .dds file.
+ * @param opt        Import settings controlling size, compression, alpha and mips.
+ * @return True on success, false if the image could not be loaded, resized or written.
+ */
+bool convertImageToDDS(const fs::path& inputPath, const fs::path& outputPath, const ImageImportOptions& opt);
+
+/**
+ * @brief Convert an image to a DXT5 .dds using default import settings.
+ *
+ * Thin wrapper over convertImageToDDS() for the initial batch import, before the
+ * user customizes per-texture settings.
+ *
+ * @param inputPath  Path to the source image file.
+ * @param outputPath Destination path for the generated .dds file.
+ * @return True on successful conversion, false otherwise.
  */
 bool convertImageToDxt5(const fs::path& inputPath, const fs::path& outputPath);
+
+// ---------------------------------------------------------------------------
+// Shader reflection — `// @var` material parameter annotations
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief One material parameter declared by a `// @var <type> <name> [label]`
+ *        comment in a shader's source.
+ *
+ * The material inspector renders one control per ShaderVar, and the runtime
+ * pushes its value into the shader uniform named @ref name.
+ */
+struct ShaderVar
+{
+    kString type;  ///< GLSL/HLSL type: float, int, bool, vec2, vec3, vec4, sampler2D, samplerCube.
+    kString name;  ///< Uniform name the value is bound to (e.g. "albedoMap", "material.diffuse").
+    kString label; ///< Display label for the GUI (optional 3rd token; defaults to a prettified name).
+};
+
+/**
+ * @brief Extracts all `// @var <type> <name> [label]` annotations from shader text.
+ *
+ * Scans every line for the `@var` marker inside a `//` comment and parses the
+ * type, uniform name, and optional display label. Order of appearance is kept.
+ *
+ * @param source Combined shader source (vertex + fragment, any markers).
+ * @return The declared material parameters, in source order.
+ */
+std::vector<ShaderVar> parseShaderVars(const kString& source);
+
+/**
+ * @brief Reads an embedded RT_RCDATA resource as a text string (Windows).
+ * @param resourceName Resource identifier (e.g. "SHADER_MESH_PHONG").
+ * @return The resource bytes as a string, or empty if not found.
+ */
+kString getEmbeddedResourceText(const kString& resourceName);
+
+/**
+ * @brief Maps a built-in shader display name to its embedded resource name.
+ * @param shaderName "Unlit", "Phong", or "PBR".
+ * @return The resource name (e.g. "SHADER_MESH_PHONG"), or empty for unknown/custom.
+ */
+kString builtinShaderResource(const kString& shaderName);
 
 #endif // header guard
 

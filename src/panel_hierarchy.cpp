@@ -143,6 +143,8 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 				if (pProj)
 				{
 					kString assetUuid((const char *)p->Data);
+					// Multi-file project drags pack newline-separated UUIDs; spawn the first.
+					{ auto nl = assetUuid.find('\n'); if (nl != kString::npos) assetUuid = assetUuid.substr(0, nl); }
 					kObject *spawned = manager->instantiateAssetFromUuid(assetUuid);
 					if (spawned && isObjectRow)
 					{
