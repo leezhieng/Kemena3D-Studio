@@ -77,6 +77,32 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         if (gui->isItemHovered()) gui->setItemTooltip("Show octree node bounds");
     }
 
+    gui->sameLine();
+    gui->dummy(kVec2(8, 0));
+    gui->sameLine();
+
+    // Gizmo space: Local (object orientation) vs World (axis-aligned).
+    {
+        auto modeBtn = [&](const char *label, ImGuizmo::MODE m)
+        {
+            bool active = (manager->manipulatorMode == m);
+            if (active)
+            {
+                gui->pushStyleColor(ImGuiCol_Button,        kVec4(0.26f, 0.59f, 0.98f, 1.00f));
+                gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
+            }
+            if (gui->button(label, kIvec2(54, 22)))
+                manager->manipulatorMode = m;
+            if (active)
+                gui->popStyleColor(2);
+        };
+        modeBtn("Local", ImGuizmo::LOCAL);
+        if (gui->isItemHovered()) gui->setItemTooltip("Gizmo aligned to the object's local orientation");
+        gui->sameLine();
+        modeBtn("World", ImGuizmo::WORLD);
+        if (gui->isItemHovered()) gui->setItemTooltip("Gizmo aligned to world axes");
+    }
+
     gui->popStyleVar();
 
     gui->separator();

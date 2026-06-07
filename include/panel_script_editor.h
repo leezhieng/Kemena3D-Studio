@@ -42,6 +42,15 @@ public:
     /** @brief Save the current graph (Ctrl+S target). No-op when nothing loaded. */
     void saveCurrent() { saveGraph(); }
 
+    /**
+     * @brief Notifies the editor that an asset was renamed/moved on disk.
+     *
+     * If the currently-open .logic is the one that moved, its tracked path is
+     * updated so a subsequent Save writes to the new location instead of
+     * recreating the file at the old path.
+     */
+    void notifyAssetMoved(const std::string &oldPath, const std::string &newPath);
+
 private:
     /** @brief Resets to a fresh, untitled graph with a new UUID. */
     void newGraph();

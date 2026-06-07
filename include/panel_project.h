@@ -100,6 +100,7 @@ class PanelProject
 		kAssetManager* assetManager = nullptr; ///< Asset manager used to resolve and generate thumbnails.
 		std::unordered_map<kString, std::pair<GLuint, ImTextureRef>> thumbnailCache; ///< Cache of generated thumbnails keyed by asset UUID (GL texture + ImGui ref).
 
+	public:
 		/**
 		 * @brief Returns the thumbnail icon for an asset, generating and caching it if needed.
 		 * @param uuid UUID of the asset whose thumbnail is requested.
@@ -108,6 +109,7 @@ class PanelProject
 		 */
 		ImTextureRef getThumbnailIcon(const kString& uuid, ImTextureRef defaultIcon);
 
+	private:
 		/** @brief Releases all cached thumbnail GL textures and empties the cache. */
 		void clearThumbnailCache();
 

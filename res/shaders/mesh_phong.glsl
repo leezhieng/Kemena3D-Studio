@@ -277,14 +277,29 @@ void main()
     float gloss     = material.glossiness * (has_glossinessMap ? texture(glossinessMap, uv).r : 1.0);
     float shininess = material.shininess * gloss;
 
-    vec3 Tn = normalize(v_T);
-    vec3 Bn = normalize(v_B);
-    vec3 Nn = normalize(v_N);
+    vec3 Nn   = normalize(v_N);
+    vec3 norm = Nn;
+    // Tangent-space normal mapping using a screen-space derivative frame. This
+    // does NOT use the mesh's vertex tangents (which are frequently missing or
+    // degenerate on imported sub-meshes) — it derives T/B from the world-position
+    // and UV gradients, so it works on any sub-mesh that has UVs.
+    if (has_normalMap)
+    {
+        vec3 mapN = normalTex.rgb;
+        mapN.g = 1.0 - mapN.g;            // DirectX -> OpenGL green convention
+        mapN   = mapN * 2.0 - 1.0;
 
-    vec3 tn = normalTex.rgb;
-    tn.g    = 1.0 - tn.g;
-    tn      = normalize(tn * 2.0 - 1.0);
-    vec3 norm = normalize(Tn * tn.x + Bn * tn.y + Nn * tn.z);
+        vec3 dp1  = dFdx(v_worldPos);
+        vec3 dp2  = dFdy(v_worldPos);
+        vec2 duv1 = dFdx(uv);
+        vec2 duv2 = dFdy(uv);
+        vec3 dp2perp = cross(dp2, Nn);
+        vec3 dp1perp = cross(Nn, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-8));
+        norm = normalize(mat3(T * invmax, B * invmax, Nn) * mapN);
+    }
 
     vec3 vdir   = normalize(viewPos - v_worldPos);
     vec3 result = sceneAmbient * material.ambient;

@@ -21,7 +21,7 @@ using namespace kemena;
 enum class LogLevel
 {
 	Info,    ///< Informational message, rendered white.
-	Warning, ///< Warning message, rendered yellow.
+	Warning, ///< Warning message, rendered orange.
 	Error    ///< Error message, rendered red.
 };
 

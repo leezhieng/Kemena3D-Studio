@@ -1,10 +1,13 @@
 #include "manager.h"
 #include "util.h"
+#include "panel_script_editor.h" // for panelScriptEditor->notifyAssetMoved()
 
 #include <stb/stb_image.h>
 #include <stb/stb_image_write.h>
 #define STB_IMAGE_RESIZE2_IMPLEMENTATION
 #include <stb/stb_image_resize2.h>
+
+#include <algorithm> // std::find, std::remove
 
 #include <kemena/kmesh.h>
 #include <kemena/klight.h>
@@ -684,8 +687,13 @@ void Manager::checkAssetChange()
 					else std::cerr << "Failed to write metadata: " << metaPath << "\n";
 				}
 
-				// Queue conversion if imported asset is missing or source changed
-				if (!fs::exists(destFile))
+				// Queue conversion if imported asset is missing or source changed.
+				// Only mesh/image produce a file in ImportedAssets (uuidExt set).
+				// Materials and other types have no imported file, so testing
+				// destFile here would be testing "ImportedAssets/<uuid>" with no
+				// extension — which never exists — and would spuriously force a
+				// re-import (and thumbnail regen) on every focus/scan.
+				if (!uuidExt.empty() && !fs::exists(destFile))
 					needImport = true;
 
 				// If the thumbnail is missing, force a re-import/re-generation.
@@ -896,16 +904,25 @@ void Manager::startBatchImport(const std::vector<ImportTask>& tasks)
 		{
 			if (task.type == "mesh")
 			{
-				task.success = convertMeshToGlb(task.inputPath, task.outputPath);
+				// Use the Ex variant (same defaults as convertMeshToGlb) so we can
+				// capture the detailed failure reason and surface it in the console.
+				std::string err;
+				task.success = convertMeshToGlbEx(task.inputPath, task.outputPath,
+				                                  MeshImportOptions{}, &err, &task.warnings);
+				if (!task.success)
+					task.errorMsg = err.empty() ? "mesh import failed" : err;
 			}
 			else if (task.type == "image")
 			{
 				task.success = convertImageToDxt5(task.inputPath, task.outputPath);
+				if (!task.success)
+					task.errorMsg = "image import failed (unsupported or corrupt source file?)";
 			}
 			else
 			{
 				// Not handled yet -> mark as skipped
 				task.success = false;
+				task.errorMsg = "asset type '" + task.type + "' not supported yet";
 				std::cout << "Skipping: " << task.inputPath << " (type=" << task.type << " not supported yet)\n";
 			}
 
@@ -949,9 +966,21 @@ void Manager::drawImportPopup(PanelConsole* console)
 
 				for (auto& task : importQueue)
 				{
+					// Non-fatal importer warnings (orange), logged once per task
+					// regardless of success/failure.
+					if (!task.warningsLogged)
+					{
+						for (const std::string &w : task.warnings)
+							console->addLog(LogLevel::Warning, "[Import] %s: %s",
+							                task.inputPath.generic_string().c_str(), w.c_str());
+						task.warningsLogged = true;
+					}
+
 					if (!task.success && !task.reported)
 					{
-						console->addLog(LogLevel::Error, (kString("[Error] Failed to convert: ") + task.inputPath.generic_string()).c_str());
+						console->addLog(LogLevel::Error, "[Import] Failed to convert '%s': %s",
+						                task.inputPath.generic_string().c_str(),
+						                task.errorMsg.empty() ? "unknown error" : task.errorMsg.c_str());
 						task.reported = true;
 					}
 					else if (task.success && !task.reported && task.type == "mesh" && !task.thumbnailPath.empty())
@@ -991,6 +1020,12 @@ void Manager::processThumbnailQueue(PanelConsole *console)
 
 	// Skip if thumbnail already exists
 	if (fs::exists(task.thumbnailPath)) return;
+
+	// Skip stale tasks whose source no longer exists (e.g. the asset was moved or
+	// deleted after the task was queued). checkAssetChange re-queues with the
+	// correct path when a thumbnail is actually missing, so dropping these is safe
+	// — and avoids spurious "cannot open" errors in the console.
+	if (!task.srcPath.empty() && !fs::exists(task.srcPath)) return;
 
 	if (task.type == "image")
 	{
@@ -2200,6 +2235,46 @@ void Manager::createNewLogicGraph()
     selectProjectAssetByPath(filePath);
 }
 
+// Carry an asset's UUID to its new path in assets.json after a move/rename.
+// Without this, checkAssetChange() (which keys the registry by path) treats the
+// file as brand new, assigns a fresh UUID, and orphans the old one — breaking
+// every reference to it (materials, generated logic-graph scripts, etc.).
+// Handles both a single file (exact match) and a renamed/moved folder (every
+// entry whose path is under it gets its prefix rewritten).
+static void remapAssetRegistryPath(const fs::path &projectPath,
+                                   const fs::path &srcPath, const fs::path &newPath)
+{
+    std::error_code ec;
+    fs::path assetsPath     = projectPath / "Assets";
+    fs::path assetsJsonFile = projectPath / "Library" / "assets.json";
+    std::string oldRel = fs::relative(srcPath, assetsPath, ec).generic_string();
+    std::string newRel = fs::relative(newPath, assetsPath, ec).generic_string();
+    if (oldRel.empty() || newRel.empty() || !fs::exists(assetsJsonFile)) return;
+
+    try
+    {
+        nlohmann::json j;
+        { std::ifstream ifs(assetsJsonFile); ifs >> j; }
+        if (!j.contains("files") || !j["files"].is_array()) return;
+
+        const std::string oldPrefix = oldRel + "/";
+        for (auto &entry : j["files"])
+        {
+            std::string name = entry.value("name", std::string());
+            if (name == oldRel)
+                entry["name"] = newRel;                              // the file/folder itself
+            else if (name.rfind(oldPrefix, 0) == 0)
+                entry["name"] = newRel + name.substr(oldRel.size()); // a child of a renamed folder
+        }
+        std::ofstream ofs(assetsJsonFile);
+        ofs << j.dump(4);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "remapAssetRegistryPath: " << e.what() << "\n";
+    }
+}
+
 bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
 {
     if (!projectOpened || srcPath.empty() || destDir.empty()) return false;
@@ -2233,41 +2308,12 @@ bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
         return false;
     }
 
-    // Carry the asset's UUID to its new path in assets.json. Without this,
-    // checkAssetChange() (which keys the registry by path) would treat the moved
-    // file as brand new, assign a fresh UUID, and orphan the old one — breaking
-    // every material/reference that points at the original UUID.
-    {
-        fs::path assetsPath     = projectPath / "Assets";
-        fs::path assetsJsonFile = projectPath / "Library" / "assets.json";
-        kString  oldRel = fs::relative(srcPath, assetsPath, ec).generic_string();
-        kString  newRel = fs::relative(newPath, assetsPath, ec).generic_string();
-        if (!oldRel.empty() && !newRel.empty() && fs::exists(assetsJsonFile))
-        {
-            try
-            {
-                nlohmann::json j;
-                { std::ifstream ifs(assetsJsonFile); ifs >> j; }
-                if (j.contains("files") && j["files"].is_array())
-                {
-                    for (auto& entry : j["files"])
-                    {
-                        if (entry.value("name", std::string()) == oldRel)
-                        {
-                            entry["name"] = newRel; // same uuid/checksum/type
-                            break;
-                        }
-                    }
-                    std::ofstream ofs(assetsJsonFile);
-                    ofs << j.dump(4);
-                }
-            }
-            catch (const std::exception& e)
-            {
-                std::cerr << "Move: failed to update assets.json (" << e.what() << ")\n";
-            }
-        }
-    }
+    // Carry the asset's UUID to its new path so references survive the move.
+    remapAssetRegistryPath(projectPath, srcPath, newPath);
+
+    // Keep the Script Editor's open-file path in sync if this file moved.
+    if (panelScriptEditor)
+        panelScriptEditor->notifyAssetMoved(srcPath.string(), newPath.string());
 
     // Rebuild Manager::fileMap from the patched assets.json. The moved file now
     // matches an existing path+checksum, so no re-import and the UUID is kept.
@@ -2296,7 +2342,77 @@ bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
         return false;
     }
 
+    // Preserve the asset's UUID across the rename so its generated script (for a
+    // .logic graph), material references, etc. keep resolving. Without this,
+    // checkAssetChange() would assign a fresh UUID and the links break.
+    remapAssetRegistryPath(projectPath, oldPath, newPath);
+
+    // If the renamed file is open in the Script Editor, update its tracked path
+    // so a subsequent Save writes to the new file instead of the old name.
+    if (panelScriptEditor)
+        panelScriptEditor->notifyAssetMoved(oldPath.string(), newPath.string());
+
     checkAssetChange();
+    return true;
+}
+
+bool Manager::duplicateAsset(const fs::path &srcPath)
+{
+    if (!projectOpened || srcPath.empty() || !fs::exists(srcPath)) return false;
+
+    const bool  isDir = fs::is_directory(srcPath);
+    fs::path    dir   = srcPath.parent_path();
+    std::string stem  = srcPath.stem().string();
+    std::string ext   = srcPath.extension().string();
+
+    // Find a free "<stem> copy[ N][.ext]" name.
+    auto candidate = [&](int n) -> fs::path {
+        std::string base = stem + " copy" + (n > 1 ? " " + std::to_string(n) : "");
+        return isDir ? (dir / base) : (dir / (base + ext));
+    };
+    int n = 1;
+    fs::path dst = candidate(n);
+    while (fs::exists(dst)) dst = candidate(++n);
+
+    std::error_code ec;
+    if (isDir)
+        fs::copy(srcPath, dst, fs::copy_options::recursive, ec);
+    else
+        fs::copy_file(srcPath, dst, ec);
+    if (ec)
+    {
+        std::cerr << "Duplicate failed: " << ec.message() << "\n";
+        return false;
+    }
+
+    // Regenerate the embedded UUID of JSON assets so the copy is independent of
+    // the original (notably .logic, whose UUID names its generated script).
+    auto regenEmbeddedUuid = [](const fs::path &p) {
+        std::string e = p.extension().string();
+        if (e != ".mat" && e != ".logic" && e != ".shader") return;
+        try
+        {
+            nlohmann::json j;
+            { std::ifstream in(p); if (!in.is_open()) return; in >> j; }
+            if (j.contains("uuid")) j["uuid"] = generateUuid();
+            std::ofstream out(p);
+            if (out.is_open()) out << j.dump(4);
+        }
+        catch (...) {}
+    };
+    if (isDir)
+    {
+        for (auto it = fs::recursive_directory_iterator(dst, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec))
+            if (!ec && it->is_regular_file()) regenEmbeddedUuid(it->path());
+    }
+    else
+    {
+        regenEmbeddedUuid(dst);
+    }
+
+    checkAssetChange();
+    selectProjectAssetByPath(dst);
     return true;
 }
 
@@ -2662,7 +2778,10 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         }
 
         mesh->setName(name);
+        if (!refName.empty()) mesh->setRefName(refName); // keep asset link for save / re-import
         mesh->setActive(active);
+        mesh->setStatic(obj.value("static", false));   // was serialized but never restored
+        mesh->setVisible(obj.value("visible", true));  // same: restore on load
         mesh->setCastShadow(obj.value("cast_shadow", true));
         mesh->setReceiveShadow(obj.value("receive_shadow", true));
         if (topLevel)
@@ -2811,16 +2930,16 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         if (obj.contains("material_uuid"))
             result->setMaterialUuid(obj["material_uuid"].get<std::string>());
 
-        // Per-sub-mesh material overrides for import-derived sub-meshes. Set the
-        // UUID on each resolved sub-mesh; reapplyStoredMaterials (run after the
-        // full load) recurses into import-children and builds the materials.
+        // Per-sub-mesh overrides for import-derived sub-meshes. Each entry holds
+        // only the fields the user changed (material, active, visible, static,
+        // shadows). The material UUID is applied later by reapplyStoredMaterials
+        // (it recurses import-children); the flags are applied here.
         if (obj.contains("submesh_materials") && obj["submesh_materials"].is_array())
         {
             for (const json &sm : obj["submesh_materials"])
             {
                 std::string ps = sm.value("path", std::string(""));
-                std::string mu = sm.value("material_uuid", std::string(""));
-                if (ps.empty() || mu.empty()) continue;
+                if (ps.empty()) continue;
 
                 std::vector<int> path;
                 std::stringstream ss(ps);
@@ -2828,8 +2947,19 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 while (std::getline(ss, seg, '.'))
                     if (!seg.empty()) path.push_back(std::stoi(seg));
 
-                if (kObject *sub = resolveSubmeshByPath(result, path, 0))
-                    sub->setMaterialUuid(mu);
+                kObject *sub = resolveSubmeshByPath(result, path, 0);
+                if (!sub) continue;
+
+                if (sm.contains("material_uuid"))
+                    sub->setMaterialUuid(sm["material_uuid"].get<std::string>());
+                if (sm.contains("active")) sub->setActive(sm["active"].get<bool>());
+                if (sm.contains("static")) sub->setStatic(sm["static"].get<bool>());
+                if (kMesh *subMesh = dynamic_cast<kMesh *>(sub))
+                {
+                    if (sm.contains("visible"))        subMesh->setVisible(sm["visible"].get<bool>());
+                    if (sm.contains("cast_shadow"))    subMesh->setCastShadow(sm["cast_shadow"].get<bool>());
+                    if (sm.contains("receive_shadow")) subMesh->setReceiveShadow(sm["receive_shadow"].get<bool>());
+                }
             }
         }
 
@@ -3444,7 +3574,7 @@ void Manager::stepPhysics(float dt)
 // asset. Compilation is checksum-gated: an unchanged source is not rebuilt.
 // ---------------------------------------------------------------------------
 
-void Manager::buildScripts()
+void Manager::buildScripts(bool logSummary)
 {
     if (!world || !scene) return;
     kScriptManager *sm = world->getScriptManager();
@@ -3457,6 +3587,7 @@ void Manager::buildScripts()
     std::map<kString, kString> fileToAsset;   // source path -> script-asset UUID
     std::map<kString, bool>    fileCompiled;  // script-asset UUID -> compile OK
     bool changedMeta = false;
+    int  found = 0, okCount = 0, failCount = 0;
 
     std::function<void(kObject *)> walk = [&](kObject *node) {
         if (!node) return;
@@ -3464,9 +3595,15 @@ void Manager::buildScripts()
         {
             if (comp.fileName.empty())
                 continue;
+            ++found;
             if (!fs::exists(fs::path(comp.fileName)))
             {
+                ++failCount;
                 std::cerr << "buildScripts: source missing: " << comp.fileName << "\n";
+                if (panelConsole)
+                    panelConsole->addLog(LogLevel::Error,
+                        "[Script] Source missing for '%s': %s",
+                        node->getName().c_str(), comp.fileName.c_str());
                 continue;
             }
 
@@ -3490,13 +3627,19 @@ void Manager::buildScripts()
                 {
                     ok = sm->compileToBytecode(sid, bc.string());
                     if (!ok)
+                    {
                         std::cerr << "buildScripts: compile failed: " << comp.fileName << "\n";
+                        if (panelConsole)
+                            panelConsole->addLog(LogLevel::Error,
+                                "[Script] Compile failed: %s", comp.fileName.c_str());
+                    }
                 }
                 else
                 {
                     sm->setBytecodePath(sid, bc.string());
                 }
                 fileCompiled[sid] = ok;
+                if (ok) ++okCount; else ++failCount;
             }
 
             if (comp.scriptUuid != sid) { comp.scriptUuid = sid; changedMeta = true; }
@@ -3513,6 +3656,10 @@ void Manager::buildScripts()
     };
     walk(scene->getRootNode());
 
+    if (logSummary && panelConsole)
+        panelConsole->addLog(found == 0 ? LogLevel::Warning : LogLevel::Info,
+            "[Script] Build: %d attached, %d compiled, %d failed.", found, okCount, failCount);
+
     if (changedMeta)
         projectSaved = false;
 }
@@ -3520,8 +3667,8 @@ void Manager::buildScripts()
 void Manager::startScripts()
 {
     if (!world) return;
-    buildScripts();          // ensure bytecode is fresh
-    world->startScripts();   // Awake() + Start() across the scene
+    buildScripts();        // checksum-gated compile of attached scripts
+    world->startScripts(); // Awake() + Start() across the scene
 }
 
 void Manager::stopScripts()
@@ -3614,6 +3761,7 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
             mesh = am->loadMesh(glb.string());
         if (!mesh)
             mesh = new kMesh();
+        mesh->setRefName(assetUuid); // remember source asset for save / re-import reload
         if (am) applyDefaultMaterial(mesh, am);
         assignImportChildUuidsRec(mesh);
 
@@ -4256,7 +4404,15 @@ void Manager::unpackPrefabInstance(kObject *instanceRoot)
 kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString &uniformName)
 {
     if (textureUuid.empty()) return nullptr;
-    auto cit = textureCache.find(textureUuid);
+
+    // A texture used as a normal map must be sampled in linear space, no matter
+    // its own color-space setting — sampling normal vectors through sRGB decode
+    // tilts them and wrecks the lighting. Cache that variant under a distinct
+    // key so the same image used as albedo (sRGB) and normal (linear) coexist.
+    const bool forceLinear = (uniformName == "normalMap");
+    kString    cacheKey    = forceLinear ? (textureUuid + "#linear") : textureUuid;
+
+    auto cit = textureCache.find(cacheKey);
     if (cit != textureCache.end())
         return cit->second;
 
@@ -4284,6 +4440,7 @@ kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString
             }
             catch (...) {}
         }
+        if (forceLinear) sRGB = false; // normal maps are always linear
 
         // Prefer the imported .dds in Library (resized/compressed per settings).
         // Fall back to the original image in Assets/ if it isn't imported yet
@@ -4301,7 +4458,7 @@ kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString
                                              : kTextureFormat::TEX_FORMAT_RGBA);
         }
     }
-    textureCache[textureUuid] = tex; // cache even if null, to avoid re-probing
+    textureCache[cacheKey] = tex; // cache even if null, to avoid re-probing
     return tex;
 }
 
@@ -4352,13 +4509,137 @@ bool Manager::reimportTexture(const kString &textureUuid)
     std::error_code ec;
     fs::create_directories(ddsPath.parent_path(), ec);
     if (!convertImageToDDS(srcPath, ddsPath, opt))
+    {
+        if (panelConsole)
+            panelConsole->addLog(LogLevel::Error, "[Import] Failed to reimport texture '%s'",
+                                 srcPath.generic_string().c_str());
         return false;
+    }
 
-    // Drop the cached GPU texture so the next material build reloads the new
+    // Drop the cached GPU texture(s) so the next material build reloads the new
     // .dds, then rebuild every object's material so the change shows live.
+    // Both the default (sRGB) and the normal-map (linear) variants are evicted.
     textureCache.erase(textureUuid);
+    textureCache.erase(textureUuid + "#linear");
     reapplyStoredMaterials();
     return true;
+}
+
+bool Manager::reimportMesh(const kString &meshUuid)
+{
+    auto fit = fileMap.find(meshUuid);
+    if (fit == fileMap.end() || fit->second.type != "mesh") return false;
+
+    fs::path srcPath = projectPath / "Assets" / fit->second.path;
+    if (!fs::exists(srcPath)) return false;
+
+    fs::path glbPath   = projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
+    fs::path metaPath  = projectPath / "Library" / "Metadata"       / (meshUuid + ".json");
+    fs::path thumbPath = projectPath / "Library" / "Thumbnails"     / (meshUuid + ".png");
+
+    MeshImportOptions opt;
+    if (fs::exists(metaPath))
+    {
+        try
+        {
+            std::ifstream mf(metaPath);
+            nlohmann::json mj; mf >> mj;
+            opt.scaleFactor     = mj.value("scaleFactor", 1.0f);
+            opt.tangents        = mj.value("tangents", 0);
+            opt.importAnimation = mj.value("importAnimation", true);
+        }
+        catch (...) {}
+    }
+
+    std::error_code ec;
+    fs::create_directories(glbPath.parent_path(), ec);
+    std::string err;
+    std::vector<std::string> warns;
+    bool ok = convertMeshToGlbEx(srcPath, glbPath, opt, &err, &warns);
+    if (panelConsole)
+        for (const std::string &w : warns)
+            panelConsole->addLog(LogLevel::Warning, "[Import] %s: %s",
+                                 srcPath.generic_string().c_str(), w.c_str());
+    if (!ok)
+    {
+        std::cerr << "reimportMesh failed for " << srcPath << ": " << err << "\n";
+        if (panelConsole)
+            panelConsole->addLog(LogLevel::Error, "[Import] Failed to reimport mesh '%s': %s",
+                                 srcPath.generic_string().c_str(),
+                                 err.empty() ? "unknown error" : err.c_str());
+        return false;
+    }
+
+    // Regenerate the thumbnail from the new .glb (deleted so it isn't skipped).
+    if (fs::exists(thumbPath)) fs::remove(thumbPath, ec);
+    thumbnailQueue.push_back({ meshUuid, glbPath, thumbPath, "mesh" });
+
+    // Queue a deferred reload so scene instances pick up the new geometry. Done
+    // next frame (not here) to avoid tearing down objects mid panel-draw.
+    if (std::find(pendingMeshReloads.begin(), pendingMeshReloads.end(), meshUuid) == pendingMeshReloads.end())
+        pendingMeshReloads.push_back(meshUuid);
+
+    // Keep the model selected through the refresh so the inspector doesn't blank out.
+    if (panelProject)
+    {
+        panelProject->pendingSelectUuid = meshUuid;
+        panelProject->triggerRefresh();
+    }
+    return true;
+}
+
+void Manager::processPendingMeshReloads()
+{
+    if (pendingMeshReloads.empty() || !world) return;
+
+    kAssetManager *am = getAssetManager();
+    bool any = false;
+
+    auto scenes = world->getScenes();
+    // Skip index 0 (the editor scene); its gizmos never reference mesh assets.
+    for (size_t si = 1; si < scenes.size(); ++si)
+    {
+        kScene *s = scenes[si];
+        if (!s || !s->getRootNode()) continue;
+
+        // Collect the top-level objects instanced from a queued mesh first
+        // (their serialized JSON carries the source asset UUID as "reference").
+        std::vector<kObject *> matches;
+        std::vector<nlohmann::json> snapshots;
+        for (kObject *child : s->getRootNode()->getChildren())
+        {
+            nlohmann::json j = child->serialize();
+            kString ref = j.value("reference", std::string());
+            if (!ref.empty() &&
+                std::find(pendingMeshReloads.begin(), pendingMeshReloads.end(), ref) != pendingMeshReloads.end())
+            {
+                matches.push_back(child);
+                snapshots.push_back(std::move(j));
+            }
+        }
+
+        for (size_t i = 0; i < matches.size(); ++i)
+        {
+            kObject *obj = matches[i];
+            // Drop selection that points at the subtree we're about to free.
+            if (selectedObject == obj) selectedObject = nullptr;
+            selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), obj->getUuid()),
+                                  selectedObjects.end());
+
+            s->removeMesh(static_cast<kMesh *>(obj)); // unlink from scene root
+            deleteObjectRecursive(obj);               // free the old subtree
+            loadObjectFromJson(snapshots[i], s, world, am, projectPath, editorCamera); // rebuild from new .glb
+            any = true;
+        }
+    }
+
+    pendingMeshReloads.clear();
+
+    if (any)
+    {
+        reapplyStoredMaterials();
+        if (panelHierarchy) panelHierarchy->refreshList();
+    }
 }
 
 kShader *Manager::getRawShader(const kString &shaderUuid)

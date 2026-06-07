@@ -99,12 +99,40 @@ void utf8Encode(uint32_t cp, kString& out);
 kString fitTextWithEllipsisUtf8(kGuiManager *gui, const kString& text, float maxWidth);
 
 /**
- * @brief Convert a model file to glTF binary (.glb) using Assimp.
+ * @brief Per-mesh import settings applied during conversion.
+ */
+struct MeshImportOptions
+{
+    float scaleFactor     = 1.0f; ///< Uniform global scale applied on import.
+    int   tangents        = 0;    ///< 0 = keep imported tangents, 1 = generate (calc tangent space).
+    bool  importAnimation = true; ///< When false, animations are stripped from the .glb.
+};
+
+/**
+ * @brief Convert a model file to glTF binary (.glb) honouring import settings.
  *
- * Imports the mesh (including animations) from @p inputPath and exports it as a
- * .glb file at @p outputPath.
+ * Imports @p inputPath with smooth normals (generated only if missing), optional
+ * tangent-space generation, and a global scale, then exports a .glb to
+ * @p outputPath. Animations are kept unless @p opt.importAnimation is false.
  *
  * @param inputPath  Path to the source model file in any Assimp-supported format.
+ * @param outputPath Destination path for the generated .glb file.
+ * @param opt        Import settings (scale, tangents, animation).
+ * @param errorOut    Optional; receives the Assimp error string on failure.
+ * @param warningsOut Optional; receives any Assimp warning messages emitted
+ *                    during import (non-fatal). Each entry is one warning line.
+ * @return True on success, false on import or export failure.
+ */
+bool convertMeshToGlbEx(const fs::path& inputPath, const fs::path& outputPath,
+                        const MeshImportOptions& opt, std::string* errorOut = nullptr,
+                        std::vector<std::string>* warningsOut = nullptr);
+
+/**
+ * @brief Convert a model file to .glb using default import settings.
+ *
+ * Thin wrapper over convertMeshToGlbEx() for the initial batch import.
+ *
+ * @param inputPath  Path to the source model file.
  * @param outputPath Destination path for the generated .glb file.
  * @return True on successful conversion, false on import or export failure.
  */

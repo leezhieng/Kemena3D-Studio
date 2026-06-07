@@ -85,6 +85,9 @@ struct ImportTask
     fs::path thumbnailPath; ///< Where to save uuid.png after import.
     bool success  = false;  ///< Set true once the conversion succeeds.
     bool reported = false;  ///< True once the result has been logged to the console.
+    kString  errorMsg;      ///< Detailed failure reason (filled by the converter on failure).
+    std::vector<std::string> warnings;   ///< Non-fatal importer warnings, logged on the main thread.
+    bool warningsLogged = false;         ///< True once warnings have been written to the console.
 };
 
 /**
@@ -112,6 +115,7 @@ struct ObjectInfo
 class PanelProject;
 class PanelHierarchy;
 class PanelConsole;
+class PanelScriptEditor;
 class PanelGame;
 
 /**
@@ -298,6 +302,15 @@ public:
     /** @brief Renames a project asset (file or folder) in place.
      *  @return true on success; false if the target name already exists. */
     bool renameAsset(const fs::path &oldPath, const kString &newName);
+
+    /** @brief Duplicates a project asset (file or folder) next to the original.
+     *
+     * Copies to a unique "<name> copy[.ext]" path and regenerates the embedded
+     * UUID of any JSON asset (.mat/.logic/.shader) in the copy so it doesn't
+     * collide with the original (e.g. a .logic's generated-script identity).
+     * @param srcPath Asset to duplicate.
+     * @return true on success. */
+    bool duplicateAsset(const fs::path &srcPath);
 
     /** @brief Moves a project asset into another folder, preserving its filename
      *         (and therefore its embedded UUID).
@@ -536,6 +549,33 @@ public:
     bool reimportTexture(const kString &textureUuid);
 
     /**
+     * @brief Re-imports a mesh asset using its current .meta import settings.
+     *
+     * Reads the per-mesh settings (scale, tangents, import-animation) from
+     * Library/Metadata/<uuid>.json, regenerates Library/ImportedAssets/<uuid>.glb
+     * via convertMeshToGlbEx(), and queues a thumbnail refresh. Note: meshes
+     * already instantiated in the open scene keep their geometry until the scene
+     * is reloaded — only the imported .glb is regenerated here.
+     * @param meshUuid Mesh asset UUID.
+     * @return True if the mesh was re-imported, false if missing or conversion failed.
+     */
+    bool reimportMesh(const kString &meshUuid);
+
+    /**
+     * @brief Reloads, in place, every scene object instanced from a re-imported mesh.
+     *
+     * Drains @ref pendingMeshReloads: for each queued mesh UUID, the matching
+     * top-level scene objects are serialized, removed, and rebuilt from the
+     * freshly converted .glb (preserving transform / components / materials).
+     * Called once per frame from the main loop so the teardown never happens
+     * mid-panel-draw.
+     */
+    void processPendingMeshReloads();
+
+    /// Mesh asset UUIDs whose scene instances need rebuilding after re-import.
+    std::vector<kString> pendingMeshReloads;
+
+    /**
      * @brief Compiles (and caches) a hand-written raw shader asset by UUID.
      *
      * Reads the `.glsl`/`.hlsl` file from Assets/, compiles it, and caches the
@@ -660,7 +700,7 @@ public:
 
     /** @brief Compiles every attached script to Library/Scripts bytecode.
      *         Skips scripts whose source checksum is unchanged. */
-    void buildScripts();
+    void buildScripts(bool logSummary = false);
 
     /** @brief Builds bytecode then starts script lifecycle dispatch (on Play). */
     void startScripts();
@@ -692,9 +732,11 @@ public:
     fs::path worldPath;      ///< Filesystem path of the currently open world.
     // kString worldUuid = "";
 
-    PanelProject   *panelProject   = nullptr; ///< Project (asset browser) panel.
-    PanelHierarchy *panelHierarchy = nullptr; ///< Scene hierarchy panel.
-    PanelGame      *panelGame      = nullptr; ///< Game/play panel.
+    PanelProject      *panelProject      = nullptr; ///< Project (asset browser) panel.
+    PanelHierarchy    *panelHierarchy    = nullptr; ///< Scene hierarchy panel.
+    PanelScriptEditor *panelScriptEditor = nullptr; ///< Visual logic-graph editor.
+    PanelConsole      *panelConsole      = nullptr; ///< Console panel (for build/script logging).
+    PanelGame         *panelGame         = nullptr; ///< Game/play panel.
 
     /// Camera used by the editor viewport (excluded from game camera candidates).
     kCamera *editorCamera      = nullptr;

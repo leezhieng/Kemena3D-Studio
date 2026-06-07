@@ -6,6 +6,23 @@ PanelConsole::PanelConsole(kGuiManager *setGuiManager, Manager *setManager)
 
     gui = setGuiManager;
     manager = setManager;
+    if (manager) manager->panelConsole = this; // let Manager log build/script messages here
+
+    // Route AngelScript compiler messages (errors/warnings/info) to this panel.
+    // Errors render red, warnings orange — matching addLog's color mapping.
+    kScriptManager::setMessageHandler(
+        [m = manager](int severity, const char *section, int row, int col, const char *message)
+        {
+            if (!m || !m->panelConsole) return;
+            LogLevel lvl = (severity == kScriptManager::MSG_WARNING) ? LogLevel::Warning
+                         : (severity == kScriptManager::MSG_INFO)    ? LogLevel::Info
+                         :                                             LogLevel::Error;
+            if (row > 0)
+                m->panelConsole->addLog(lvl, "[Script] %s (%d,%d): %s",
+                                        section ? section : "", row, col, message ? message : "");
+            else
+                m->panelConsole->addLog(lvl, "[Script] %s", message ? message : "");
+        });
 }
 
 void PanelConsole::addLog(LogLevel level, const char *fmt, ...)
@@ -53,8 +70,8 @@ void PanelConsole::draw(bool &opened)
                     color = kVec4(1.0f, 1.0f, 1.0f, 1.0f);
                     break; // white
                 case LogLevel::Warning:
-                    color = kVec4(1.0f, 1.0f, 0.0f, 1.0f);
-                    break; // yellow
+                    color = kVec4(1.0f, 0.6f, 0.1f, 1.0f);
+                    break; // orange
                 case LogLevel::Error:
                     color = kVec4(1.0f, 0.2f, 0.2f, 1.0f);
                     break; // red

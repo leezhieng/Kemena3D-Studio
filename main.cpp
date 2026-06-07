@@ -740,7 +740,12 @@ int main()
 
 			// Thumbnail generation (one per frame, main thread only)
 			if (manager->projectOpened)
+			{
 				manager->processThumbnailQueue(panelConsole);
+				// Rebuild scene instances of any re-imported mesh (deferred from
+				// the inspector's Apply so teardown never happens mid panel-draw).
+				manager->processPendingMeshReloads();
+			}
 		}
 
 		// Prefab editor renders its isolated scene through its OWN renderer into

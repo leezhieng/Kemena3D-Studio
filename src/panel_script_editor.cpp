@@ -125,7 +125,21 @@ namespace
 PanelScriptEditor::PanelScriptEditor(kGuiManager *setGui, Manager *setManager)
     : gui(setGui), manager(setManager)
 {
+    if (manager) manager->panelScriptEditor = this;
     newGraph();
+}
+
+void PanelScriptEditor::notifyAssetMoved(const std::string &oldPath, const std::string &newPath)
+{
+    if (filePath.empty()) return;
+    std::error_code ec;
+    // Compare canonical-ish paths so separators/relativity don't cause misses.
+    if (fs::path(filePath).lexically_normal() == fs::path(oldPath).lexically_normal())
+    {
+        filePath   = newPath;
+        graph.name = fs::path(newPath).stem().string();
+        statusLine = "Renamed to " + fs::path(newPath).filename().string();
+    }
 }
 
 void PanelScriptEditor::newGraph()
@@ -367,7 +381,7 @@ void PanelScriptEditor::drawVariablesPanel()
         ImGui::PushID((int)i);
 
         char nameBuf[64];
-        std::strncpy(nameBuf, v.name.c_str(), sizeof(nameBuf) - 1);
+        strncpy_s(nameBuf, sizeof(nameBuf), v.name.c_str(), _TRUNCATE);
         nameBuf[sizeof(nameBuf) - 1] = '\0';
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
@@ -474,7 +488,7 @@ void PanelScriptEditor::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 
             else if (p.type == kScriptPinType::String)
             {
                 char buf[128];
-                std::strncpy(buf, p.defStr.c_str(), sizeof(buf) - 1);
+                strncpy_s(buf, sizeof(buf), p.defStr.c_str(), _TRUNCATE);
                 buf[sizeof(buf) - 1] = '\0';
                 ImGui::SetNextItemWidth(78.0f);
                 if (ImGui::InputText("##d", buf, sizeof(buf)))
@@ -523,7 +537,7 @@ void PanelScriptEditor::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 
         case kScriptNodeType::LiteralString:
         {
             char buf[256];
-            std::strncpy(buf, node.valueStr.c_str(), sizeof(buf) - 1);
+            strncpy_s(buf, sizeof(buf), node.valueStr.c_str(), _TRUNCATE);
             buf[sizeof(buf) - 1] = '\0';
             if (ImGui::InputText("##ls", buf, sizeof(buf)))
             {

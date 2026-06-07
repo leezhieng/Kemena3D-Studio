@@ -282,20 +282,27 @@ void main()
     }
     roughness = clamp(roughness, 0.04, 1.0);
 
-    vec3 Tn = normalize(v_T);
-    vec3 Bn = normalize(v_B);
-    vec3 Nn = normalize(v_N);
-    vec3 norm;
+    vec3 Nn   = normalize(v_N);
+    vec3 norm = Nn;
+    // Screen-space derivative tangent frame — independent of the mesh's vertex
+    // tangents (often missing/degenerate on imported sub-meshes); works on any
+    // sub-mesh with UVs.
     if (has_normalMap)
     {
-        vec3 tn = texture(normalMap, uv).rgb;
-        tn.g    = 1.0 - tn.g;
-        tn      = normalize(tn * 2.0 - 1.0);
-        norm    = normalize(Tn * tn.x + Bn * tn.y + Nn * tn.z);
-    }
-    else
-    {
-        norm = Nn;
+        vec3 mapN = texture(normalMap, uv).rgb;
+        mapN.g = 1.0 - mapN.g;
+        mapN   = mapN * 2.0 - 1.0;
+
+        vec3 dp1  = dFdx(v_worldPos);
+        vec3 dp2  = dFdy(v_worldPos);
+        vec2 duv1 = dFdx(uv);
+        vec2 duv2 = dFdy(uv);
+        vec3 dp2perp = cross(dp2, Nn);
+        vec3 dp1perp = cross(Nn, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-8));
+        norm = normalize(mat3(T * invmax, B * invmax, Nn) * mapN);
     }
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);

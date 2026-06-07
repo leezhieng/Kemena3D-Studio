@@ -15,6 +15,10 @@
 #include <cctype>
 #include <algorithm> // for std::max
 #include <cmath>     // for std::sqrt
+#include <assimp/config.h> // for AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY
+#include <assimp/DefaultLogger.hpp>
+#include <assimp/LogStream.hpp>
+#include <assimp/Logger.hpp>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -116,41 +120,158 @@ kString fitTextWithEllipsisUtf8(kGuiManager *gui, const kString& text, float max
 	return out;
 }
 
-bool convertMeshToGlb(const fs::path& inputPath, const fs::path& outputPath)
+// Recursively scale a node's local translation.
+static void scaleNodeTranslations(aiNode* n, float s)
+{
+	if (!n) return;
+	n->mTransformation.a4 *= s;
+	n->mTransformation.b4 *= s;
+	n->mTransformation.c4 *= s;
+	for (unsigned int i = 0; i < n->mNumChildren; ++i)
+		scaleNodeTranslations(n->mChildren[i], s);
+}
+
+// Bake a uniform scale into a mutable scene's geometry. The runtime mesh loader
+// ignores node transforms, so the scale has to live in the vertices (and, for
+// skinned/animated meshes, in the bone bind offsets and animation position
+// keys) rather than in a node matrix.
+static void scaleSceneUniform(aiScene* s, float scale)
+{
+	if (!s || scale == 1.0f) return;
+
+	for (unsigned int m = 0; m < s->mNumMeshes; ++m)
+	{
+		aiMesh* mesh = s->mMeshes[m];
+		for (unsigned int v = 0; v < mesh->mNumVertices; ++v)
+			mesh->mVertices[v] *= scale;
+		for (unsigned int b = 0; b < mesh->mNumBones; ++b)
+		{
+			aiMatrix4x4& o = mesh->mBones[b]->mOffsetMatrix;
+			o.a4 *= scale; o.b4 *= scale; o.c4 *= scale; // translation part
+		}
+	}
+
+	for (unsigned int a = 0; a < s->mNumAnimations; ++a)
+	{
+		aiAnimation* anim = s->mAnimations[a];
+		for (unsigned int c = 0; c < anim->mNumChannels; ++c)
+		{
+			aiNodeAnim* ch = anim->mChannels[c];
+			for (unsigned int k = 0; k < ch->mNumPositionKeys; ++k)
+				ch->mPositionKeys[k].mValue *= scale;
+		}
+	}
+
+	scaleNodeTranslations(s->mRootNode, scale);
+}
+
+// Forwards Assimp warning-severity log lines into a std::vector<std::string>.
+// Only attached for Warn severity, so anything it receives is a real warning.
+namespace {
+class WarnCaptureStream : public Assimp::LogStream
+{
+public:
+	explicit WarnCaptureStream(std::vector<std::string>* out) : out(out) {}
+	void write(const char* message) override
+	{
+		if (!out || !message) return;
+		std::string s(message);
+		while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+		if (!s.empty()) out->push_back(s);
+	}
+private:
+	std::vector<std::string>* out;
+};
+}
+
+bool convertMeshToGlbEx(const fs::path& inputPath, const fs::path& outputPath,
+                        const MeshImportOptions& opt, std::string* errorOut,
+                        std::vector<std::string>* warningsOut)
 {
 	Assimp::Importer importer;
 
-	// Ensure we load all necessary data, including animations
-	const aiScene* scene = importer.ReadFile(
-							   inputPath.string(),
-							   aiProcess_Triangulate            |
-							   aiProcess_GenNormals             |
-							   aiProcess_JoinIdenticalVertices  |
-							   aiProcess_LimitBoneWeights       |
-							   aiProcess_SortByPType            |
-							   aiProcess_ImproveCacheLocality   |
-							   aiProcess_ValidateDataStructure
-						   );
-
-	if (!scene)
+	// Optionally capture Assimp warnings into warningsOut. The DefaultLogger is a
+	// global singleton; create one only if the app hasn't, and kill only what we
+	// created. (Imports never run concurrently — they're gated behind a modal.)
+	WarnCaptureStream warnStream(warningsOut);
+	bool createdLogger = false;
+	if (warningsOut)
 	{
+		if (Assimp::DefaultLogger::isNullLogger())
+		{
+			// defStreams = 0 so Assimp doesn't spawn its default file/debugger logs.
+			Assimp::DefaultLogger::create("", Assimp::Logger::NORMAL, 0);
+			createdLogger = true;
+		}
+		Assimp::DefaultLogger::get()->attachStream(&warnStream, Assimp::Logger::Warn);
+	}
+	struct WarnGuard {
+		WarnCaptureStream* s; bool* created; bool active;
+		~WarnGuard() {
+			if (!active) return;
+			Assimp::DefaultLogger::get()->detachStream(s, Assimp::Logger::Warn);
+			if (*created) Assimp::DefaultLogger::kill();
+		}
+	} warnGuard{ &warnStream, &createdLogger, warningsOut != nullptr };
+
+	// GenSmoothNormals (not GenNormals) so meshes without normals get smooth
+	// shading instead of facets. ValidateDataStructure is intentionally NOT used:
+	// it rejects otherwise-loadable glTF and was causing "Failed to convert".
+	// Scale is baked into geometry below (not via aiProcess_GlobalScale) because
+	// the runtime loader ignores node transforms.
+	unsigned int flags =
+		aiProcess_Triangulate            |
+		aiProcess_GenSmoothNormals       |
+		aiProcess_JoinIdenticalVertices  |
+		aiProcess_LimitBoneWeights       |
+		aiProcess_SortByPType            |
+		aiProcess_ImproveCacheLocality;
+	if (opt.tangents == 1)
+		flags |= aiProcess_CalcTangentSpace; // needed for normal mapping
+
+	const aiScene* scene = importer.ReadFile(inputPath.string(), flags);
+	if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
+	{
+		if (errorOut) *errorOut = importer.GetErrorString();
 		std::cerr << "Assimp failed to load " << inputPath
 				  << ": " << importer.GetErrorString() << "\n";
 		return false;
 	}
 
-	// Check if scene has animations
-	if (scene->mNumAnimations > 0)
+	const bool doScale      = (opt.scaleFactor > 0.0f && opt.scaleFactor != 1.0f);
+	const bool doStripAnim  = (!opt.importAnimation && scene->mNumAnimations > 0);
+
+	// We need a mutable scene to bake scale and/or drop animations.
+	aiScene* owned = nullptr;
+	const aiScene* toExport = scene;
+	if (doScale || doStripAnim)
+	{
+		owned    = importer.GetOrphanedScene(); // ownership transfers to us
+		toExport = owned;
+
+		if (doStripAnim)
+		{
+			for (unsigned int i = 0; i < owned->mNumAnimations; ++i) delete owned->mAnimations[i];
+			delete[] owned->mAnimations;
+			owned->mAnimations    = nullptr;
+			owned->mNumAnimations = 0;
+		}
+		if (doScale)
+			scaleSceneUniform(owned, opt.scaleFactor);
+	}
+	else if (scene->mNumAnimations > 0)
 	{
 		std::cout << inputPath << " contains " << scene->mNumAnimations
 				  << " animation(s). They will be exported.\n";
 	}
 
 	Assimp::Exporter exporter;
-	aiReturn ret = exporter.Export(scene, "glb2", outputPath.string());
+	aiReturn ret = exporter.Export(toExport, "glb2", outputPath.string());
+	delete owned;
 
 	if (ret != AI_SUCCESS)
 	{
+		if (errorOut) *errorOut = exporter.GetErrorString();
 		std::cerr << "Assimp failed to export " << outputPath
 				  << ": " << exporter.GetErrorString() << "\n";
 		return false;
@@ -158,6 +279,11 @@ bool convertMeshToGlb(const fs::path& inputPath, const fs::path& outputPath)
 
 	std::cout << "Converted: " << inputPath << " -> " << outputPath << "\n";
 	return true;
+}
+
+bool convertMeshToGlb(const fs::path& inputPath, const fs::path& outputPath)
+{
+	return convertMeshToGlbEx(inputPath, outputPath, MeshImportOptions{});
 }
 
 // DXT5-compress a single mip level (RGBA8, tightly packed) into a block buffer.

@@ -351,7 +351,7 @@ void MainMenu::draw(kWindow* window, ShowPanel& showPanel)
 
 		auto inputStr = [](const char *label, std::string &str, float w = 340.0f) {
 			char buf[1024];
-			std::strncpy(buf, str.c_str(), sizeof(buf) - 1);
+			strncpy_s(buf, sizeof(buf), str.c_str(), _TRUNCATE);
 			buf[sizeof(buf) - 1] = '\0';
 			ImGui::SetNextItemWidth(w);
 			if (ImGui::InputText(label, buf, sizeof(buf)))

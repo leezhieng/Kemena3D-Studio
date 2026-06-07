@@ -770,6 +770,9 @@ void PanelInspector::drawMaterialViewer(const PanelProject::SelectedProjectAsset
         matViewLightPitch   =  60.0f;
         matViewLightEnabled = true;
         isDraggingMatLight  = false;
+        matViewRotX         =   6.0f;
+        matViewRotY         =   0.0f;
+        isDraggingMatModel  = false;
         matViewUuid         = matInspUuid;
     }
     if ((uuidChanged || matInspVersion != matViewVersion) && !matInspUuid.empty())
@@ -779,6 +782,18 @@ void PanelInspector::drawMaterialViewer(const PanelProject::SelectedProjectAsset
     }
 
     updateMatViewLight();
+
+    // Orbit camera around the preview sphere (LMB drag updates matViewRot*).
+    if (matViewCamera)
+    {
+        float pr = glm::radians(matViewRotX);
+        float yr = glm::radians(matViewRotY);
+        kVec3 camDir(std::cos(pr) * std::sin(yr),
+                     std::sin(pr),
+                     std::cos(pr) * std::cos(yr));
+        matViewCamera->setPosition(camDir * matViewCamDist);
+        matViewCamera->setLookAt(kVec3(0.0f));
+    }
 
     if (matViewMat && matViewScene && matViewCamera && matViewRenderer)
     {
@@ -816,7 +831,7 @@ void PanelInspector::drawMaterialViewer(const PanelProject::SelectedProjectAsset
     }
 
     ImGui::InvisibleButton("##matViewer", ImVec2(sz, sz),
-        ImGuiButtonFlags_MouseButtonRight);
+        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     ImVec2 imgMax = ImVec2(screenPos.x + sz, screenPos.y + sz);
 
     bool pvHovered = ImGui::IsItemHovered();
@@ -849,6 +864,23 @@ void PanelInspector::drawMaterialViewer(const PanelProject::SelectedProjectAsset
         matViewLightEnabled = !matViewLightEnabled;
     if (btHover)
         ImGui::SetTooltip("%s", matViewLightEnabled ? "Disable preview lighting" : "Enable preview lighting");
+
+    // -----------------------------------------------------------------------
+    // Left-click drag = orbit the camera around the sphere
+    // -----------------------------------------------------------------------
+    if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !btHover && !isDraggingMatModel)
+        isDraggingMatModel = true;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        isDraggingMatModel = false;
+
+    if (isDraggingMatModel)
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        ImVec2 delta = ImGui::GetIO().MouseDelta;
+        matViewRotY -= delta.x * 0.5f;
+        matViewRotX -= delta.y * 0.5f; // drag down tilts the view down (was inverted)
+        matViewRotX  = std::clamp(matViewRotX, -89.0f, 89.0f);
+    }
 
     // -----------------------------------------------------------------------
     // Right-click drag = move light
@@ -2531,6 +2563,11 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         j["animCompression"] = animCompression;
         saveMetaJson(asset.metaPath, j);
         dirty = false;
+
+        // Re-convert the source model into Library/ImportedAssets with these
+        // settings (scale / tangents / animation) and refresh its thumbnail.
+        if (mgr && !asset.uuid.empty())
+            mgr->reimportMesh(asset.uuid);
     }
     gui->sameLine(0, 4.0f);
     if (ImGui::Button("Revert##Mesh", ImVec2(btnW, 0)))
@@ -2954,13 +2991,18 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
             else if (v.type == "sampler2D" || v.type == "samplerCube")
             {
                 std::string cur = (params.contains(v.name) && params[v.name].is_string()) ? params[v.name].get<std::string>() : "";
-                int sel = 0;
-                for (size_t i = 0; i < texUuids.size(); ++i) if (texUuids[i] == cur) { sel = (int)i; break; }
-                std::vector<const char *> ptrs; ptrs.reserve(texNames.size());
-                for (auto &nm : texNames) ptrs.push_back(nm.c_str());
+                std::string caption = "(None)";
+                for (size_t i = 0; i < texUuids.size(); ++i) if (texUuids[i] == cur) { caption = texNames[i]; break; }
+
+                // Button shows the current texture name; clicking opens the picker.
                 gui->setNextItemWidth(-FLT_MIN);
-                if (ImGui::Combo(id.c_str(), &sel, ptrs.data(), (int)ptrs.size()))
-                { params[v.name] = texUuids[sel]; changed(); }
+                if (ImGui::Button((caption + id).c_str(), ImVec2(-FLT_MIN, 0)))
+                {
+                    texPickerParam     = v.name;
+                    texPickerSelected  = cur;
+                    texPickerSearch[0] = '\0';
+                    ImGui::OpenPopup("Select Texture##texpick");
+                }
                 if (ImGui::BeginDragDropTarget())
                 {
                     if (const ImGuiPayload *pl = ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
@@ -2977,6 +3019,106 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
             else
             {
                 gui->textDisabled(("unsupported: " + v.type).c_str());
+            }
+        }
+
+        // --- Texture picker modal (shared by every sampler slot) ------------
+        {
+            ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+            ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_Appearing);
+            if (ImGui::BeginPopupModal("Select Texture##texpick", nullptr))
+            {
+                // Search field.
+                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                ImGui::InputTextWithHint("##texsearch", "Search...", texPickerSearch, sizeof(texPickerSearch));
+                std::string filter = texPickerSearch;
+                std::transform(filter.begin(), filter.end(), filter.begin(),
+                               [](unsigned char c){ return (char)std::tolower(c); });
+
+                bool doApply = false;
+
+                // Scrollable thumbnail grid; leave room for the buttons row.
+                float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y;
+                ImGui::BeginChild("##texgrid", ImVec2(0, -footer), true);
+                {
+                    const float thumb = 72.0f;
+                    const float cellW = thumb + 12.0f;
+                    const float cellH = thumb + ImGui::GetTextLineHeightWithSpacing() + 6.0f;
+                    float availw = ImGui::GetContentRegionAvail().x;
+                    int   cols   = std::max(1, (int)(availw / cellW));
+                    int   col    = 0;
+
+                    for (size_t i = 0; i < texUuids.size(); ++i)
+                    {
+                        // Filter by name (index 0 is "None" — always shown).
+                        if (i > 0 && !filter.empty())
+                        {
+                            std::string ln = texNames[i];
+                            std::transform(ln.begin(), ln.end(), ln.begin(),
+                                           [](unsigned char c){ return (char)std::tolower(c); });
+                            if (ln.find(filter) == std::string::npos) continue;
+                        }
+
+                        ImGui::PushID((int)i);
+                        bool   selected = (texUuids[i] == texPickerSelected);
+                        ImVec2 cur0     = ImGui::GetCursorScreenPos();
+
+                        if (ImGui::Selectable("##cell", selected,
+                                ImGuiSelectableFlags_AllowDoubleClick, ImVec2(cellW - 4.0f, cellH)))
+                        {
+                            texPickerSelected = texUuids[i];
+                            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) doApply = true;
+                        }
+
+                        // Thumbnail (None has no preview — a plain framed box).
+                        ImDrawList *dl = ImGui::GetWindowDrawList();
+                        float ix = cur0.x + (cellW - 4.0f - thumb) * 0.5f;
+                        float iy = cur0.y + 3.0f;
+                        if (i == 0)
+                        {
+                            dl->AddRect(ImVec2(ix, iy), ImVec2(ix + thumb, iy + thumb),
+                                        IM_COL32(120, 120, 130, 180));
+                        }
+                        else
+                        {
+                            ImTextureRef img = getFileTypeIcon("image");
+                            if (manager->panelProject)
+                                img = manager->panelProject->getThumbnailIcon(texUuids[i], img);
+                            dl->AddImage(img, ImVec2(ix, iy), ImVec2(ix + thumb, iy + thumb));
+                        }
+
+                        // Centered, ellipsized name under the thumbnail.
+                        std::string nm = fitTextWithEllipsisUtf8(gui, texNames[i], cellW - 6.0f);
+                        float tw = ImGui::CalcTextSize(nm.c_str()).x;
+                        dl->AddText(ImVec2(cur0.x + (cellW - 4.0f - tw) * 0.5f, iy + thumb + 3.0f),
+                                    ImGui::GetColorU32(ImGuiCol_Text), nm.c_str());
+
+                        if (texNames[i] != nm && ImGui::IsItemHovered())
+                            ImGui::SetTooltip("%s", texNames[i].c_str());
+
+                        ImGui::PopID();
+                        if (++col < cols) ImGui::SameLine();
+                        else col = 0;
+                    }
+                }
+                ImGui::EndChild();
+
+                if (ImGui::Button("Select", ImVec2(120, 0))) doApply = true;
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+
+                if (doApply)
+                {
+                    if (!texPickerParam.empty())
+                    {
+                        params[texPickerParam] = texPickerSelected;
+                        changed();
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
             }
         }
     }
@@ -3262,6 +3404,8 @@ void PanelInspector::draw(bool &opened)
                     if (gui->checkbox("Active", &active))
                     {
                         obj->setActive(active);
+                        manager->projectSaved = false;
+                        manager->refreshWindowTitle();
                         kObject *cap = obj;
                         bool after = active;
                         bool before = prevActive;
@@ -3280,6 +3424,8 @@ void PanelInspector::draw(bool &opened)
                         {
                             obj->setStatic(isStatic);
                             manager->getRenderer()->setOctreeDirty();
+                            manager->projectSaved = false;
+                            manager->refreshWindowTitle();
                             kObject *cap = obj;
                             bool after = isStatic;
                             bool before = prevIsStatic;

@@ -578,6 +578,8 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 		}
 		if (ImGui::MenuItem("Rename"))
 			beginRename(node.fullPath, node.name);
+		if (ImGui::MenuItem("Duplicate"))
+			{ manager->duplicateAsset(node.fullPath); needRefreshList = true; }
 		if (ImGui::MenuItem("Delete"))
 			executeDeleteSelected();
 		ImGui::EndPopup();
@@ -888,6 +890,8 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 					}
 					if (ImGui::MenuItem("Rename"))
 						beginRename(child->fullPath, child->name);
+					if (ImGui::MenuItem("Duplicate"))
+						{ manager->duplicateAsset(child->fullPath); needRefreshList = true; }
 					if (ImGui::MenuItem("Delete"))
 						executeDeleteSelected();
 					ImGui::EndPopup();
@@ -1003,7 +1007,7 @@ void PanelProject::executeDeleteSelected()
 void PanelProject::beginRename(const fs::path& path, const kString& name)
 {
 	renameTargetPath = path;
-	std::strncpy(renameBuffer, name.c_str(), sizeof(renameBuffer) - 1);
+	strncpy_s(renameBuffer, sizeof(renameBuffer), name.c_str(), _TRUNCATE);
 	renameBuffer[sizeof(renameBuffer) - 1] = '\0';
 	openRenamePopup = true;
 }

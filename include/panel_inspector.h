@@ -180,6 +180,11 @@ class PanelInspector
 		bool            matInspDirty   = false; ///< Whether unsaved material edits are pending.
 		int             matInspVersion = 0;     ///< Version counter, incremented on every property change.
 
+		// Texture picker modal (replaces the per-slot texture dropdown).
+		std::string     texPickerParam;        ///< Sampler uniform the picker is choosing for ("" = closed).
+		std::string     texPickerSelected;     ///< UUID highlighted in the picker ("" = None).
+		char            texPickerSearch[128] = ""; ///< Name filter for the picker list.
+
 		kOffscreenRenderer* matViewRenderer   = nullptr; ///< Offscreen renderer for the material viewer.
 		kWorld*             matViewWorld      = nullptr; ///< Standalone world for the material viewer.
 		kScene*             matViewScene      = nullptr; ///< Material viewer scene, owned by matViewWorld.
@@ -194,6 +199,11 @@ class PanelInspector
 		float        matViewLightPitch   =  60.0f; ///< Material viewer light elevation, in degrees.
 		bool         matViewLightEnabled = true;   ///< Whether the material viewer light is enabled.
 		bool         isDraggingMatLight  = false;  ///< Whether the user is dragging to rotate the viewer light.
+
+		float        matViewRotX         =   6.0f; ///< Material viewer orbit pitch, in degrees.
+		float        matViewRotY         =   0.0f; ///< Material viewer orbit yaw, in degrees.
+		float        matViewCamDist      =   3.0f; ///< Material viewer orbit camera distance.
+		bool         isDraggingMatModel  = false;  ///< Whether the user is dragging (LMB) to orbit the preview.
 
 		/**
 		 * @brief Draws the embedded material preview viewer for a selected material asset.
