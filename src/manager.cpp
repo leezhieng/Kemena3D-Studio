@@ -3306,7 +3306,7 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             kTerrain *tile = terrainMgr->createTile(gx, gz);
             if (tile)
             {
-                // Load height/splat data and rebuild the mesh
+                // Load height/splat binary data from Library/Terrains/
                 fs::path libDir = projectPath / "Library" / "Terrains";
                 kString hFile = libDir.string() + "/" + obj.value("heightFile", "");
                 kString sFile = libDir.string() + "/" + obj.value("splatFile", "");
@@ -3331,6 +3331,13 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                     mesh->setPosition(pos);
                     mesh->setRotation(kQuat(rotEu));
                     mesh->setScale(scale);
+
+                    // Restore the material UUID from the saved world JSON.
+                    // Without this the early return (result = mesh; return result;)
+                    // skips the generic material_uuid handling below, and the terrain
+                    // mesh would lose its assigned material on reload.
+                    if (obj.contains("material_uuid"))
+                        mesh->setMaterialUuid(obj["material_uuid"].get<std::string>());
                 }
             }
             result = mesh;

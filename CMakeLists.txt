@@ -57,6 +57,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     dep
     "$<$<CONFIG:Debug>:${KEMENA3D_SDK_DIR}/Debug/include>"
     "$<$<CONFIG:Release>:${KEMENA3D_SDK_DIR}/Release/include>"
+    "$<$<CONFIG:Debug>:${KEMENA3D_SDK_DIR}/Debug/include/src>"
+    "$<$<CONFIG:Release>:${KEMENA3D_SDK_DIR}/Release/include/src>"
     "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/assimp/build_Debug/include>"
     "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/assimp/build_Release/include>"
 )
