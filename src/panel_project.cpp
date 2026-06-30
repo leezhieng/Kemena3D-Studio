@@ -163,6 +163,10 @@ void PanelProject::clearSelection()
 
 void PanelProject::handleSelectionClick(Node& root, Node& clicked)
 {
+	// Disable terrain sculpt mode when selecting a project asset
+	if (manager->panelTerrain)
+		manager->panelTerrain->sculpt.active = false;
+
 	const bool ctrl  = ImGui::GetIO().KeyCtrl;
 	const bool shift = ImGui::GetIO().KeyShift;
 

@@ -22,6 +22,7 @@
 #include <kemena/kassetmanager.h>
 #include <kemena/koffscreenrenderer.h>
 #include <kemena/kprefab.h>
+#include <kemena/kterrain.h>
 
 #include "commands.h"
 #include <portable-file-dialogs.h>
@@ -32,6 +33,7 @@
 #include "panel_hierarchy.h"
 #include "panel_console.h"
 #include "panel_game.h"
+#include "panel_terrain.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -54,11 +56,11 @@ using json = nlohmann::json;
  */
 struct ShaderPreviewState
 {
-    bool        active     = false;  ///< True while a shader is being previewed.
-    std::string uuid;                ///< UUID of the shader asset being previewed.
-    std::string glslSource;          ///< Compiled GLSL; empty until first compile.
-    std::string shaderType;          ///< "Flat", "Phong", "PBR".
-    std::string shaderName;          ///< Display name.
+    bool active = false;    ///< True while a shader is being previewed.
+    std::string uuid;       ///< UUID of the shader asset being previewed.
+    std::string glslSource; ///< Compiled GLSL; empty until first compile.
+    std::string shaderType; ///< "Flat", "Phong", "PBR".
+    std::string shaderName; ///< Display name.
 };
 
 /**
@@ -78,16 +80,16 @@ struct FileInfo
  */
 struct ImportTask
 {
-    fs::path inputPath;     ///< Source file selected for import.
-    fs::path outputPath;    ///< Converted output written into the project.
-    kString  type;          ///< Asset kind: mesh, image, etc.
-    kString  uuid;          ///< UUID assigned to the imported asset.
-    fs::path thumbnailPath; ///< Where to save uuid.png after import.
-    bool success  = false;  ///< Set true once the conversion succeeds.
-    bool reported = false;  ///< True once the result has been logged to the console.
-    kString  errorMsg;      ///< Detailed failure reason (filled by the converter on failure).
-    std::vector<std::string> warnings;   ///< Non-fatal importer warnings, logged on the main thread.
-    bool warningsLogged = false;         ///< True once warnings have been written to the console.
+    fs::path inputPath;                ///< Source file selected for import.
+    fs::path outputPath;               ///< Converted output written into the project.
+    kString type;                      ///< Asset kind: mesh, image, etc.
+    kString uuid;                      ///< UUID assigned to the imported asset.
+    fs::path thumbnailPath;            ///< Where to save uuid.png after import.
+    bool success = false;              ///< Set true once the conversion succeeds.
+    bool reported = false;             ///< True once the result has been logged to the console.
+    kString errorMsg;                  ///< Detailed failure reason (filled by the converter on failure).
+    std::vector<std::string> warnings; ///< Non-fatal importer warnings, logged on the main thread.
+    bool warningsLogged = false;       ///< True once warnings have been written to the console.
 };
 
 /**
@@ -98,10 +100,10 @@ struct ImportTask
  */
 struct ThumbnailTask
 {
-    kString  uuid;          ///< Asset UUID the thumbnail belongs to.
+    kString uuid;           ///< Asset UUID the thumbnail belongs to.
     fs::path srcPath;       ///< GLB path for mesh, original image path for image.
     fs::path thumbnailPath; ///< Destination thumbnail image path.
-    kString  type;          ///< "mesh" or "image".
+    kString type;           ///< "mesh" or "image".
 };
 
 /**
@@ -117,6 +119,7 @@ class PanelHierarchy;
 class PanelConsole;
 class PanelScriptEditor;
 class PanelGame;
+class PanelTerrain;
 
 /**
  * @brief Central editor controller for a Kemena3D Studio project.
@@ -142,13 +145,13 @@ public:
     virtual ~Manager();
 
     /** @brief Sets the active editor scene. */
-    void setScene(kScene *s)  { scene = s; }
+    void setScene(kScene *s) { scene = s; }
 
     /** @brief Returns the active editor scene. */
-    kScene    *getScene()     { return scene; }
+    kScene *getScene() { return scene; }
 
     /** @brief Returns the renderer used by the editor viewport. */
-    kRenderer *getRenderer()  { return renderer; }
+    kRenderer *getRenderer() { return renderer; }
 
     /** @brief Finds a scene object by its UUID.
      *  @param uuid Object UUID to look up.
@@ -174,10 +177,10 @@ public:
     // --- Accessors ----------------------------------------------------------
 
     /** @brief Returns the application window. */
-    kWindow       *getWindow()       { return window; }
+    kWindow *getWindow() { return window; }
 
     /** @brief Returns the world container. */
-    kWorld        *getWorld()        { return world; }
+    kWorld *getWorld() { return world; }
 
     /** @brief Returns the world's asset manager, or nullptr if no world. */
     kAssetManager *getAssetManager() { return world ? world->getAssetManager() : nullptr; }
@@ -216,27 +219,33 @@ public:
     /** @brief Creates a camera object in the active scene. */
     void createCamera();
 
+    /** @brief Creates a terrain tile at the origin (0, 0). */
+    void createTerrain();
+
     /** @brief Creates a navigation-mesh object in the active scene. */
     void createNavMesh();
+
+    /** @brief Creates an audio emitter object in the active scene. */
+    void createAudio();
 
     // --- Game export --------------------------------------------------------
 
     /** @brief Settings for building a distributable game from the project. */
     struct ExportSettings
     {
-        int          platform   = 0;        ///< 0=Windows, 1=Linux, 2=macOS.
-        std::string  gameName   = "Game";   ///< Output executable name.
-        std::string  title      = "My Game";///< Window title (game.config).
-        int          width      = 1280;     ///< Initial window width.
-        int          height     = 720;      ///< Initial window height.
-        bool         fullscreen = false;    ///< Launch the game fullscreen.
-        std::string  outputDir;             ///< Destination folder for the build.
-        std::string  templateDir;           ///< Folder holding the prebuilt runtime template.
-        std::string  iconPath;              ///< Optional .ico for the Windows exe.
+        int platform = 0;              ///< 0=Windows, 1=Linux, 2=macOS.
+        std::string gameName = "Game"; ///< Output executable name.
+        std::string title = "My Game"; ///< Window title (game.config).
+        int width = 1280;              ///< Initial window width.
+        int height = 720;              ///< Initial window height.
+        bool fullscreen = false;       ///< Launch the game fullscreen.
+        std::string outputDir;         ///< Destination folder for the build.
+        std::string templateDir;       ///< Folder holding the prebuilt runtime template.
+        std::string iconPath;          ///< Optional .ico for the Windows exe.
     };
 
-    ExportSettings exportSettings;       ///< Persisted between dialog opens.
-    bool           showExportDialog = false; ///< Controls visibility of the export dialog.
+    ExportSettings exportSettings; ///< Persisted between dialog opens.
+    bool showExportDialog = false; ///< Controls visibility of the export dialog.
 
     /**
      * @brief Builds a distributable game: copies the runtime template, bundles
@@ -337,10 +346,20 @@ public:
      *  @return true if a project was opened. */
     bool openProject();
 
+    /**
+     * @brief Creates a fresh empty world, discarding the current one.
+     *
+     * Prompts if there are unsaved changes. Empties all scenes, resets
+     * the world path, and loads the default placeholder scene so the
+     * editor always has something to show.
+     * @return true if the new world was created.
+     */
+    bool newWorld();
+
     /** @brief Opens a project from an explicit path.
      *  @param path Project folder path.
      *  @return true if the project was opened. */
-    bool openProjectFromPath(const kString& path);
+    bool openProjectFromPath(const kString &path);
 
     // Recent projects (persisted to <exeDir>/recent_projects.json)
     std::vector<kString> recentProjects; ///< Most-recently-opened project paths.
@@ -353,7 +372,7 @@ public:
 
     /** @brief Adds a project path to the recent list (de-duplicated, moved to front).
      *  @param path Project path to record. */
-    void addRecentProject(const kString& path);
+    void addRecentProject(const kString &path);
 
     // Per-project config (persisted to <projectPath>/Config/project.json).
     // Holds "last_world" — the relative path of the world file that was
@@ -378,6 +397,15 @@ public:
     /** @brief Clears the current world's scenes and objects.
      *  @param forced When true, skips the unsaved-changes prompt. */
     void clearWorld(bool forced = false);
+
+    /**
+     * @brief Resets editor state after clearWorld() leaves the world empty.
+     *
+     * Ensures a valid editor scene exists, loads the default skybox,
+     * resets the selected object and selection state, applies the window
+     * title for an untitled world, and triggers a hierarchy refresh.
+     */
+    void resetToFreshWorld();
 
     /** @brief Recursively deletes an object and all its descendants.
      *  @param node Root of the subtree to delete. */
@@ -461,16 +489,22 @@ public:
      */
     void closePrefabEditor(bool saveChanges);
 
-    bool prefabEditing = false;        ///< True while the prefab editor panel is active.
-    fs::path editingPrefabPath;        ///< Path to the .prefab file being edited.
-    kPrefab editingPrefab;             ///< Loaded prefab data while editing.
-    kScene *prefabScene = nullptr;     ///< Isolated scene used by the prefab editor.
-    kCamera *prefabCamera = nullptr;   ///< Editor camera for the prefab scene.
-    kObject *prefabRoot = nullptr;     ///< Root instance of the prefab inside prefabScene.
+    bool prefabEditing = false;      ///< True while the prefab editor panel is active.
+    fs::path editingPrefabPath;      ///< Path to the .prefab file being edited.
+    kPrefab editingPrefab;           ///< Loaded prefab data while editing.
+    kScene *prefabScene = nullptr;   ///< Isolated scene used by the prefab editor.
+    kCamera *prefabCamera = nullptr; ///< Editor camera for the prefab scene.
+    kObject *prefabRoot = nullptr;   ///< Root instance of the prefab inside prefabScene.
 
     /// Dedicated renderer for the prefab editor so it never shares the World
     /// panel's render target. Background is dark grey.
     kOffscreenRenderer prefabRenderer{512, 512};
+
+    // --- Audio preview -------------------------------------------------------
+    kAudioManager *audioPreviewManager = nullptr; ///< Lazily-created audio manager for editor preview playback.
+
+    void startAudioPreview(kAudioSource &src);
+    void stopAudioPreview(kAudioSource &src);
 
     // --- Drag-and-drop helpers ----------------------------------------------
 
@@ -648,9 +682,9 @@ public:
     // While a .mat payload is hovering over a scene object, we swap the material
     // for live preview. If the drop is committed we keep it (with undo); if the
     // user drags away or cancels we restore the original subtree state.
-    kObject                      *matPreviewObject = nullptr; ///< Object currently under a hovering material drop.
-    std::vector<MaterialSnapshot> matPreviewSnapshot;         ///< Subtree materials before the preview, for restore-on-cancel.
-    kString                       matPreviewSourceUuid;       ///< UUID of the .mat asset being previewed.
+    kObject *matPreviewObject = nullptr;              ///< Object currently under a hovering material drop.
+    std::vector<MaterialSnapshot> matPreviewSnapshot; ///< Subtree materials before the preview, for restore-on-cancel.
+    kString matPreviewSourceUuid;                     ///< UUID of the .mat asset being previewed.
 
     // Cache of loaded project textures, keyed by image-asset UUID, so building
     // materials doesn't reload/leak GPU textures on every edit.
@@ -664,7 +698,7 @@ public:
     // While any drag-and-drop is over the World viewport, the panel records
     // the picked object here so the main render loop can paint an outline on
     // it, telling the user which object their cursor is over.
-    kString    dragHoverObjectUuid;
+    kString dragHoverObjectUuid;
 
     // --- Physics simulation -------------------------------------------------
     //
@@ -685,9 +719,9 @@ public:
      *         transforms back into the scene-graph nodes. */
     void stepPhysics(float dt);
 
-    kPhysicsManager        *physicsManager = nullptr; ///< Lazily-created Jolt physics world, reused across Play cycles.
-    std::vector<kObject *>  physicsBodies;   ///< Objects with live physics this Play session.
-    std::vector<kObject *>  characterBodies; ///< Objects with a live character controller this session.
+    kPhysicsManager *physicsManager = nullptr; ///< Lazily-created Jolt physics world, reused across Play cycles.
+    std::vector<kObject *> physicsBodies;      ///< Objects with live physics this Play session.
+    std::vector<kObject *> characterBodies;    ///< Objects with a live character controller this session.
 
     /// Baked navigation meshes keyed by the owning object's UUID. Editor-owned;
     /// regenerated via Bake and never serialised.
@@ -712,34 +746,37 @@ public:
      *         while the editor is idle. Call once per frame. */
     void pollScriptChanges(float dt);
 
-    float scriptWatchTimer = 0.0f;   ///< Accumulator for the script file-watch poll.
+    float scriptWatchTimer = 0.0f; ///< Accumulator for the script file-watch poll.
 
     // Editor path and directory
-    fs::path exePath;  ///< Absolute path of the editor executable.
-    fs::path baseDir;  ///< Directory containing the editor executable.
+    fs::path exePath; ///< Absolute path of the editor executable.
+    fs::path baseDir; ///< Directory containing the editor executable.
 
     // Project info
-    kString projectName;          ///< Display name of the open project.
-    bool projectOpened = false;   ///< True while a project is open.
-    bool projectSaved = true;     ///< False when the project has unsaved changes.
+    kString projectName;        ///< Display name of the open project.
+    bool projectOpened = false; ///< True while a project is open.
+    bool projectSaved = true;   ///< False when the project has unsaved changes.
 
     // Project path and directory
     fs::path projectPath;            ///< Root folder of the open project.
     std::vector<kString> currentDir; ///< Project-browser path components from the project root.
 
     // World info
-    kString worldName = "";  ///< Name of the currently open world.
-    fs::path worldPath;      ///< Filesystem path of the currently open world.
+    kString worldName = ""; ///< Name of the currently open world.
+    fs::path worldPath;     ///< Filesystem path of the currently open world.
     // kString worldUuid = "";
 
-    PanelProject      *panelProject      = nullptr; ///< Project (asset browser) panel.
-    PanelHierarchy    *panelHierarchy    = nullptr; ///< Scene hierarchy panel.
+    PanelProject *panelProject = nullptr;           ///< Project (asset browser) panel.
+    PanelHierarchy *panelHierarchy = nullptr;       ///< Scene hierarchy panel.
     PanelScriptEditor *panelScriptEditor = nullptr; ///< Visual logic-graph editor.
-    PanelConsole      *panelConsole      = nullptr; ///< Console panel (for build/script logging).
-    PanelGame         *panelGame         = nullptr; ///< Game/play panel.
+    PanelConsole *panelConsole = nullptr;           ///< Console panel (for build/script logging).
+    PanelGame *panelGame = nullptr;                 ///< Game/play panel.
+    PanelTerrain *panelTerrain = nullptr;           ///< Terrain management panel.
+
+    kTerrainManager *terrainManager = nullptr; ///< Grid-based terrain system manager.
 
     /// Camera used by the editor viewport (excluded from game camera candidates).
-    kCamera *editorCamera      = nullptr;
+    kCamera *editorCamera = nullptr;
     /// Explicitly-chosen default camera for the Game panel (nullptr = auto-pick).
     kCamera *defaultGameCamera = nullptr;
 
@@ -747,26 +784,26 @@ public:
     // here each frame so saveWorld can persist them; loadWorld writes the
     // restored values back and raises editorCamLoadPending so main.cpp adopts
     // them (its locals are otherwise authoritative).
-    kVec3 editorCamOrbitPivot    = kVec3(0.0f, 3.5f, 0.0f); ///< Orbit pivot of the editor camera.
-    float editorCamOrbitDistance = 14.0f;  ///< Distance of the editor camera from its pivot.
-    bool  editorCamLoadPending   = false;  ///< Set by loadWorld so main.cpp adopts restored camera values.
+    kVec3 editorCamOrbitPivot = kVec3(0.0f, 3.5f, 0.0f); ///< Orbit pivot of the editor camera.
+    float editorCamOrbitDistance = 14.0f;                ///< Distance of the editor camera from its pivot.
+    bool editorCamLoadPending = false;                   ///< Set by loadWorld so main.cpp adopts restored camera values.
 
-    std::vector<ImportTask> importQueue;   ///< Pending import jobs awaiting batch processing.
-    std::future<void> importFuture;        ///< Handle for the background import task.
-    std::atomic<int> filesProcessed{0};    ///< Count of files processed by the running batch import.
-    std::atomic<bool> batchDone{false};    ///< Set true when the background batch import finishes.
-    std::mutex queueMutex;                 ///< Guards shared import state across threads.
+    std::vector<ImportTask> importQueue; ///< Pending import jobs awaiting batch processing.
+    std::future<void> importFuture;      ///< Handle for the background import task.
+    std::atomic<int> filesProcessed{0};  ///< Count of files processed by the running batch import.
+    std::atomic<bool> batchDone{false};  ///< Set true when the background batch import finishes.
+    std::mutex queueMutex;               ///< Guards shared import state across threads.
 
     /// Prevents asset checks from running while a message box is open, even if the application remains focused.
     bool showingMessageBox = false;
 
     // For batch import
-    bool showImportPopup = false;                       ///< Controls the import-progress popup visibility.
+    bool showImportPopup = false;                        ///< Controls the import-progress popup visibility.
     std::chrono::steady_clock::time_point importEndTime; ///< Time the batch import completed (for popup auto-dismiss).
 
-    std::vector<ImportTask>   importTasks;     ///< Tasks for the currently running batch import.
-    std::vector<ThumbnailTask> thumbnailQueue; ///< Thumbnails awaiting main-thread rendering.
-    kOffscreenRenderer        thumbnailRenderer{128, 128}; ///< Offscreen renderer used to generate asset thumbnails.
+    std::vector<ImportTask> importTasks;            ///< Tasks for the currently running batch import.
+    std::vector<ThumbnailTask> thumbnailQueue;      ///< Thumbnails awaiting main-thread rendering.
+    kOffscreenRenderer thumbnailRenderer{128, 128}; ///< Offscreen renderer used to generate asset thumbnails.
 
     /** @brief Draws the batch-import progress popup.
      *  @param console Console panel to log results into. */
@@ -793,23 +830,23 @@ public:
     void deselectObject(const kString uuid);
 
     kObject *selectedObject = nullptr; ///< Primary (last) selected object, or nullptr.
-    kScene  *selectedScene  = nullptr; ///< Currently selected scene, or nullptr.
-    bool     worldSelected  = false;   ///< True when the world node itself is selected.
+    kScene *selectedScene = nullptr;   ///< Currently selected scene, or nullptr.
+    bool worldSelected = false;        ///< True when the world node itself is selected.
 
     ImGuizmo::OPERATION manipulatorType = ImGuizmo::TRANSLATE; ///< Active gizmo operation (translate/rotate/scale).
     ImGuizmo::MODE manipulatorMode = ImGuizmo::LOCAL;          ///< Gizmo space (local or world).
 
-    UndoRedoManager undoRedo;                       ///< Undo/redo command stack for the editor.
-    PivotMode pivotMode = PivotMode::LastSelected;  ///< Pivot mode used for multi-object manipulation.
+    UndoRedoManager undoRedo;                      ///< Undo/redo command stack for the editor.
+    PivotMode pivotMode = PivotMode::LastSelected; ///< Pivot mode used for multi-object manipulation.
 
     ShaderPreviewState shaderPreview; ///< Shared shader-preview state for the inspector.
 
 private:
-    kWindow   *window;             ///< Application window.
-    kWorld    *world;              ///< World container owning scenes and assets.
-    kRenderer     *renderer;       ///< Editor viewport renderer.
-    kScene    *scene = nullptr;    ///< Active editor scene.
-    kString    initialWindowTitle; ///< Window title captured at startup, used as a base.
+    kWindow *window;            ///< Application window.
+    kWorld *world;              ///< World container owning scenes and assets.
+    kRenderer *renderer;        ///< Editor viewport renderer.
+    kScene *scene = nullptr;    ///< Active editor scene.
+    kString initialWindowTitle; ///< Window title captured at startup, used as a base.
 
     // int initialResizeCount = 0;
 

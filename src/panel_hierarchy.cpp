@@ -36,8 +36,14 @@ PanelHierarchy::PanelHierarchy(kGuiManager *setGuiManager, Manager *setManager, 
 	kTexture2D *tex_camera = assetManager->loadTexture2DFromResource("ICON_OBJECT_CAMERA", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconCamera = tex_camera->getTextureID();
 
+	kTexture2D *tex_audio = assetManager->loadTexture2DFromResource("ICON_OBJECT_AUDIO", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconAudio = tex_audio->getTextureID();
+
 	kTexture2D *tex_prefab = assetManager->loadTexture2DFromResource("ICON_OBJECT_PREFAB", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconPrefab = tex_prefab->getTextureID();
+
+	kTexture2D *tex_terrain = assetManager->loadTexture2DFromResource("ICON_OBJECT_TERRAIN", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconTerrain = tex_terrain->getTextureID();
 
 	world = setWorld;
 
@@ -57,8 +63,8 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 {
 	// Sync selection state from manager so viewport picks are reflected here.
 	node.isSelected = std::find(manager->selectedObjects.begin(),
-	                             manager->selectedObjects.end(),
-	                             node.uuid) != manager->selectedObjects.end();
+								manager->selectedObjects.end(),
+								node.uuid) != manager->selectedObjects.end();
 
 	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
 	if (node.isSelected)
@@ -87,14 +93,14 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	if (node.isPrefabDescendant)
 		ImGui::PopStyleColor();
 
-	bool isObjectRow = (level >= 2);  // 0 = world, 1 = scene, 2+ = objects
+	bool isObjectRow = (level >= 2); // 0 = world, 1 = scene, 2+ = objects
 
 	// Drag source: only for real scene objects, never prefab descendants.
 	if (isObjectRow && !node.isPrefabDescendant &&
 		ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
 	{
 		ImGui::SetDragDropPayload("SCENE_OBJECT",
-			node.uuid.c_str(), node.uuid.size() + 1);
+								  node.uuid.c_str(), node.uuid.size() + 1);
 		ImGui::TextUnformatted(node.name.c_str());
 		ImGui::EndDragDropSource();
 	}
@@ -116,8 +122,8 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 			ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
 
 		const ImGuiPayload *pProj = ImGui::AcceptDragDropPayload("PROJECT_ASSET", hoverFlags);
-		const ImGuiPayload *pScn  = ImGui::AcceptDragDropPayload("SCENE_OBJECT",  hoverFlags);
-		const ImGuiPayload *p     = pProj ? pProj : pScn;
+		const ImGuiPayload *pScn = ImGui::AcceptDragDropPayload("SCENE_OBJECT", hoverFlags);
+		const ImGuiPayload *p = pProj ? pProj : pScn;
 
 		if (p)
 		{
@@ -144,7 +150,11 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 				{
 					kString assetUuid((const char *)p->Data);
 					// Multi-file project drags pack newline-separated UUIDs; spawn the first.
-					{ auto nl = assetUuid.find('\n'); if (nl != kString::npos) assetUuid = assetUuid.substr(0, nl); }
+					{
+						auto nl = assetUuid.find('\n');
+						if (nl != kString::npos)
+							assetUuid = assetUuid.substr(0, nl);
+					}
 					kObject *spawned = manager->instantiateAssetFromUuid(assetUuid);
 					if (spawned && isObjectRow)
 					{
@@ -153,7 +163,8 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 							kObject *target = manager->objectMap[node.uuid].object;
 							kObject *targetParent = target ? target->getParent() : nullptr;
 							kString parentUuid = (targetParent && targetParent != manager->getScene()->getRootNode())
-								? targetParent->getUuid() : kString("");
+													 ? targetParent->getUuid()
+													 : kString("");
 							manager->reparentObject(spawned->getUuid(), parentUuid);
 							manager->reorderBefore(spawned->getUuid(), node.uuid);
 						}
@@ -173,7 +184,8 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 							kObject *target = manager->objectMap[node.uuid].object;
 							kObject *targetParent = target ? target->getParent() : nullptr;
 							kString parentUuid = (targetParent && targetParent != manager->getScene()->getRootNode())
-								? targetParent->getUuid() : kString("");
+													 ? targetParent->getUuid()
+													 : kString("");
 							manager->reparentObject(draggedUuid, parentUuid);
 							manager->reorderBefore(draggedUuid, node.uuid);
 						}
@@ -197,8 +209,12 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	// Item clicked
 	if (gui->isItemClicked() && !node.isPrefabDescendant)
 	{
+		// Disable terrain sculpt mode when selecting any object from the hierarchy
+		if (manager->panelTerrain)
+			manager->panelTerrain->sculpt.active = false;
+
 		// Snapshot selection before change (for undo)
-		auto selBefore    = manager->selectedObjects;
+		auto selBefore = manager->selectedObjects;
 		auto selObjBefore = manager->selectedObject;
 
 		if (!gui->isKeyShift())
@@ -222,16 +238,16 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		if (level == 0)
 		{
 			// World
-			manager->worldSelected  = true;
+			manager->worldSelected = true;
 			manager->selectedObject = nullptr;
-			manager->selectedScene  = nullptr;
+			manager->selectedScene = nullptr;
 		}
 		else if (level == 1)
 		{
 			// Scene — find and expose it for the inspector
-			manager->worldSelected  = false;
+			manager->worldSelected = false;
 			manager->selectedObject = nullptr;
-			manager->selectedScene  = nullptr;
+			manager->selectedScene = nullptr;
 			for (kScene *s : world->getScenes())
 			{
 				if (s->getUuid() == node.uuid)
@@ -259,14 +275,14 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		}
 
 		// Push selection undo command
-		auto selAfter    = manager->selectedObjects;
+		auto selAfter = manager->selectedObjects;
 		auto selObjAfter = newSelObj;
 		if (selBefore != selAfter || selObjBefore != selObjAfter)
 		{
 			manager->undoRedo.push(std::make_unique<SelectCommand>(
 				manager,
-				selBefore,    selObjBefore,
-				selAfter,     selObjAfter));
+				selBefore, selObjBefore,
+				selAfter, selObjAfter));
 		}
 	}
 
@@ -323,8 +339,7 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 			gui->drawListAddImage(
 				iconMag,
 				kVec2(cursor.x + 4, cursor.y + (gui->getFrameHeight() - iconSize) * 0.5f),
-				kVec2(cursor.x + 4 + iconSize, cursor.y + (gui->getFrameHeight() + iconSize) * 0.5f)
-			);
+				kVec2(cursor.x + 4 + iconSize, cursor.y + (gui->getFrameHeight() + iconSize) * 0.5f));
 
 			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(iconSize + 8, 3));
 
@@ -390,11 +405,45 @@ void PanelHierarchy::refreshList()
 		}
 		switch (obj->getType())
 		{
-			case kNodeType::NODE_TYPE_OBJECT: outType = "object"; return iconEmpty;
-			case kNodeType::NODE_TYPE_MESH:   outType = "mesh";   return iconMesh;
-			case kNodeType::NODE_TYPE_LIGHT:  outType = "light";  return iconLight;
-			case kNodeType::NODE_TYPE_CAMERA: outType = "camera"; return iconCamera;
-			default:                          outType = "unknown"; return iconEmpty;
+		case kNodeType::NODE_TYPE_TERRAIN:
+			outType = "terrain";
+			return iconTerrain;
+		case kNodeType::NODE_TYPE_OBJECT:
+		{
+			// Check for mesh-based terrain tiles (getSerializeType == "terrain")
+			kMesh *mesh = dynamic_cast<kMesh *>(obj);
+			if (mesh && mesh->getSerializeType() == "terrain")
+			{
+				outType = "terrain";
+				return iconTerrain;
+			}
+			outType = "object";
+			return iconEmpty;
+		}
+		case kNodeType::NODE_TYPE_MESH:
+		{
+			// Check for mesh-based terrain tiles (getSerializeType == "terrain")
+			kMesh *mesh = dynamic_cast<kMesh *>(obj);
+			if (mesh && mesh->getSerializeType() == "terrain")
+			{
+				outType = "terrain";
+				return iconTerrain;
+			}
+			outType = "mesh";
+			return iconMesh;
+		}
+		case kNodeType::NODE_TYPE_LIGHT:
+			outType = "light";
+			return iconLight;
+		case kNodeType::NODE_TYPE_CAMERA:
+			outType = "camera";
+			return iconCamera;
+		case kNodeType::NODE_TYPE_AUDIO:
+			outType = "audio";
+			return iconAudio;
+		default:
+			outType = "unknown";
+			return iconEmpty;
 		}
 	};
 
@@ -412,7 +461,7 @@ void PanelHierarchy::refreshList()
 		Node *raw = childNode.get();
 		parent->children.emplace_back(std::move(childNode));
 
-		manager->objectMap[obj->getUuid()] = ObjectInfo{ obj };
+		manager->objectMap[obj->getUuid()] = ObjectInfo{obj};
 
 		// Anything below a prefab instance root is a prefab descendant.
 		bool nextInside = insidePrefab || !obj->getPrefabRef().empty();
@@ -431,7 +480,8 @@ void PanelHierarchy::refreshList()
 				std::make_unique<Node>(scene->getName(), scene->getUuid(), iconScene, "scene"));
 
 			kObject *rootNode = scene->getRootNode();
-			if (rootNode == nullptr) continue;
+			if (rootNode == nullptr)
+				continue;
 			for (kObject *child : rootNode->getChildren())
 				addObject(sceneNode.get(), child, /*insidePrefab*/ false);
 		}

@@ -12,6 +12,7 @@
 #include "panel_script_editor.h"
 #include "panel_game.h"
 #include "panel_prefab.h"
+#include "panel_terrain.h"
 #include "splash_screen.h"
 #include "crashhandler.h"
 
@@ -73,6 +74,8 @@ int main()
 	PanelScriptEditor *panelScriptEditor = new PanelScriptEditor(gui, manager);
 	PanelGame *panelGame = new PanelGame(gui, manager);
 	manager->panelGame = panelGame;
+	PanelTerrain *panelTerrain = new PanelTerrain(gui, manager);
+	manager->panelTerrain = panelTerrain;
 	PanelPrefab *panelPrefab = new PanelPrefab(gui, manager);
 
 	// Route .shader and .prefab double-clicks from the project panel.
@@ -142,7 +145,7 @@ int main()
 	// Middle-mouse pan state. Captures the camera position and orbit pivot at
 	// drag start so the per-frame motion handler can slide both along the
 	// camera-space right/up axes without drift.
-	bool  panning = false;
+	bool panning = false;
 	kVec2 panStart;
 	kVec3 panStartCamPos;
 	kVec3 panStartPivot;
@@ -194,16 +197,16 @@ int main()
 		// so nothing fights the restore.
 		if (manager->editorCamLoadPending)
 		{
-			cameraOrbitPivot    = manager->editorCamOrbitPivot;
+			cameraOrbitPivot = manager->editorCamOrbitPivot;
 			cameraOrbitDistance = manager->editorCamOrbitDistance;
-			camRot              = cameraEditor->getRotation();
-			cameraTweenActive   = false;
+			camRot = cameraEditor->getRotation();
+			cameraTweenActive = false;
 			manager->editorCamLoadPending = false;
 		}
 
 		// Keep the manager's copy of the editor-camera orbit state current so a
 		// File>Save handled during this frame persists the live viewpoint.
-		manager->editorCamOrbitPivot    = cameraOrbitPivot;
+		manager->editorCamOrbitPivot = cameraOrbitPivot;
 		manager->editorCamOrbitDistance = cameraOrbitDistance;
 
 		float deltaTime = window->getTimer()->getDeltaTime();
@@ -278,10 +281,10 @@ int main()
 					else if (event.getMouseButton() == K_MOUSEBUTTON_MIDDLE && panelWorld->focused)
 					{
 						panning = true;
-						panStart.x       = event.getMouseX();
-						panStart.y       = event.getMouseY();
-						panStartCamPos   = cameraEditor->getPosition();
-						panStartPivot    = cameraOrbitPivot;
+						panStart.x = event.getMouseX();
+						panStart.y = event.getMouseY();
+						panStartCamPos = cameraEditor->getPosition();
+						panStartPivot = cameraOrbitPivot;
 						// User is steering — cancel any in-flight F tween.
 						cameraTweenActive = false;
 					}
@@ -311,6 +314,21 @@ int main()
 							kObject *sceneRoot = pickScene->getRootNode();
 							while (picked->getParent() != nullptr && picked->getParent() != sceneRoot)
 								picked = picked->getParent();
+						}
+
+						// Disable terrain sculpt mode when clicking a non-terrain
+						// object (or empty space) in the scene viewport.
+						if (manager->panelTerrain && manager->panelTerrain->sculpt.active)
+						{
+							bool isTerrainClick = false;
+							if (picked != nullptr)
+							{
+								kMesh *mesh = dynamic_cast<kMesh *>(picked);
+								if (mesh && mesh->getSerializeType() == "terrain")
+									isTerrainClick = true;
+							}
+							if (!isTerrainClick)
+								manager->panelTerrain->sculpt.active = false;
 						}
 
 						if (picked != nullptr)
@@ -394,7 +412,7 @@ int main()
 
 						float panScale = cameraOrbitDistance * 0.0025f;
 						kVec3 right = cameraEditor->calculateRight();
-						kVec3 up    = cameraEditor->calculateUp();
+						kVec3 up = cameraEditor->calculateUp();
 						kVec3 offset = (right * deltaX + up * deltaY) * panScale;
 
 						cameraEditor->setPosition(panStartCamPos + offset);
@@ -803,6 +821,7 @@ int main()
 	}
 
 	// Clean up
+	delete panelTerrain;
 	delete splashScreen;
 	gui->destroy();
 	renderer->destroy();

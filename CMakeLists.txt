@@ -28,6 +28,7 @@ set(SOURCES
     src/panel_script_editor.cpp
     src/panel_game.cpp
     src/panel_prefab.cpp
+    src/panel_terrain.cpp
     src/splash_screen.cpp
     src/crashhandler.cpp
     src/util.cpp

@@ -27,116 +27,117 @@ class Manager;
  */
 class PanelHierarchy
 {
-	public:
-		bool focused = false; ///< True while the hierarchy window owns ImGui focus.
+public:
+	bool focused = false; ///< True while the hierarchy window owns ImGui focus.
 
-	private:
-		GLuint iconAdd = 0; ///< Texture handle for the "add object" toolbar button.
-		GLuint iconMag = 0; ///< Texture handle for the search-bar magnifier icon.
+private:
+	GLuint iconAdd = 0; ///< Texture handle for the "add object" toolbar button.
+	GLuint iconMag = 0; ///< Texture handle for the search-bar magnifier icon.
 
-        GLuint iconWorld  = 0; ///< Icon for the world root node.
-        GLuint iconScene  = 0; ///< Icon for scene nodes.
-        GLuint iconMesh   = 0; ///< Icon for mesh objects.
-        GLuint iconEmpty  = 0; ///< Icon for empty/generic objects.
-        GLuint iconLight  = 0; ///< Icon for light objects.
-        GLuint iconCamera = 0; ///< Icon for camera objects.
-        GLuint iconPrefab = 0; ///< Icon for prefab-instance root nodes.
+	GLuint iconWorld = 0;	///< Icon for the world root node.
+	GLuint iconScene = 0;	///< Icon for scene nodes.
+	GLuint iconMesh = 0;	///< Icon for mesh objects.
+	GLuint iconEmpty = 0;	///< Icon for empty/generic objects.
+	GLuint iconLight = 0;	///< Icon for light objects.
+	GLuint iconCamera = 0;	///< Icon for camera objects.
+	GLuint iconAudio = 0;	///< Icon for audio emitter objects.
+	GLuint iconPrefab = 0;	///< Icon for prefab-instance root nodes.
+	GLuint iconTerrain = 0; ///< Icon for terrain tile objects.
 
-		kString searchBuffer; ///< Current text in the hierarchy search box.
+	kString searchBuffer; ///< Current text in the hierarchy search box.
 
-		kVec4 addTint = kVec4(1, 1, 1, 1); ///< Tint applied to the add button (dims while pressed).
+	kVec4 addTint = kVec4(1, 1, 1, 1); ///< Tint applied to the add button (dims while pressed).
 
-		/**
-		 * @brief A single row in the hierarchy tree.
-		 *
-		 * Represents the world root, a scene, or a scene object, mirroring one
-		 * entry of the underlying scene graph and carrying the UI state needed
-		 * to draw and interact with it.
-		 */
-		struct Node
-		{
-			kString name; ///< Display name shown in the tree.
-			bool isSelected = false; ///< Whether this row is currently selected.
-			std::vector<std::unique_ptr<Node>> children; ///< Child rows, owned by this node.
+	/**
+	 * @brief A single row in the hierarchy tree.
+	 *
+	 * Represents the world root, a scene, or a scene object, mirroring one
+	 * entry of the underlying scene graph and carrying the UI state needed
+	 * to draw and interact with it.
+	 */
+	struct Node
+	{
+		kString name;								 ///< Display name shown in the tree.
+		bool isSelected = false;					 ///< Whether this row is currently selected.
+		std::vector<std::unique_ptr<Node>> children; ///< Child rows, owned by this node.
 
-			kString uuid; ///< UUID of the represented object/scene (used as ImGui ID and selection key).
-			GLuint icon = 0; ///< Texture handle drawn beside the name.
-			kString type = ""; ///< Node category: world, scene, mesh, etc.
+		kString uuid;	   ///< UUID of the represented object/scene (used as ImGui ID and selection key).
+		GLuint icon = 0;   ///< Texture handle drawn beside the name.
+		kString type = ""; ///< Node category: world, scene, mesh, etc.
 
-			// True for nodes that live underneath a prefab instance root.
-			// They render greyed-out and don't accept drag/drop or selection-
-			// based edits — structural changes inside a prefab must be done
-			// in the prefab editor.
-			bool isPrefabDescendant = false; ///< True if this row sits under a prefab instance root (read-only, greyed-out).
-
-			/**
-			 * @brief Construct a tree node.
-			 * @param n Display name.
-			 * @param g UUID of the represented object/scene.
-			 * @param i Icon texture handle (0 for none).
-			 * @param t Node type string (world, scene, mesh, ...).
-			 */
-			Node(const kString& n, const kString& g, GLuint i = 0, const kString& t = "")
-            : name(n), uuid(g), icon(i), type(t) {}
-		};
-
-		Node root; ///< Root of the hierarchy tree (the "World" node).
-
-	public:
-	    /**
-	     * @brief Construct the hierarchy panel and load its icons.
-	     * @param setGuiManager GUI manager used for all ImGui drawing.
-	     * @param setManager Editor manager providing selection state and scene access.
-	     * @param assetManager Asset manager used to load the panel's icon textures.
-	     * @param setWorld World whose scenes and objects are mirrored into the tree.
-	     */
-	    PanelHierarchy(kGuiManager* setGuiManager, Manager* setManager, kAssetManager* assetManager, kWorld* setWorld);
+		// True for nodes that live underneath a prefab instance root.
+		// They render greyed-out and don't accept drag/drop or selection-
+		// based edits — structural changes inside a prefab must be done
+		// in the prefab editor.
+		bool isPrefabDescendant = false; ///< True if this row sits under a prefab instance root (read-only, greyed-out).
 
 		/**
-		 * @brief Clear the selection flag on a node and all of its descendants.
-		 * @param root Subtree root to deselect recursively.
+		 * @brief Construct a tree node.
+		 * @param n Display name.
+		 * @param g UUID of the represented object/scene.
+		 * @param i Icon texture handle (0 for none).
+		 * @param t Node type string (world, scene, mesh, ...).
 		 */
-		void deselectAll(Node& root);
+		Node(const kString &n, const kString &g, GLuint i = 0, const kString &t = "")
+			: name(n), uuid(g), icon(i), type(t) {}
+	};
 
-		/**
-		 * @brief Draw a single tree node and recurse into its children.
-		 *
-		 * Renders the row (icon, label, expand arrow), syncs selection from the
-		 * manager, handles drag-and-drop source/target for reorder/reparent, and
-		 * processes clicks (updating world/scene/object selection and undo).
-		 * @param node Node to draw.
-		 * @param root Tree root, used for whole-tree deselection on click.
-		 * @param level Depth in the tree (0 = world, 1 = scene, 2+ = objects).
-		 */
-		void drawNode(Node& node, Node& root, int level);
+	Node root; ///< Root of the hierarchy tree (the "World" node).
 
-		/**
-		 * @brief Draw the full hierarchy window: toolbar, search bar and tree view.
-		 * @param root Root node to render.
-		 * @param opened Pointer to the window's open flag (toggled by ImGui's close button).
-		 */
-		void drawHierarchyPanel(Node& root, bool* opened);
+public:
+	/**
+	 * @brief Construct the hierarchy panel and load its icons.
+	 * @param setGuiManager GUI manager used for all ImGui drawing.
+	 * @param setManager Editor manager providing selection state and scene access.
+	 * @param assetManager Asset manager used to load the panel's icon textures.
+	 * @param setWorld World whose scenes and objects are mirrored into the tree.
+	 */
+	PanelHierarchy(kGuiManager *setGuiManager, Manager *setManager, kAssetManager *assetManager, kWorld *setWorld);
 
-		/**
-		 * @brief Draw the panel if it is open.
-		 * @param opened Whether the panel is currently visible.
-		 */
-		void draw(bool& opened);
+	/**
+	 * @brief Clear the selection flag on a node and all of its descendants.
+	 * @param root Subtree root to deselect recursively.
+	 */
+	void deselectAll(Node &root);
 
-		/**
-		 * @brief Rebuild the tree from the current world/scene graph.
-		 *
-		 * Clears the manager's object map and the tree, then re-walks every
-		 * scene's object hierarchy, picking icons by object type and flagging
-		 * prefab descendants as read-only.
-		 */
-		void refreshList();
+	/**
+	 * @brief Draw a single tree node and recurse into its children.
+	 *
+	 * Renders the row (icon, label, expand arrow), syncs selection from the
+	 * manager, handles drag-and-drop source/target for reorder/reparent, and
+	 * processes clicks (updating world/scene/object selection and undo).
+	 * @param node Node to draw.
+	 * @param root Tree root, used for whole-tree deselection on click.
+	 * @param level Depth in the tree (0 = world, 1 = scene, 2+ = objects).
+	 */
+	void drawNode(Node &node, Node &root, int level);
 
-		Manager* manager; ///< Editor manager (selection, object map, undo/redo).
-		kGuiManager* gui; ///< GUI manager used for ImGui drawing.
+	/**
+	 * @brief Draw the full hierarchy window: toolbar, search bar and tree view.
+	 * @param root Root node to render.
+	 * @param opened Pointer to the window's open flag (toggled by ImGui's close button).
+	 */
+	void drawHierarchyPanel(Node &root, bool *opened);
 
-		kWorld* world; ///< World whose scenes are displayed in the tree.
+	/**
+	 * @brief Draw the panel if it is open.
+	 * @param opened Whether the panel is currently visible.
+	 */
+	void draw(bool &opened);
+
+	/**
+	 * @brief Rebuild the tree from the current world/scene graph.
+	 *
+	 * Clears the manager's object map and the tree, then re-walks every
+	 * scene's object hierarchy, picking icons by object type and flagging
+	 * prefab descendants as read-only.
+	 */
+	void refreshList();
+
+	Manager *manager; ///< Editor manager (selection, object map, undo/redo).
+	kGuiManager *gui; ///< GUI manager used for ImGui drawing.
+
+	kWorld *world; ///< World whose scenes are displayed in the tree.
 };
 
 #endif
-

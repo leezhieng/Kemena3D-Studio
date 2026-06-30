@@ -23,778 +23,819 @@
 
 namespace fs = std::filesystem;
 
-Manager::Manager(kWindow* setWindow, kWorld* setWorld, kRenderer* setRenderer)
+Manager::Manager(kWindow *setWindow, kWorld *setWorld, kRenderer *setRenderer)
 {
-	window = setWindow;
-	world = setWorld;
-	renderer = setRenderer;
-	initialWindowTitle = window->getWindowTitle();
+    window = setWindow;
+    world = setWorld;
+    renderer = setRenderer;
+    initialWindowTitle = window->getWindowTitle();
 
-	try
-	{
+    try
+    {
 #ifdef _WIN32
-		char buffer[MAX_PATH];
-		DWORD len = GetModuleFileNameA(NULL, buffer, MAX_PATH);
-		exePath = kString(buffer, len);
+        char buffer[MAX_PATH];
+        DWORD len = GetModuleFileNameA(NULL, buffer, MAX_PATH);
+        exePath = kString(buffer, len);
 #elif __APPLE__
-		char buffer[PATH_MAX];
-		uint32_t size = sizeof(buffer);
-		if (_NSGetExecutablePath(buffer, &size) == 0)
-			exePath = fs::canonical(buffer).string();
-		else
-			exePath.clear();
+        char buffer[PATH_MAX];
+        uint32_t size = sizeof(buffer);
+        if (_NSGetExecutablePath(buffer, &size) == 0)
+            exePath = fs::canonical(buffer).string();
+        else
+            exePath.clear();
 #elif __linux__
-		char buffer[PATH_MAX];
-		ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-		if (len != -1)
-		{
-			buffer[len] = '\0';
-			exePath = fs::canonical(buffer).string();
-		}
-		else
-		{
-			exePath.clear();
-		}
+        char buffer[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+        if (len != -1)
+        {
+            buffer[len] = '\0';
+            exePath = fs::canonical(buffer).string();
+        }
+        else
+        {
+            exePath.clear();
+        }
 #else
-		exePath = fs::current_path().string(); // fallback for unknown platforms
+        exePath = fs::current_path().string(); // fallback for unknown platforms
 #endif
 
-		if (!exePath.empty())
-			baseDir = fs::path(exePath).parent_path().string();
-		else
-			baseDir = fs::current_path().string(); // fallback
+        if (!exePath.empty())
+            baseDir = fs::path(exePath).parent_path().string();
+        else
+            baseDir = fs::current_path().string(); // fallback
+    }
+    catch (const fs::filesystem_error &e)
+    {
+        std::cerr << "Error resolving executable path: " << e.what() << std::endl;
+        exePath.clear();
+        baseDir = fs::current_path().string(); // fallback
+    }
 
-	}
-	catch (const fs::filesystem_error& e)
-	{
-		std::cerr << "Error resolving executable path: " << e.what() << std::endl;
-		exePath.clear();
-		baseDir = fs::current_path().string(); // fallback
-	}
-
-	loadRecentProjects();
+    loadRecentProjects();
 }
 
 Manager::~Manager() = default;
 
 kString Manager::getCurrentDirPath()
 {
-	fs::path path = projectPath;
+    fs::path path = projectPath;
 
-	for (const auto& dir : currentDir)
-	{
-		path /= dir;
-	}
+    for (const auto &dir : currentDir)
+    {
+        path /= dir;
+    }
 
-	return path.string();
+    return path.string();
 }
 
 void Manager::openFolder(kString name)
 {
-	currentDir.push_back(name);
+    currentDir.push_back(name);
 }
 
 void Manager::closeFolder()
 {
-	if (currentDir.size() > 1)
-	{
-		currentDir.pop_back();
-	}
+    if (currentDir.size() > 1)
+    {
+        currentDir.pop_back();
+    }
 }
 
 bool Manager::newProject()
 {
-	// Check if project is saved
-	if (!projectSaved)
-	{
-		showingMessageBox = true;
+    // Check if project is saved
+    if (!projectSaved)
+    {
+        showingMessageBox = true;
 
-		auto result = pfd::message(
-						  "Unsaved Changes",
-						  "You have unsaved changes. Do you want to create a new project without saving?",
-						  pfd::choice::yes_no,
-						  pfd::icon::warning
-					  ).result();
+        auto result = pfd::message(
+                          "Unsaved Changes",
+                          "You have unsaved changes. Do you want to create a new project without saving?",
+                          pfd::choice::yes_no,
+                          pfd::icon::warning)
+                          .result();
 
-		if (result == pfd::button::no)
-			return false;
-	}
+        if (result == pfd::button::no)
+            return false;
+    }
 
-	auto path = pfd::select_folder("Select project folder").result();
+    auto path = pfd::select_folder("Select project folder").result();
 
-	if (path.empty())
-	{
-		return false;
-	}
+    if (path.empty())
+    {
+        return false;
+    }
 
-	if (!fs::exists(path) || !fs::is_directory(path))
-	{
-		kString msg = "Directory does not exist:\n" + path;
+    if (!fs::exists(path) || !fs::is_directory(path))
+    {
+        kString msg = "Directory does not exist:\n" + path;
 
-		pfd::message(
-			"Invalid Directory",     // title
-			msg,                     // message
-			pfd::choice::ok,         // only an OK button
-			pfd::icon::warning       // warning icon
-		).result();
+        pfd::message(
+            "Invalid Directory", // title
+            msg,                 // message
+            pfd::choice::ok,     // only an OK button
+            pfd::icon::warning   // warning icon
+            )
+            .result();
 
-		return false;
-	}
+        return false;
+    }
 
-	// Create project directory
-	fs::path fullPath = fs::path(path);
+    // Create project directory
+    fs::path fullPath = fs::path(path);
 
-	std::error_code ec;
+    std::error_code ec;
 
-	// Create required subfolders
-	fs::create_directories(fullPath / "Assets", ec);
-	fs::create_directories(fullPath / "Library", ec);
-	fs::create_directories(fullPath / "Library" / "Metadata", ec);
-	fs::create_directories(fullPath / "Library" / "Thumbnails", ec);
-	fs::create_directories(fullPath / "Library" / "ImportedAssets", ec);
-	fs::create_directories(fullPath / "Config", ec);
+    // Create required subfolders
+    fs::create_directories(fullPath / "Assets", ec);
+    fs::create_directories(fullPath / "Library", ec);
+    fs::create_directories(fullPath / "Library" / "Metadata", ec);
+    fs::create_directories(fullPath / "Library" / "Thumbnails", ec);
+    fs::create_directories(fullPath / "Library" / "ImportedAssets", ec);
+    fs::create_directories(fullPath / "Config", ec);
 
-	kString msg = "Project created at: " + fullPath.string();
+    kString msg = "Project created at: " + fullPath.string();
 
-	pfd::message(
-		"Success",     // title
-		msg,                     // message
-		pfd::choice::ok,         // only an OK button
-		pfd::icon::warning       // warning icon
-	).result();
+    pfd::message(
+        "Success",         // title
+        msg,               // message
+        pfd::choice::ok,   // only an OK button
+        pfd::icon::warning // warning icon
+        )
+        .result();
 
-	// Extract the folder name
-	projectName = fullPath.filename().string();
-	projectOpened = true;
-	projectSaved = false;
-	refreshWindowTitle();
+    // Extract the folder name
+    projectName = fullPath.filename().string();
+    projectOpened = true;
+    projectSaved = false;
+    refreshWindowTitle();
 
-	if (!renderer->getEnableObjectPicking())
-	    renderer->setEnableObjectPicking(true);
+    if (!renderer->getEnableObjectPicking())
+        renderer->setEnableObjectPicking(true);
 
-	projectPath = path;
-	currentDir.clear();
-	currentDir.push_back("Assets");
+    projectPath = path;
+    currentDir.clear();
+    currentDir.push_back("Assets");
 
-	// TODO: Create project config file
-	checkAssetChange();
+    // TODO: Create project config file
+    checkAssetChange();
 
-	if (panelProject != nullptr)
-	{
-		panelProject->refreshTreeList();
-		panelProject->refreshThumbnailList();
-	}
+    if (panelProject != nullptr)
+    {
+        panelProject->refreshTreeList();
+        panelProject->refreshThumbnailList();
+    }
 
-	// WIP: Load scenes of the world
+    // WIP: Load scenes of the world
 
-	if (panelHierarchy != nullptr)
-		panelHierarchy->refreshList();
+    if (panelHierarchy != nullptr)
+        panelHierarchy->refreshList();
 
-	addRecentProject(projectPath.string());
+    addRecentProject(projectPath.string());
 
-	return true;
+    return true;
 }
 
 bool Manager::openProject()
 {
-	showingMessageBox = true;
+    showingMessageBox = true;
 
-	// Check if project is saved
-	if (!projectSaved)
-	{
-		auto result = pfd::message(
-						  "Unsaved Changes",
-						  "You have unsaved changes. Do you want to open a new project without saving?",
-						  pfd::choice::yes_no,
-						  pfd::icon::warning
-					  ).result();
+    // Check if project is saved
+    if (!projectSaved)
+    {
+        auto result = pfd::message(
+                          "Unsaved Changes",
+                          "You have unsaved changes. Do you want to open a new project without saving?",
+                          pfd::choice::yes_no,
+                          pfd::icon::warning)
+                          .result();
 
-		if (result == pfd::button::no)
-			return false;
-	}
+        if (result == pfd::button::no)
+            return false;
+    }
 
-	auto path = pfd::select_folder("Select project folder").result();
+    auto path = pfd::select_folder("Select project folder").result();
 
-	if (path.empty())
-	{
-		return false;
-	}
+    if (path.empty())
+    {
+        return false;
+    }
 
-	if (!fs::exists(path) || !fs::is_directory(path))
-	{
-		kString msg = "Directory does not exist:\n" + path;
+    if (!fs::exists(path) || !fs::is_directory(path))
+    {
+        kString msg = "Directory does not exist:\n" + path;
 
-		pfd::message(
-			"Invalid Directory",     // title
-			msg,                     // message
-			pfd::choice::ok,         // only an OK button
-			pfd::icon::warning       // warning icon
-		).result();
+        pfd::message(
+            "Invalid Directory", // title
+            msg,                 // message
+            pfd::choice::ok,     // only an OK button
+            pfd::icon::warning   // warning icon
+            )
+            .result();
 
-		return false;
-	}
+        return false;
+    }
 
-	fs::path fullPath = fs::path(path);
+    fs::path fullPath = fs::path(path);
 
-	fs::path assetsPath  = fullPath / "Assets";
-	fs::path libraryPath = fullPath / "Library";
-	fs::path configPath  = fullPath / "Config";
+    fs::path assetsPath = fullPath / "Assets";
+    fs::path libraryPath = fullPath / "Library";
+    fs::path configPath = fullPath / "Config";
 
-	if (!(fs::exists(assetsPath) && fs::exists(libraryPath) && fs::exists(configPath)))
-	{
-		kString msg = "Failed to open project. Invalid directory structure.\n";
+    if (!(fs::exists(assetsPath) && fs::exists(libraryPath) && fs::exists(configPath)))
+    {
+        kString msg = "Failed to open project. Invalid directory structure.\n";
 
-		pfd::message(
-			"Invalid Directory",     // title
-			msg,                     // message
-			pfd::choice::ok,         // only an OK button
-			pfd::icon::warning       // warning icon
-		).result();
+        pfd::message(
+            "Invalid Directory", // title
+            msg,                 // message
+            pfd::choice::ok,     // only an OK button
+            pfd::icon::warning   // warning icon
+            )
+            .result();
 
-		return false;
-	}
+        return false;
+    }
 
-	// Open project successful
+    // Open project successful
 
-	// Extract the folder name
-	projectName = fullPath.filename().string();
-	projectOpened = true;
-	projectSaved = false;
-	refreshWindowTitle();
+    // Extract the folder name
+    projectName = fullPath.filename().string();
+    projectOpened = true;
+    projectSaved = false;
+    refreshWindowTitle();
 
-	if (!renderer->getEnableObjectPicking())
-	    renderer->setEnableObjectPicking(true);
+    if (!renderer->getEnableObjectPicking())
+        renderer->setEnableObjectPicking(true);
 
-	projectPath = path;
-	currentDir.clear();
-	currentDir.push_back("Assets");
+    projectPath = path;
+    currentDir.clear();
+    currentDir.push_back("Assets");
 
-	// Create other essential folders if don't exist
-	std::error_code ec;
+    // Create other essential folders if don't exist
+    std::error_code ec;
 
-	fs::create_directories(fullPath / "Assets", ec);
-	fs::path metadataPath = fullPath / "Library" / "Metadata";
-	if (!(fs::exists(metadataPath)))
-		fs::create_directories(fullPath / "Library" / "Metadata", ec);
+    fs::create_directories(fullPath / "Assets", ec);
+    fs::path metadataPath = fullPath / "Library" / "Metadata";
+    if (!(fs::exists(metadataPath)))
+        fs::create_directories(fullPath / "Library" / "Metadata", ec);
 
-	fs::path thumbnailsPath = fullPath / "Library" / "Thumbnails";
-	if (!(fs::exists(thumbnailsPath)))
-		fs::create_directories(fullPath / "Library" / "Thumbnails", ec);
+    fs::path thumbnailsPath = fullPath / "Library" / "Thumbnails";
+    if (!(fs::exists(thumbnailsPath)))
+        fs::create_directories(fullPath / "Library" / "Thumbnails", ec);
 
-	fs::path importedAssetsPath = fullPath / "Library" / "ImportedAssets";
-	if (!(fs::exists(importedAssetsPath)))
-		fs::create_directories(fullPath / "Library" / "ImportedAssets", ec);
+    fs::path importedAssetsPath = fullPath / "Library" / "ImportedAssets";
+    if (!(fs::exists(importedAssetsPath)))
+        fs::create_directories(fullPath / "Library" / "ImportedAssets", ec);
 
-	// TODO: check project config file
-	// Need this to false to check assets
-	showingMessageBox = false;
-	checkAssetChange();
+    // TODO: check project config file
+    // Need this to false to check assets
+    showingMessageBox = false;
+    checkAssetChange();
 
-	if (panelProject != nullptr)
-	{
-		panelProject->refreshTreeList();
-		panelProject->refreshThumbnailList();
-	}
+    if (panelProject != nullptr)
+    {
+        panelProject->refreshTreeList();
+        panelProject->refreshThumbnailList();
+    }
 
-	// WIP: Load scenes of the world
+    // WIP: Load scenes of the world
 
-	if (panelHierarchy != nullptr)
-		panelHierarchy->refreshList();
+    if (panelHierarchy != nullptr)
+        panelHierarchy->refreshList();
 
-	// If a previous session recorded a last-opened world, load it now.
-	{
-		fs::path last = loadLastWorldPath();
-		if (!last.empty())
-			loadWorld(last.string());
-	}
+    // If a previous session recorded a last-opened world, load it now.
+    {
+        fs::path last = loadLastWorldPath();
+        if (!last.empty())
+            loadWorld(last.string());
+    }
 
-	addRecentProject(projectPath.string());
+    addRecentProject(projectPath.string());
 
-	return true;
+    return true;
 }
 
-bool Manager::openProjectFromPath(const kString& path)
+bool Manager::openProjectFromPath(const kString &path)
 {
-	if (path.empty()) return false;
+    if (path.empty())
+        return false;
 
-	fs::path fullPath = fs::path(path);
+    fs::path fullPath = fs::path(path);
 
-	if (!fs::exists(fullPath) || !fs::is_directory(fullPath))
-		return false;
+    if (!fs::exists(fullPath) || !fs::is_directory(fullPath))
+        return false;
 
-	if (!(fs::exists(fullPath / "Assets") &&
-		  fs::exists(fullPath / "Library") &&
-		  fs::exists(fullPath / "Config")))
-		return false;
+    if (!(fs::exists(fullPath / "Assets") &&
+          fs::exists(fullPath / "Library") &&
+          fs::exists(fullPath / "Config")))
+        return false;
 
-	projectName   = fullPath.filename().string();
-	projectOpened = true;
-	projectSaved  = false;
-	refreshWindowTitle();
+    projectName = fullPath.filename().string();
+    projectOpened = true;
+    projectSaved = false;
+    refreshWindowTitle();
 
-	if (!renderer->getEnableObjectPicking())
-		renderer->setEnableObjectPicking(true);
+    if (!renderer->getEnableObjectPicking())
+        renderer->setEnableObjectPicking(true);
 
-	projectPath = path;
-	currentDir.clear();
-	currentDir.push_back("Assets");
+    projectPath = path;
+    currentDir.clear();
+    currentDir.push_back("Assets");
 
-	std::error_code ec;
-	fs::create_directories(fullPath / "Assets", ec);
+    std::error_code ec;
+    fs::create_directories(fullPath / "Assets", ec);
 
-	if (!fs::exists(fullPath / "Library" / "Metadata"))
-		fs::create_directories(fullPath / "Library" / "Metadata", ec);
-	if (!fs::exists(fullPath / "Library" / "Thumbnails"))
-		fs::create_directories(fullPath / "Library" / "Thumbnails", ec);
-	if (!fs::exists(fullPath / "Library" / "ImportedAssets"))
-		fs::create_directories(fullPath / "Library" / "ImportedAssets", ec);
+    if (!fs::exists(fullPath / "Library" / "Metadata"))
+        fs::create_directories(fullPath / "Library" / "Metadata", ec);
+    if (!fs::exists(fullPath / "Library" / "Thumbnails"))
+        fs::create_directories(fullPath / "Library" / "Thumbnails", ec);
+    if (!fs::exists(fullPath / "Library" / "ImportedAssets"))
+        fs::create_directories(fullPath / "Library" / "ImportedAssets", ec);
 
-	showingMessageBox = false;
-	checkAssetChange();
+    showingMessageBox = false;
+    checkAssetChange();
 
-	if (panelProject != nullptr)
-	{
-		panelProject->refreshTreeList();
-		panelProject->refreshThumbnailList();
-	}
+    if (panelProject != nullptr)
+    {
+        panelProject->refreshTreeList();
+        panelProject->refreshThumbnailList();
+    }
 
-	if (panelHierarchy != nullptr)
-		panelHierarchy->refreshList();
+    if (panelHierarchy != nullptr)
+        panelHierarchy->refreshList();
 
-	// Auto-load the previously-opened world for this project (if any).
-	{
-		fs::path last = loadLastWorldPath();
-		if (!last.empty())
-			loadWorld(last.string());
-	}
+    // Auto-load the previously-opened world for this project (if any).
+    {
+        fs::path last = loadLastWorldPath();
+        if (!last.empty())
+            loadWorld(last.string());
+    }
 
-	addRecentProject(path);
+    addRecentProject(path);
 
-	return true;
+    return true;
 }
 
 void Manager::loadRecentProjects()
 {
-	fs::path configFile = fs::path(baseDir) / "recent_projects.json";
-	if (!fs::exists(configFile)) return;
+    fs::path configFile = fs::path(baseDir) / "recent_projects.json";
+    if (!fs::exists(configFile))
+        return;
 
-	try
-	{
-		std::ifstream f(configFile);
-		json j = json::parse(f);
-		recentProjects.clear();
-		// Filter out empties and duplicates — older builds occasionally
-		// recorded a blank entry when project creation was interrupted.
-		std::set<kString> seen;
-		for (auto& entry : j["projects"])
-		{
-			kString p = entry.get<std::string>();
-			if (p.empty() || !seen.insert(p).second)
-				continue;
-			recentProjects.push_back(std::move(p));
-		}
-	}
-	catch (...) {}
+    try
+    {
+        std::ifstream f(configFile);
+        json j = json::parse(f);
+        recentProjects.clear();
+        // Filter out empties and duplicates — older builds occasionally
+        // recorded a blank entry when project creation was interrupted.
+        std::set<kString> seen;
+        for (auto &entry : j["projects"])
+        {
+            kString p = entry.get<std::string>();
+            if (p.empty() || !seen.insert(p).second)
+                continue;
+            recentProjects.push_back(std::move(p));
+        }
+    }
+    catch (...)
+    {
+    }
 }
 
 void Manager::saveRecentProjects()
 {
-	fs::path configFile = fs::path(baseDir) / "recent_projects.json";
+    fs::path configFile = fs::path(baseDir) / "recent_projects.json";
 
-	try
-	{
-		json j;
-		j["projects"] = recentProjects;
-		std::ofstream f(configFile);
-		f << j.dump(4);
-	}
-	catch (...) {}
+    try
+    {
+        json j;
+        j["projects"] = recentProjects;
+        std::ofstream f(configFile);
+        f << j.dump(4);
+    }
+    catch (...)
+    {
+    }
 }
 
-void Manager::addRecentProject(const kString& path)
+void Manager::addRecentProject(const kString &path)
 {
-	if (path.empty()) return;
+    if (path.empty())
+        return;
 
-	// Copy first: callers (the splash) frequently pass a reference straight
-	// out of `recentProjects` — erase() below would otherwise invalidate the
-	// referent, and the subsequent insert() would read garbage and store an
-	// empty / corrupted entry. That's why the list went empty after opening
-	// a recent project.
-	kString p = path;
+    // Copy first: callers (the splash) frequently pass a reference straight
+    // out of `recentProjects` — erase() below would otherwise invalidate the
+    // referent, and the subsequent insert() would read garbage and store an
+    // empty / corrupted entry. That's why the list went empty after opening
+    // a recent project.
+    kString p = path;
 
-	auto it = std::find(recentProjects.begin(), recentProjects.end(), p);
-	if (it != recentProjects.end())
-		recentProjects.erase(it);
+    auto it = std::find(recentProjects.begin(), recentProjects.end(), p);
+    if (it != recentProjects.end())
+        recentProjects.erase(it);
 
-	recentProjects.insert(recentProjects.begin(), p);
+    recentProjects.insert(recentProjects.begin(), p);
 
-	if (recentProjects.size() > 8)
-		recentProjects.resize(8);
+    if (recentProjects.size() > 8)
+        recentProjects.resize(8);
 
-	saveRecentProjects();
+    saveRecentProjects();
 }
 
 void Manager::checkAssetChange()
 {
-	if (projectOpened && !showingMessageBox)
-	{
-		bool anyChanges = false;
-		fileMap.clear();
-		importTasks.clear();
-		// Drop cached raw shaders / textures so edited assets are recompiled /
-		// reloaded on next material build. (Old entries may still be referenced
-		// by live materials, so we don't free them here — just stop reusing them.)
-		shaderCache.clear();
-		textureCache.clear();
-		fs::path libraryFolder = projectPath / "Library";
-		fs::path assetsJsonFile = libraryFolder / "assets.json";
-		fs::path assetsPath = projectPath / "Assets";
+    if (projectOpened && !showingMessageBox)
+    {
+        bool anyChanges = false;
+        fileMap.clear();
+        importTasks.clear();
+        // Drop cached raw shaders / textures so edited assets are recompiled /
+        // reloaded on next material build. (Old entries may still be referenced
+        // by live materials, so we don't free them here — just stop reusing them.)
+        shaderCache.clear();
+        textureCache.clear();
+        fs::path libraryFolder = projectPath / "Library";
+        fs::path assetsJsonFile = libraryFolder / "assets.json";
+        fs::path assetsPath = projectPath / "Assets";
 
-		// Check whether assets.json exist or not
-		try
-		{
-			if (!fs::exists(libraryFolder))
-			{
-				fs::create_directories(libraryFolder);
-				std::cout << "Created Library folder: " << libraryFolder << "\n";
-			}
+        // Check whether assets.json exist or not
+        try
+        {
+            if (!fs::exists(libraryFolder))
+            {
+                fs::create_directories(libraryFolder);
+                std::cout << "Created Library folder: " << libraryFolder << "\n";
+            }
 
-			if (!fs::exists(assetsJsonFile))
-			{
-				json j;
-				j["files"] = json::array();
+            if (!fs::exists(assetsJsonFile))
+            {
+                json j;
+                j["files"] = json::array();
 
-				std::ofstream ofs(assetsJsonFile);
-				ofs << j.dump(4); // pretty print
-				ofs.close();
+                std::ofstream ofs(assetsJsonFile);
+                ofs << j.dump(4); // pretty print
+                ofs.close();
 
-				std::cout << "Created assets.json at: " << assetsJsonFile << "\n";
-			}
-			else
-			{
-				std::cout << "assets.json already exists.\n";
-			}
-		}
-		catch (const std::exception& e)
-		{
-			std::cerr << "Error: " << e.what() << "\n";
-			return;
-		}
+                std::cout << "Created assets.json at: " << assetsJsonFile << "\n";
+            }
+            else
+            {
+                std::cout << "assets.json already exists.\n";
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Error: " << e.what() << "\n";
+            return;
+        }
 
-		// Read assets.json
-		// Check whether the files exist or not
-		json j;
-		// Check if file is empty
-		if (fs::is_empty(assetsJsonFile))
-		{
-			std::cout << "assets.json is empty, reinitializing...\n";
-			j["files"] = json::array();
+        // Read assets.json
+        // Check whether the files exist or not
+        json j;
+        // Check if file is empty
+        if (fs::is_empty(assetsJsonFile))
+        {
+            std::cout << "assets.json is empty, reinitializing...\n";
+            j["files"] = json::array();
 
-			std::ofstream ofs(assetsJsonFile);
-			ofs << j.dump(4);
-			ofs.close();
-		}
-		else
-		{
-			std::ifstream ifs(assetsJsonFile);
-			try
-			{
-				ifs >> j;
-			}
-			catch (const std::exception& e)
-			{
-				std::cerr << "Failed to parse assets.json: " << e.what() << "\n";
-				j["files"] = json::array(); // reset to valid state
-			}
-		}
+            std::ofstream ofs(assetsJsonFile);
+            ofs << j.dump(4);
+            ofs.close();
+        }
+        else
+        {
+            std::ifstream ifs(assetsJsonFile);
+            try
+            {
+                ifs >> j;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Failed to parse assets.json: " << e.what() << "\n";
+                j["files"] = json::array(); // reset to valid state
+            }
+        }
 
-		if (!j.contains("files") || !j["files"].is_array())
-		{
-			std::cerr << "Invalid assets.json format\n";
-			return;
-		}
+        if (!j.contains("files") || !j["files"].is_array())
+        {
+            std::cerr << "Invalid assets.json format\n";
+            return;
+        }
 
-		if (!j["files"].empty())
-		{
-			for (auto it = j["files"].begin(); it != j["files"].end();)
-			{
-				kString uuid = (*it)["uuid"].get<kString>();
-				kString relativePath = (*it)["name"].get<kString>();
-				kString checksum = (*it).value("checksum", "");
-				kString type = (*it)["type"].get<kString>();
+        if (!j["files"].empty())
+        {
+            for (auto it = j["files"].begin(); it != j["files"].end();)
+            {
+                kString uuid = (*it)["uuid"].get<kString>();
+                kString relativePath = (*it)["name"].get<kString>();
+                kString checksum = (*it).value("checksum", "");
+                kString type = (*it)["type"].get<kString>();
 
-				fs::path filePath = assetsPath / relativePath;
+                fs::path filePath = assetsPath / relativePath;
 
-				if (!fs::exists(filePath))
-				{
-					std::cout << "Missing: " << relativePath << " (removed from list)\n";
-					it = j["files"].erase(it);
-					anyChanges = true;
+                if (!fs::exists(filePath))
+                {
+                    std::cout << "Missing: " << relativePath << " (removed from list)\n";
+                    it = j["files"].erase(it);
+                    anyChanges = true;
 
-					// Delete metadata, thumbnail and imported asset?
+                    // Delete metadata, thumbnail and imported asset?
 
-					// Delete metadata
-					fs::path metadataFile = libraryFolder / "Metadata" / (uuid + ".json");
-					if (fs::exists(metadataFile))
-					{
-						try
-						{
-							if (fs::remove(metadataFile))
-							{
-								std::cout << "Deleted file: " << metadataFile << "\n";
-							}
-							else
-							{
-								std::cout << "Failed to delete file (unknown reason): " << metadataFile << "\n";
-							}
-						}
-						catch (const fs::filesystem_error& e)
-						{
-							std::cerr << "Error deleting file: " << e.what() << "\n";
-						}
-					}
-					else
-					{
-						std::cout << "File does not exist: " << metadataFile << "\n";
-					}
+                    // Delete metadata
+                    fs::path metadataFile = libraryFolder / "Metadata" / (uuid + ".json");
+                    if (fs::exists(metadataFile))
+                    {
+                        try
+                        {
+                            if (fs::remove(metadataFile))
+                            {
+                                std::cout << "Deleted file: " << metadataFile << "\n";
+                            }
+                            else
+                            {
+                                std::cout << "Failed to delete file (unknown reason): " << metadataFile << "\n";
+                            }
+                        }
+                        catch (const fs::filesystem_error &e)
+                        {
+                            std::cerr << "Error deleting file: " << e.what() << "\n";
+                        }
+                    }
+                    else
+                    {
+                        std::cout << "File does not exist: " << metadataFile << "\n";
+                    }
 
-					// Delete imported assets and thumbnail
-					kString assetExt;
-					if (type == "mesh")  assetExt = ".glb";
-					else if (type == "image") assetExt = ".dds";
+                    // Delete imported assets and thumbnail
+                    kString assetExt;
+                    if (type == "mesh")
+                        assetExt = ".glb";
+                    else if (type == "image")
+                        assetExt = ".dds";
 
-					auto tryDelete = [](const fs::path &p) {
-						if (!fs::exists(p)) return;
-						try { fs::remove(p); std::cout << "Deleted: " << p << "\n"; }
-						catch (const fs::filesystem_error &e) { std::cerr << "Error deleting: " << e.what() << "\n"; }
-					};
+                    auto tryDelete = [](const fs::path &p)
+                    {
+                        if (!fs::exists(p))
+                            return;
+                        try
+                        {
+                            fs::remove(p);
+                            std::cout << "Deleted: " << p << "\n";
+                        }
+                        catch (const fs::filesystem_error &e)
+                        {
+                            std::cerr << "Error deleting: " << e.what() << "\n";
+                        }
+                    };
 
-					if (!assetExt.empty())
-						tryDelete(libraryFolder / "ImportedAssets" / (uuid + assetExt));
+                    if (!assetExt.empty())
+                        tryDelete(libraryFolder / "ImportedAssets" / (uuid + assetExt));
 
-					tryDelete(libraryFolder / "Thumbnails" / (uuid + ".png"));
+                    tryDelete(libraryFolder / "Thumbnails" / (uuid + ".png"));
 
-					continue;
-				}
+                    continue;
+                }
 
-				// Fill struct and store in map
-				FileInfo info{ relativePath, checksum, type };
-				fileMap[uuid] = info;
+                // Fill struct and store in map
+                FileInfo info{relativePath, checksum, type};
+                fileMap[uuid] = info;
 
-				++it;
-			}
-		}
+                ++it;
+            }
+        }
 
-		// Build a reverse lookup from path -> uuid for convenience
-		uuidMap.clear();
-		for (const auto& [uuid, info] : fileMap)
-			uuidMap[info.path] = uuid;
+        // Build a reverse lookup from path -> uuid for convenience
+        uuidMap.clear();
+        for (const auto &[uuid, info] : fileMap)
+            uuidMap[info.path] = uuid;
 
-		// Check all files in the Assets folder
-		for (auto &p : fs::recursive_directory_iterator(assetsPath))
-		{
-			if (!p.is_regular_file()) continue;
+        // Check all files in the Assets folder
+        for (auto &p : fs::recursive_directory_iterator(assetsPath))
+        {
+            if (!p.is_regular_file())
+                continue;
 
-			kString relativePath = fs::relative(p.path(), assetsPath).generic_string();
-			kString checksum = generateFileChecksum(p.path().string());
+            kString relativePath = fs::relative(p.path(), assetsPath).generic_string();
+            kString checksum = generateFileChecksum(p.path().string());
 
-			kString fileUuid;
-			kString fileType;
-			bool needImport = false;
+            kString fileUuid;
+            kString fileType;
+            bool needImport = false;
 
-			// Check with assets.json
-			auto it = uuidMap.find(relativePath);
-			if (it == uuidMap.end())
-			{
-				// New file
-				kString uuid = generateUuid();
-				kString type = checkAssetType(p.path());
+            // Check with assets.json
+            auto it = uuidMap.find(relativePath);
+            if (it == uuidMap.end())
+            {
+                // New file
+                kString uuid = generateUuid();
+                kString type = checkAssetType(p.path());
 
-				fileUuid = uuid;
-				fileType = type;
-				needImport = true;  // Need import
+                fileUuid = uuid;
+                fileType = type;
+                needImport = true; // Need import
 
-				FileInfo info{ relativePath, checksum, type };
-				fileMap[uuid] = info;
-				uuidMap[relativePath] = uuid;
+                FileInfo info{relativePath, checksum, type};
+                fileMap[uuid] = info;
+                uuidMap[relativePath] = uuid;
 
-				json newEntry =
-				{
-					{"name", relativePath},
-					{"uuid", uuid},
-					{"checksum", checksum},
-					{"type", type}
-				};
-				j["files"].push_back(newEntry);
+                json newEntry =
+                    {
+                        {"name", relativePath},
+                        {"uuid", uuid},
+                        {"checksum", checksum},
+                        {"type", type}};
+                j["files"].push_back(newEntry);
 
-				std::cout << "New file added: " << relativePath << "\n";
-			}
-			else
-			{
-				// Existing file, check checksum
-				kString uuid = it->second;
-				FileInfo& info = fileMap[uuid];
+                std::cout << "New file added: " << relativePath << "\n";
+            }
+            else
+            {
+                // Existing file, check checksum
+                kString uuid = it->second;
+                FileInfo &info = fileMap[uuid];
 
-				fileUuid = uuid;
-				fileType = info.type;
+                fileUuid = uuid;
+                fileType = info.type;
 
-				// Different checksum
-				if (info.checksum != checksum)
-				{
-					std::cout << "File changed: " << relativePath << "\n";
-					info.checksum = checksum;
-					needImport = true;  // Need import
+                // Different checksum
+                if (info.checksum != checksum)
+                {
+                    std::cout << "File changed: " << relativePath << "\n";
+                    info.checksum = checksum;
+                    needImport = true; // Need import
 
-					// Update JSON as well
-					for (auto& entry : j["files"])
-					{
-						if (entry["uuid"] == uuid)
-						{
-							entry["checksum"] = checksum;
-							break;
-						}
-					}
-				}
-			}
+                    // Update JSON as well
+                    for (auto &entry : j["files"])
+                    {
+                        if (entry["uuid"] == uuid)
+                        {
+                            entry["checksum"] = checksum;
+                            break;
+                        }
+                    }
+                }
+            }
 
-			if (!fileUuid.empty() && !fileType.empty())
-			{
-				// Determine dest extension
-				kString uuidExt;
-				if (fileType == "mesh")       uuidExt = ".glb";
-				else if (fileType == "image") uuidExt = ".dds";
+            if (!fileUuid.empty() && !fileType.empty())
+            {
+                // Determine dest extension
+                kString uuidExt;
+                if (fileType == "mesh")
+                    uuidExt = ".glb";
+                else if (fileType == "image")
+                    uuidExt = ".dds";
 
-				fs::path srcFullPath   = assetsPath / relativePath;
-				fs::path destDir       = libraryFolder / "ImportedAssets";
-				fs::path destFile      = destDir / (fileUuid + uuidExt);
-				fs::path thumbnailPath = libraryFolder / "Thumbnails" / (fileUuid + ".png");
-				fs::path metaPath      = libraryFolder / "Metadata"   / (fileUuid + ".json");
+                fs::path srcFullPath = assetsPath / relativePath;
+                fs::path destDir = libraryFolder / "ImportedAssets";
+                fs::path destFile = destDir / (fileUuid + uuidExt);
+                fs::path thumbnailPath = libraryFolder / "Thumbnails" / (fileUuid + ".png");
+                fs::path metaPath = libraryFolder / "Metadata" / (fileUuid + ".json");
 
-				// Write / overwrite metadata whenever it's missing or the file changed
-				if (!fs::exists(metaPath) || needImport)
-				{
-					nlohmann::json meta;
-					meta["type"]         = fileType;
-					meta["last_change"]  = static_cast<int64_t>(std::time(nullptr));
-					meta["src_checksum"] = checksum;
-					meta["src_path"]     = fs::relative(srcFullPath.parent_path(), projectPath).generic_string();
-					meta["src_file"]     = srcFullPath.filename().generic_string();
-					meta["dest_path"]    = fs::relative(destDir, projectPath).generic_string();
-					meta["dest_file"]    = fileUuid + uuidExt;
+                // Write / overwrite metadata whenever it's missing or the file changed
+                if (!fs::exists(metaPath) || needImport)
+                {
+                    nlohmann::json meta;
+                    meta["type"] = fileType;
+                    meta["last_change"] = static_cast<int64_t>(std::time(nullptr));
+                    meta["src_checksum"] = checksum;
+                    meta["src_path"] = fs::relative(srcFullPath.parent_path(), projectPath).generic_string();
+                    meta["src_file"] = srcFullPath.filename().generic_string();
+                    meta["dest_path"] = fs::relative(destDir, projectPath).generic_string();
+                    meta["dest_file"] = fileUuid + uuidExt;
 
-					std::ofstream mf(metaPath);
-					if (mf) { mf << meta.dump(4); mf.close(); }
-					else std::cerr << "Failed to write metadata: " << metaPath << "\n";
-				}
+                    std::ofstream mf(metaPath);
+                    if (mf)
+                    {
+                        mf << meta.dump(4);
+                        mf.close();
+                    }
+                    else
+                        std::cerr << "Failed to write metadata: " << metaPath << "\n";
+                }
 
-				// Queue conversion if imported asset is missing or source changed.
-				// Only mesh/image produce a file in ImportedAssets (uuidExt set).
-				// Materials and other types have no imported file, so testing
-				// destFile here would be testing "ImportedAssets/<uuid>" with no
-				// extension — which never exists — and would spuriously force a
-				// re-import (and thumbnail regen) on every focus/scan.
-				if (!uuidExt.empty() && !fs::exists(destFile))
-					needImport = true;
+                // Queue conversion if imported asset is missing or source changed.
+                // Only mesh/image produce a file in ImportedAssets (uuidExt set).
+                // Materials and other types have no imported file, so testing
+                // destFile here would be testing "ImportedAssets/<uuid>" with no
+                // extension — which never exists — and would spuriously force a
+                // re-import (and thumbnail regen) on every focus/scan.
+                if (!uuidExt.empty() && !fs::exists(destFile))
+                    needImport = true;
 
-				// If the thumbnail is missing, force a re-import/re-generation.
-				if (!fs::exists(thumbnailPath))
-				{
-					if (fileType == "mesh" && !uuidExt.empty())
-					{
-						// For meshes, delete the imported asset and metadata to trigger full re-import.
-						auto tryRemove = [](const fs::path &p) {
-							if (!fs::exists(p)) return;
-							std::error_code ec;
-							fs::remove(p, ec);
-							if (!ec) std::cout << "Removed stale Library file: " << p << "\n";
-							else     std::cerr << "Failed to remove: " << p << " (" << ec.message() << ")\n";
-						};
-						tryRemove(destFile);
-						tryRemove(metaPath);
-						needImport = true;
-					}
-					else if (fileType == "image" && fs::exists(srcFullPath) && !needImport)
-					{
-						// For images, just queue a thumbnail generation from the source file.
-						thumbnailQueue.push_back({ fileUuid, srcFullPath, thumbnailPath, "image" });
-						anyChanges = true;
-					}
-				}
+                // If the thumbnail is missing, force a re-import/re-generation.
+                if (!fs::exists(thumbnailPath))
+                {
+                    if (fileType == "mesh" && !uuidExt.empty())
+                    {
+                        // For meshes, delete the imported asset and metadata to trigger full re-import.
+                        auto tryRemove = [](const fs::path &p)
+                        {
+                            if (!fs::exists(p))
+                                return;
+                            std::error_code ec;
+                            fs::remove(p, ec);
+                            if (!ec)
+                                std::cout << "Removed stale Library file: " << p << "\n";
+                            else
+                                std::cerr << "Failed to remove: " << p << " (" << ec.message() << ")\n";
+                        };
+                        tryRemove(destFile);
+                        tryRemove(metaPath);
+                        needImport = true;
+                    }
+                    else if (fileType == "image" && fs::exists(srcFullPath) && !needImport)
+                    {
+                        // For images, just queue a thumbnail generation from the source file.
+                        thumbnailQueue.push_back({fileUuid, srcFullPath, thumbnailPath, "image"});
+                        anyChanges = true;
+                    }
+                }
 
-				if (needImport && (fileType == "mesh" || fileType == "image"))
-				{
-					std::cout << srcFullPath << " -> " << destFile << "\n";
-					importTasks.push_back({ srcFullPath, destFile, fileType,
-					                        fileUuid, thumbnailPath, false, false });
-					anyChanges = true;
-				}
+                if (needImport && (fileType == "mesh" || fileType == "image"))
+                {
+                    std::cout << srcFullPath << " -> " << destFile << "\n";
+                    importTasks.push_back({srcFullPath, destFile, fileType,
+                                           fileUuid, thumbnailPath, false, false});
+                    anyChanges = true;
+                }
 
-				if (fileType == "material" && (!fs::exists(thumbnailPath) || needImport))
-				{
-					if (fs::exists(thumbnailPath)) fs::remove(thumbnailPath);
-					thumbnailQueue.push_back({ fileUuid, srcFullPath, thumbnailPath, "material" });
-					anyChanges = true;
-				}
-			}
-		}
+                if (fileType == "material" && (!fs::exists(thumbnailPath) || needImport))
+                {
+                    if (fs::exists(thumbnailPath))
+                        fs::remove(thumbnailPath);
+                    thumbnailQueue.push_back({fileUuid, srcFullPath, thumbnailPath, "material"});
+                    anyChanges = true;
+                }
 
-		// Save back
-		std::ofstream out(assetsJsonFile);
-		out << j.dump(4);
-		std::cout << "assets.json updated.\n";
+                if (fileType == "audio" && (!fs::exists(thumbnailPath) || needImport))
+                {
+                    if (fs::exists(thumbnailPath))
+                        fs::remove(thumbnailPath);
+                    thumbnailQueue.push_back({fileUuid, srcFullPath, thumbnailPath, "audio"});
+                    anyChanges = true;
+                }
+            }
+        }
 
-		// Begin batch imports
-		startBatchImport(importTasks);
+        // Save back
+        std::ofstream out(assetsJsonFile);
+        out << j.dump(4);
+        std::cout << "assets.json updated.\n";
 
-		// Refresh project panel if anything changed
-		if (anyChanges && panelProject != nullptr)
-			panelProject->triggerRefresh();
-	}
+        // Begin batch imports
+        startBatchImport(importTasks);
 
-	// Reset so that it will check again
-	showingMessageBox = false;
+        // Refresh project panel if anything changed
+        if (anyChanges && panelProject != nullptr)
+            panelProject->triggerRefresh();
+    }
+
+    // Reset so that it will check again
+    showingMessageBox = false;
 }
 
 void Manager::refreshWindowTitle()
 {
-	if (!projectOpened)
-	{
-		window->setWindowTitle(initialWindowTitle);
-	}
-	else
-	{
-		if (worldName == "")
-			window->setWindowTitle(initialWindowTitle + " - " + projectName + " - Untitled");
-		else
-			window->setWindowTitle(initialWindowTitle + " - " + projectName + " - " + worldName + ".world");
+    if (!projectOpened)
+    {
+        window->setWindowTitle(initialWindowTitle);
+    }
+    else
+    {
+        if (worldName == "")
+            window->setWindowTitle(initialWindowTitle + " - " + projectName + " - Untitled");
+        else
+            window->setWindowTitle(initialWindowTitle + " - " + projectName + " - " + worldName + ".world");
 
-		if (!projectSaved)
-			window->setWindowTitle(window->getWindowTitle() + "*");
-	}
+        if (!projectSaved)
+            window->setWindowTitle(window->getWindowTitle() + "*");
+    }
 }
 
 void Manager::closeEditor()
 {
-	if (!projectSaved)
-	{
-		showingMessageBox = true;
+    if (!projectSaved)
+    {
+        showingMessageBox = true;
 
-		auto result = pfd::message(
-						  "Unsaved Changes",
-						  "Project not saved. Do you really want to quit?",
-						  pfd::choice::yes_no,
-						  pfd::icon::warning
-					  ).result();
+        auto result = pfd::message(
+                          "Unsaved Changes",
+                          "Project not saved. Do you really want to quit?",
+                          pfd::choice::yes_no,
+                          pfd::icon::warning)
+                          .result();
 
-		if (result == pfd::button::yes)
-		{
-			window->setRunning(false); // user confirmed quit
-		}
-	}
-	else
-	{
-		window->setRunning(false);
-	}
+        if (result == pfd::button::yes)
+        {
+            window->setRunning(false); // user confirmed quit
+        }
+    }
+    else
+    {
+        window->setRunning(false);
+    }
 }
 
 void Manager::clearWorld(bool forced)
@@ -809,8 +850,8 @@ void Manager::clearWorld(bool forced)
                               "Unsaved Changes",
                               "World not saved. Do you really want to close this world?",
                               pfd::choice::yes_no,
-                              pfd::icon::warning
-                          ).result();
+                              pfd::icon::warning)
+                              .result();
 
             if (result == pfd::button::no)
             {
@@ -821,11 +862,11 @@ void Manager::clearWorld(bool forced)
 
     if (!world->getScenes().empty())
     {
-        for (kScene* scene : world->getScenes())
+        for (kScene *scene : world->getScenes())
         {
             if (scene && scene->getRootNode())
             {
-                for (kObject* child : scene->getRootNode()->getChildren())
+                for (kObject *child : scene->getRootNode()->getChildren())
                 {
                     deleteObjectRecursive(child);
                 }
@@ -836,14 +877,97 @@ void Manager::clearWorld(bool forced)
         }
         world->getScenes().clear();
     }
+
+    // Clear terrain manager
+    if (terrainManager)
+    {
+        terrainManager->clear();
+    }
 }
 
-void Manager::deleteObjectRecursive(kObject* node)
+bool Manager::newWorld()
 {
-    if (!node) return;
+    // Ask user if they want to save unsaved changes
+    if (!projectSaved)
+    {
+        showingMessageBox = true;
+        auto result = pfd::message(
+                          "Unsaved Changes",
+                          "The current world has unsaved changes. Do you want to create a new world without saving?",
+                          pfd::choice::yes_no,
+                          pfd::icon::warning)
+                          .result();
+        showingMessageBox = false;
+        if (result == pfd::button::no)
+            return false;
+    }
+
+    clearWorld(true); // force clear, skip second prompt
+    resetToFreshWorld();
+    return true;
+}
+
+void Manager::resetToFreshWorld()
+{
+    // Ensure the editor scene exists (clearWorld did not delete it)
+    kScene *editorScene = nullptr;
+    auto scenes = world->getScenes();
+    if (scenes.empty())
+    {
+        editorScene = world->createScene("Editor Scene");
+    }
+    else
+    {
+        editorScene = scenes[0];
+    }
+
+    // Remove any leftover game scenes
+    for (size_t i = 1; i < world->getScenes().size(); ++i)
+    {
+        kScene *s = world->getScenes()[i];
+        if (s && s->getRootNode())
+        {
+            for (kObject *child : s->getRootNode()->getChildren())
+                deleteObjectRecursive(child);
+            delete s->getRootNode();
+        }
+        world->removeScene(s);
+        delete s;
+    }
+
+    // Create a fresh default game scene
+    kScene *scene = world->createScene("Scene");
+    scene->setActive(true);
+    applyDefaultSkybox(scene);
+    loadDefaultWorldInto(scene);
+    setScene(scene);
+
+    // Reset editor state
+    selectedObject = nullptr;
+    selectedScene = nullptr;
+    worldSelected = false;
+    selectedObjects.clear();
+    defaultGameCamera = nullptr;
+    worldName = "";
+    worldPath.clear();
+    projectSaved = false;
+    undoRedo.clear();
+
+    refreshWindowTitle();
+
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
+
+    std::cout << "New world created." << std::endl;
+}
+
+void Manager::deleteObjectRecursive(kObject *node)
+{
+    if (!node)
+        return;
 
     // Delete all children first
-    for (kObject* child : node->getChildren())
+    for (kObject *child : node->getChildren())
     {
         deleteObjectRecursive(child);
     }
@@ -857,49 +981,50 @@ void Manager::deleteObjectRecursive(kObject* node)
 
 kString Manager::checkAssetType(const fs::path &p)
 {
-	auto ext = p.extension().string();
+    auto ext = p.extension().string();
 
-	if (ext == ".txt" || ext == ".ini" || ext == ".xml" || ext == ".json")
-		return "text";
-	else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tiff" || ext == ".tga")
-		return "image";
-	else if (ext == ".as")
-		return "script";
-	else if (ext == ".mp3" || ext == ".wav" || ext == ".ogg")
-		return "audio";
-	else if (ext == ".mp4" || ext == ".mov" || ext == ".avi" || ext == ".webm")
-		return "video";
-	else if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".dae" || ext == ".stl")
-		return "mesh";
-	else if (ext == ".prefab" || ext == ".pfb")
-		return "prefab";
-	else if (ext == ".particle")
-		return "particle";
-	else if (ext == ".world")
-		return "world";
-	else if (ext == ".mat")
-		return "material";
-	else if (ext == ".glsl" || ext == ".hlsl")
-		return "shader"; // hand-written raw shader (with `// @var` annotations)
+    if (ext == ".txt" || ext == ".ini" || ext == ".xml" || ext == ".json")
+        return "text";
+    else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tiff" || ext == ".tga")
+        return "image";
+    else if (ext == ".as")
+        return "script";
+    else if (ext == ".mp3" || ext == ".wav" || ext == ".ogg")
+        return "audio";
+    else if (ext == ".mp4" || ext == ".mov" || ext == ".avi" || ext == ".webm")
+        return "video";
+    else if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".dae" || ext == ".stl")
+        return "mesh";
+    else if (ext == ".prefab" || ext == ".pfb")
+        return "prefab";
+    else if (ext == ".particle")
+        return "particle";
+    else if (ext == ".world")
+        return "world";
+    else if (ext == ".mat")
+        return "material";
+    else if (ext == ".glsl" || ext == ".hlsl")
+        return "shader"; // hand-written raw shader (with `// @var` annotations)
 
-	return "unknown";     // Unknown
+    return "unknown"; // Unknown
 }
 
-void Manager::startBatchImport(const std::vector<ImportTask>& tasks)
+void Manager::startBatchImport(const std::vector<ImportTask> &tasks)
 {
-	if (tasks.empty()) return;
+    if (tasks.empty())
+        return;
 
-	{
-		std::scoped_lock lock(queueMutex);
-		importQueue = tasks;
-	}
+    {
+        std::scoped_lock lock(queueMutex);
+        importQueue = tasks;
+    }
 
-	filesProcessed = 0;
-	batchDone = false;
-	showImportPopup = true;
+    filesProcessed = 0;
+    batchDone = false;
+    showImportPopup = true;
 
-	importFuture = std::async(std::launch::async, [this]()
-	{
+    importFuture = std::async(std::launch::async, [this]()
+                              {
 		for (auto& task : importQueue)
 		{
 			if (task.type == "mesh")
@@ -928,165 +1053,228 @@ void Manager::startBatchImport(const std::vector<ImportTask>& tasks)
 
 			filesProcessed++;
 		}
-		batchDone = true;
-	});
+		batchDone = true; });
 }
 
-void Manager::drawImportPopup(PanelConsole* console)
+void Manager::drawImportPopup(PanelConsole *console)
 {
-	if (showImportPopup)
-	{
-		kGuiManager *gui = console->gui;
-		kVec2 center = gui->getMainViewportCenter();
-		gui->setNextWindowPos(center, ImGuiCond_Appearing, kVec2(0.5f, 0.5f));
+    if (showImportPopup)
+    {
+        kGuiManager *gui = console->gui;
+        kVec2 center = gui->getMainViewportCenter();
+        gui->setNextWindowPos(center, ImGuiCond_Appearing, kVec2(0.5f, 0.5f));
 
-		if (gui->popupModal("Importing Assets...", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-		{
-			int totalFiles = (int)importQueue.size();
-			int processed  = filesProcessed.load();
+        if (gui->popupModal("Importing Assets...", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            int totalFiles = (int)importQueue.size();
+            int processed = filesProcessed.load();
 
-			float progress = (totalFiles > 0) ? (float)processed / (float)totalFiles : 0.0f;
+            float progress = (totalFiles > 0) ? (float)processed / (float)totalFiles : 0.0f;
 
-			if (!batchDone)
-			{
-				gui->text("Converting files...");
-				gui->progressBar(progress, kVec2(250.f, 0.f));
-				gui->text("Processed " + std::to_string(processed) + " / " + std::to_string(totalFiles));
-				gui->popupEnd();
-			}
-			else
-			{
-				if (importEndTime.time_since_epoch().count() == 0)
-					importEndTime = std::chrono::steady_clock::now();
+            if (!batchDone)
+            {
+                gui->text("Converting files...");
+                gui->progressBar(progress, kVec2(250.f, 0.f));
+                gui->text("Processed " + std::to_string(processed) + " / " + std::to_string(totalFiles));
+                gui->popupEnd();
+            }
+            else
+            {
+                if (importEndTime.time_since_epoch().count() == 0)
+                    importEndTime = std::chrono::steady_clock::now();
 
-				gui->text("Import complete!");
+                gui->text("Import complete!");
 
-				gui->progressBar(progress, kVec2(250.f, 0.f));
-				gui->text("Processed " + std::to_string(processed) + " / " + std::to_string(totalFiles));
+                gui->progressBar(progress, kVec2(250.f, 0.f));
+                gui->text("Processed " + std::to_string(processed) + " / " + std::to_string(totalFiles));
 
-				for (auto& task : importQueue)
-				{
-					// Non-fatal importer warnings (orange), logged once per task
-					// regardless of success/failure.
-					if (!task.warningsLogged)
-					{
-						for (const std::string &w : task.warnings)
-							console->addLog(LogLevel::Warning, "[Import] %s: %s",
-							                task.inputPath.generic_string().c_str(), w.c_str());
-						task.warningsLogged = true;
-					}
+                for (auto &task : importQueue)
+                {
+                    // Non-fatal importer warnings (orange), logged once per task
+                    // regardless of success/failure.
+                    if (!task.warningsLogged)
+                    {
+                        for (const std::string &w : task.warnings)
+                            console->addLog(LogLevel::Warning, "[Import] %s: %s",
+                                            task.inputPath.generic_string().c_str(), w.c_str());
+                        task.warningsLogged = true;
+                    }
 
-					if (!task.success && !task.reported)
-					{
-						console->addLog(LogLevel::Error, "[Import] Failed to convert '%s': %s",
-						                task.inputPath.generic_string().c_str(),
-						                task.errorMsg.empty() ? "unknown error" : task.errorMsg.c_str());
-						task.reported = true;
-					}
-					else if (task.success && !task.reported && task.type == "mesh" && !task.thumbnailPath.empty())
-					{
-						thumbnailQueue.push_back({ task.uuid, task.outputPath, task.thumbnailPath, "mesh" });
-						task.reported = true;
-					}
-					else if (task.success && !task.reported && task.type == "image" && !task.thumbnailPath.empty())
-					{
-						thumbnailQueue.push_back({ task.uuid, task.inputPath, task.thumbnailPath, "image" });
-						task.reported = true;
-					}
-				}
+                    if (!task.success && !task.reported)
+                    {
+                        console->addLog(LogLevel::Error, "[Import] Failed to convert '%s': %s",
+                                        task.inputPath.generic_string().c_str(),
+                                        task.errorMsg.empty() ? "unknown error" : task.errorMsg.c_str());
+                        task.reported = true;
+                    }
+                    else if (task.success && !task.reported && task.type == "mesh" && !task.thumbnailPath.empty())
+                    {
+                        thumbnailQueue.push_back({task.uuid, task.outputPath, task.thumbnailPath, "mesh"});
+                        task.reported = true;
+                    }
+                    else if (task.success && !task.reported && task.type == "image" && !task.thumbnailPath.empty())
+                    {
+                        thumbnailQueue.push_back({task.uuid, task.inputPath, task.thumbnailPath, "image"});
+                        task.reported = true;
+                    }
+                }
 
-				auto now = std::chrono::steady_clock::now();
-				if (std::chrono::duration_cast<std::chrono::seconds>(now - importEndTime).count() >= 2)
-				{
-					gui->closeCurrentPopup();
-					showImportPopup = false;
-					importEndTime = {};
-				}
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::seconds>(now - importEndTime).count() >= 2)
+                {
+                    gui->closeCurrentPopup();
+                    showImportPopup = false;
+                    importEndTime = {};
+                }
 
-				gui->popupEnd();
+                gui->popupEnd();
 
-				importTasks.clear();
-			}
-		}
-	}
+                importTasks.clear();
+            }
+        }
+    }
 }
 
 void Manager::processThumbnailQueue(PanelConsole *console)
 {
-	if (thumbnailQueue.empty()) return;
+    if (thumbnailQueue.empty())
+        return;
 
-	ThumbnailTask task = thumbnailQueue.front();
-	thumbnailQueue.erase(thumbnailQueue.begin());
+    ThumbnailTask task = thumbnailQueue.front();
+    thumbnailQueue.erase(thumbnailQueue.begin());
 
-	// Skip if thumbnail already exists
-	if (fs::exists(task.thumbnailPath)) return;
+    // Skip if thumbnail already exists
+    if (fs::exists(task.thumbnailPath))
+        return;
 
-	// Skip stale tasks whose source no longer exists (e.g. the asset was moved or
-	// deleted after the task was queued). checkAssetChange re-queues with the
-	// correct path when a thumbnail is actually missing, so dropping these is safe
-	// — and avoids spurious "cannot open" errors in the console.
-	if (!task.srcPath.empty() && !fs::exists(task.srcPath)) return;
+    // Skip stale tasks whose source no longer exists (e.g. the asset was moved or
+    // deleted after the task was queued). checkAssetChange re-queues with the
+    // correct path when a thumbnail is actually missing, so dropping these is safe
+    // — and avoids spurious "cannot open" errors in the console.
+    if (!task.srcPath.empty() && !fs::exists(task.srcPath))
+        return;
 
-	if (task.type == "image")
-	{
-		// Load source image, fit into 128x128 canvas, save as PNG
-		const int THUMB = 128;
-		const uint8_t BG = 42;
+    if (task.type == "audio")
+    {
+        const int THUMB = 128;
+        const uint8_t BG = 42;
+        const uint8_t WAVE_COLOR_R = 80;
+        const uint8_t WAVE_COLOR_G = 160;
+        const uint8_t WAVE_COLOR_B = 220;
 
-		int w, h, c;
-		unsigned char *src = stbi_load(task.srcPath.string().c_str(), &w, &h, &c, 4);
-		if (!src)
-		{
-			console->addLog(LogLevel::Error,
-			    ("[Error] Thumbnail: failed to load image " + task.srcPath.generic_string()).c_str());
-			return;
-		}
+        // Generate a stylised waveform pattern
+        std::vector<uint8_t> canvas(THUMB * THUMB * 4);
+        for (int i = 0; i < THUMB * THUMB * 4; i += 4)
+        {
+            canvas[i] = BG;
+            canvas[i + 1] = BG;
+            canvas[i + 2] = BG;
+            canvas[i + 3] = 255;
+        }
 
-		float scale = std::min((float)THUMB / w, (float)THUMB / h);
-		int fitW = std::max(1, (int)(w * scale));
-		int fitH = std::max(1, (int)(h * scale));
+        const int centerY = THUMB / 2;
+        const int maxAmplitude = THUMB / 2 - 8;
+        const int numBars = 40;
+        const int barWidth = std::max(1, (THUMB - numBars + 1) / numBars);
 
-		std::vector<uint8_t> resized(fitW * fitH * 4);
-		stbir_resize_uint8_linear(src, w, h, 0, resized.data(), fitW, fitH, 0, STBIR_RGBA);
-		stbi_image_free(src);
+        for (int i = 0; i < numBars; ++i)
+        {
+            // Pseudo-random bar heights based on position
+            float t = (float)i / (float)(numBars - 1);
+            float env = std::sin(t * 3.14159f) * 0.9f + 0.1f;
+            int seed = i * 127 + 31;
+            float rnd = (float)((seed * 1103515245 + 12345) & 0x7fffffff) / (float)0x7fffffff;
+            rnd = rnd * 0.6f + 0.2f;
+            int barH = (int)(rnd * env * maxAmplitude);
+            if (barH < 1)
+                barH = 1;
 
-		// Fill canvas with background, then blit the resized image centered
-		std::vector<uint8_t> canvas(THUMB * THUMB * 4);
-		for (int i = 0; i < THUMB * THUMB * 4; i += 4)
-		{
-			canvas[i]     = BG;
-			canvas[i + 1] = BG;
-			canvas[i + 2] = BG;
-			canvas[i + 3] = 255;
-		}
-		int offX = (THUMB - fitW) / 2;
-		int offY = (THUMB - fitH) / 2;
-		for (int y = 0; y < fitH; y++)
-			for (int x = 0; x < fitW; x++)
-			{
-				int s = (y * fitW + x) * 4;
-				int d = ((offY + y) * THUMB + (offX + x)) * 4;
-				canvas[d]     = resized[s];
-				canvas[d + 1] = resized[s + 1];
-				canvas[d + 2] = resized[s + 2];
-				canvas[d + 3] = resized[s + 3];
-			}
+            int barX = i * (barWidth + 1);
+            for (int dx = 0; dx < barWidth; ++dx)
+            {
+                int px = barX + dx;
+                if (px >= THUMB)
+                    break;
+                for (int dy = -barH; dy <= barH; ++dy)
+                {
+                    int py = centerY + dy;
+                    if (py < 0 || py >= THUMB)
+                        continue;
+                    int idx = (py * THUMB + px) * 4;
+                    canvas[idx] = WAVE_COLOR_R;
+                    canvas[idx + 1] = WAVE_COLOR_G;
+                    canvas[idx + 2] = WAVE_COLOR_B;
+                    canvas[idx + 3] = 255;
+                }
+            }
+        }
 
-		bool saved = stbi_write_png(task.thumbnailPath.string().c_str(),
-		                            THUMB, THUMB, 4, canvas.data(), THUMB * 4) != 0;
-		if (!saved)
-			console->addLog(LogLevel::Error,
-			    ("[Error] Thumbnail: failed to save " + task.thumbnailPath.generic_string()).c_str());
-		else if (panelProject != nullptr)
-			panelProject->triggerRefresh();
+        stbi_write_png(task.thumbnailPath.string().c_str(), THUMB, THUMB, 4, canvas.data(), THUMB * 4);
+        if (panelProject != nullptr)
+            panelProject->triggerRefresh();
+        return;
+    }
 
-		return;
-	}
+    if (task.type == "image")
+    {
+        // Load source image, fit into 128x128 canvas, save as PNG
+        const int THUMB = 128;
+        const uint8_t BG = 42;
 
-	// Material thumbnail — render a sphere with the material's shader
-	if (task.type == "material")
-	{
-		static const char *kPinkVS = R"(
+        int w, h, c;
+        unsigned char *src = stbi_load(task.srcPath.string().c_str(), &w, &h, &c, 4);
+        if (!src)
+        {
+            console->addLog(LogLevel::Error,
+                            ("[Error] Thumbnail: failed to load image " + task.srcPath.generic_string()).c_str());
+            return;
+        }
+
+        float scale = std::min((float)THUMB / w, (float)THUMB / h);
+        int fitW = std::max(1, (int)(w * scale));
+        int fitH = std::max(1, (int)(h * scale));
+
+        std::vector<uint8_t> resized(fitW * fitH * 4);
+        stbir_resize_uint8_linear(src, w, h, 0, resized.data(), fitW, fitH, 0, STBIR_RGBA);
+        stbi_image_free(src);
+
+        // Fill canvas with background, then blit the resized image centered
+        std::vector<uint8_t> canvas(THUMB * THUMB * 4);
+        for (int i = 0; i < THUMB * THUMB * 4; i += 4)
+        {
+            canvas[i] = BG;
+            canvas[i + 1] = BG;
+            canvas[i + 2] = BG;
+            canvas[i + 3] = 255;
+        }
+        int offX = (THUMB - fitW) / 2;
+        int offY = (THUMB - fitH) / 2;
+        for (int y = 0; y < fitH; y++)
+            for (int x = 0; x < fitW; x++)
+            {
+                int s = (y * fitW + x) * 4;
+                int d = ((offY + y) * THUMB + (offX + x)) * 4;
+                canvas[d] = resized[s];
+                canvas[d + 1] = resized[s + 1];
+                canvas[d + 2] = resized[s + 2];
+                canvas[d + 3] = resized[s + 3];
+            }
+
+        bool saved = stbi_write_png(task.thumbnailPath.string().c_str(),
+                                    THUMB, THUMB, 4, canvas.data(), THUMB * 4) != 0;
+        if (!saved)
+            console->addLog(LogLevel::Error,
+                            ("[Error] Thumbnail: failed to save " + task.thumbnailPath.generic_string()).c_str());
+        else if (panelProject != nullptr)
+            panelProject->triggerRefresh();
+
+        return;
+    }
+
+    // Material thumbnail — render a sphere with the material's shader
+    if (task.type == "material")
+    {
+        static const char *kPinkVS = R"(
 			#version 330 core
 			layout(location = 0) in vec3 aPosition;
 			uniform mat4 modelMatrix;
@@ -1096,111 +1284,119 @@ void Manager::processThumbnailQueue(PanelConsole *console)
 				gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(aPosition, 1.0);
 			}
 		)";
-		static const char *kPinkFS = R"(
+        static const char *kPinkFS = R"(
 			#version 330 core
 			out vec4 fragColor;
 			void main() { fragColor = vec4(1.0, 0.0, 1.0, 1.0); }
 		)";
 
-		nlohmann::json matJson;
-		{
-			std::ifstream f(task.srcPath);
-			if (!f.is_open())
-			{
-				console->addLog(LogLevel::Error,
-				    ("[Error] Material thumbnail: cannot open " + task.srcPath.generic_string()).c_str());
-				return;
-			}
-			try { f >> matJson; }
-			catch (...)
-			{
-				console->addLog(LogLevel::Error,
-				    ("[Error] Material thumbnail: invalid JSON in " + task.srcPath.generic_string()).c_str());
-				return;
-			}
-		}
+        nlohmann::json matJson;
+        {
+            std::ifstream f(task.srcPath);
+            if (!f.is_open())
+            {
+                console->addLog(LogLevel::Error,
+                                ("[Error] Material thumbnail: cannot open " + task.srcPath.generic_string()).c_str());
+                return;
+            }
+            try
+            {
+                f >> matJson;
+            }
+            catch (...)
+            {
+                console->addLog(LogLevel::Error,
+                                ("[Error] Material thumbnail: invalid JSON in " + task.srcPath.generic_string()).c_str());
+                return;
+            }
+        }
 
-		kMesh *sphere = kMeshGenerator::generateSphere(1.0f, 32, 32);
-		if (!sphere) return;
-		sphere->calculateModelMatrix();
+        kMesh *sphere = kMeshGenerator::generateSphere(1.0f, 32, 32);
+        if (!sphere)
+            return;
+        sphere->calculateModelMatrix();
 
-		// Build the material exactly like the inspector preview / scene does, so
-		// the thumbnail reflects the @var parameters. Falls back to a pink error
-		// shader if the material's shader can't be built.
-		kMaterial *mat = buildMaterialFromJson(matJson);
-		if (!mat)
-		{
-			static kShader *s_shaderPink = nullptr;
-			if (!s_shaderPink)
-			{
-				s_shaderPink = new kShader();
-				s_shaderPink->loadShadersCode(kPinkVS, kPinkFS);
-			}
-			mat = new kMaterial();
-			mat->setShader(s_shaderPink);
-		}
+        // Build the material exactly like the inspector preview / scene does, so
+        // the thumbnail reflects the @var parameters. Falls back to a pink error
+        // shader if the material's shader can't be built.
+        kMaterial *mat = buildMaterialFromJson(matJson);
+        if (!mat)
+        {
+            static kShader *s_shaderPink = nullptr;
+            if (!s_shaderPink)
+            {
+                s_shaderPink = new kShader();
+                s_shaderPink->loadShadersCode(kPinkVS, kPinkFS);
+            }
+            mat = new kMaterial();
+            mat->setShader(s_shaderPink);
+        }
 
-		sphere->setMaterial(mat);
+        sphere->setMaterial(mat);
 
-		bool saved = false;
-		try
-		{
-			thumbnailRenderer.setBackgroundColor(kVec4(42/255.0f, 42/255.0f, 42/255.0f, 1.0f));
-			thumbnailRenderer.renderMeshWithMaterial(sphere);
-			saved = thumbnailRenderer.saveToFile(task.thumbnailPath.generic_string());
-		}
-		catch (...) { saved = false; }
+        bool saved = false;
+        try
+        {
+            thumbnailRenderer.setBackgroundColor(kVec4(42 / 255.0f, 42 / 255.0f, 42 / 255.0f, 1.0f));
+            thumbnailRenderer.renderMeshWithMaterial(sphere);
+            saved = thumbnailRenderer.saveToFile(task.thumbnailPath.generic_string());
+        }
+        catch (...)
+        {
+            saved = false;
+        }
 
-		// Neither kMesh nor kMaterial take ownership, delete each separately
-		// shader is cached static — not deleted here
-		delete sphere;
-		delete mat;
+        // Neither kMesh nor kMaterial take ownership, delete each separately
+        // shader is cached static — not deleted here
+        delete sphere;
+        delete mat;
 
-		if (!saved)
-			console->addLog(LogLevel::Error,
-			    ("[Error] Material thumbnail: failed to save " + task.thumbnailPath.generic_string()).c_str());
-		else if (panelProject != nullptr)
-			panelProject->triggerRefresh();
-		return;
-	}
+        if (!saved)
+            console->addLog(LogLevel::Error,
+                            ("[Error] Material thumbnail: failed to save " + task.thumbnailPath.generic_string()).c_str());
+        else if (panelProject != nullptr)
+            panelProject->triggerRefresh();
+        return;
+    }
 
-	// Mesh thumbnail — rendered via offscreen renderer
-	kAssetManager *am = getAssetManager();
-	if (!am) return;
-	kMesh *mesh = am->loadMesh(task.srcPath.generic_string());
-	if (!mesh)
-	{
-		console->addLog(LogLevel::Error,
-		    ("[Error] Thumbnail: failed to load mesh " + task.srcPath.generic_string()).c_str());
-		return;
-	}
+    // Mesh thumbnail — rendered via offscreen renderer
+    kAssetManager *am = getAssetManager();
+    if (!am)
+        return;
+    kMesh *mesh = am->loadMesh(task.srcPath.generic_string());
+    if (!mesh)
+    {
+        console->addLog(LogLevel::Error,
+                        ("[Error] Thumbnail: failed to load mesh " + task.srcPath.generic_string()).c_str());
+        return;
+    }
 
-	mesh->calculateModelMatrix();
+    mesh->calculateModelMatrix();
 
-	bool saved = false;
-	try
-	{
-		thumbnailRenderer.setBackgroundColor(kVec4(42/255.0f, 42/255.0f, 42/255.0f, 1.0f));
-		thumbnailRenderer.renderMesh(mesh);
-		saved = thumbnailRenderer.saveToFile(task.thumbnailPath.generic_string());
-	}
-	catch (...)
-	{
-		saved = false;
-	}
+    bool saved = false;
+    try
+    {
+        thumbnailRenderer.setBackgroundColor(kVec4(42 / 255.0f, 42 / 255.0f, 42 / 255.0f, 1.0f));
+        thumbnailRenderer.renderMesh(mesh);
+        saved = thumbnailRenderer.saveToFile(task.thumbnailPath.generic_string());
+    }
+    catch (...)
+    {
+        saved = false;
+    }
 
-	if (!saved)
-		console->addLog(LogLevel::Error,
-		    ("[Error] Thumbnail: failed to save " + task.thumbnailPath.generic_string()).c_str());
-	else if (panelProject != nullptr)
-		panelProject->triggerRefresh();
-	// Mesh is owned by the asset manager — do not delete manually.
+    if (!saved)
+        console->addLog(LogLevel::Error,
+                        ("[Error] Thumbnail: failed to save " + task.thumbnailPath.generic_string()).c_str());
+    else if (panelProject != nullptr)
+        panelProject->triggerRefresh();
+    // Mesh is owned by the asset manager — do not delete manually.
 }
 
 void Manager::selectObject(const kString uuid, bool clearList)
 {
-    selectedScene  = nullptr;
-    worldSelected  = false;
+    selectedScene = nullptr;
+    worldSelected = false;
 
     if (clearList)
         selectedObjects.clear();
@@ -1230,12 +1426,16 @@ kObject *Manager::findObjectByUuid(const kString &uuid)
 
     // Fallback: traverse the scene graph directly (recursively, so nested
     // sub-meshes resolve even when objectMap hasn't been rebuilt yet).
-    if (!scene || !scene->getRootNode()) return nullptr;
-    std::function<kObject *(kObject *)> find = [&](kObject *node) -> kObject * {
+    if (!scene || !scene->getRootNode())
+        return nullptr;
+    std::function<kObject *(kObject *)> find = [&](kObject *node) -> kObject *
+    {
         for (kObject *child : node->getChildren())
         {
-            if (child->getUuid() == uuid) return child;
-            if (kObject *hit = find(child)) return hit;
+            if (child->getUuid() == uuid)
+                return child;
+            if (kObject *hit = find(child))
+                return hit;
         }
         return nullptr;
     };
@@ -1248,8 +1448,9 @@ std::vector<TransformState> Manager::captureSelectedTransforms()
     for (const auto &uuid : selectedObjects)
     {
         kObject *obj = findObjectByUuid(uuid);
-        if (!obj) continue;
-        states.push_back({ uuid, obj->getPosition(), obj->getRotation(), obj->getScale() });
+        if (!obj)
+            continue;
+        states.push_back({uuid, obj->getPosition(), obj->getRotation(), obj->getScale()});
     }
     return states;
 }
@@ -1258,7 +1459,8 @@ std::vector<TransformState> Manager::captureSelectedTransforms()
 // duplicateSelectedObjects below.
 static kObject *loadObjectFromJson(const nlohmann::json &obj, kScene *scene, kWorld *world,
                                    kAssetManager *am, const fs::path &projectPath,
-                                   kCamera *editorCamera, kObject *parent);
+                                   kCamera *editorCamera, kObject *parent = nullptr,
+                                   kTerrainManager *terrainMgr = nullptr);
 static void pushInstantiateCommand(Manager *mgr, kObject *root);
 static void reapplyMaterialsRecursive(Manager *mgr, kObject *node, const fs::path &projectPath);
 static void assignImportChildUuidsRec(kObject *root);
@@ -1269,13 +1471,14 @@ static void assignImportChildUuidsRec(kObject *root);
 // (scripts, particles, audio sources / listeners) so attachments stay unique.
 static void regenerateUuidsRecursive(nlohmann::json &j)
 {
-    if (!j.is_object()) return;
+    if (!j.is_object())
+        return;
 
     if (j.contains("uuid") && j["uuid"].is_string())
         j["uuid"] = generateUuid();
 
-    for (const char *key : { "script", "scripts", "particles",
-                             "audio_sources", "audio_listeners" })
+    for (const char *key : {"script", "scripts", "particles",
+                            "audio_sources", "audio_listeners"})
     {
         if (j.contains(key) && j[key].is_array())
             for (auto &item : j[key])
@@ -1290,7 +1493,8 @@ static void regenerateUuidsRecursive(nlohmann::json &j)
 
 void Manager::duplicateSelectedObjects()
 {
-    if (!scene || selectedObjects.empty()) return;
+    if (!scene || selectedObjects.empty())
+        return;
 
     kAssetManager *am = getAssetManager();
 
@@ -1303,7 +1507,8 @@ void Manager::duplicateSelectedObjects()
     for (const auto &uuid : sourceUuids)
     {
         kObject *src = findObjectByUuid(uuid);
-        if (!src) continue;
+        if (!src)
+            continue;
 
         nlohmann::json j = src->serialize();
         regenerateUuidsRecursive(j);
@@ -1319,7 +1524,8 @@ void Manager::duplicateSelectedObjects()
         }
     }
 
-    if (duplicates.empty()) return;
+    if (duplicates.empty())
+        return;
 
     // Make the new objects the active selection.
     selectedObjects.clear();
@@ -1342,14 +1548,16 @@ void Manager::duplicateSelectedObjects()
 
 void Manager::deleteSelectedObjects()
 {
-    if (!scene || selectedObjects.empty()) return;
+    if (!scene || selectedObjects.empty())
+        return;
 
     std::vector<DeletedObjectInfo> deleted;
 
     for (const auto &uuid : selectedObjects)
     {
         kObject *obj = findObjectByUuid(uuid);
-        if (!obj) continue;
+        if (!obj)
+            continue;
 
         kNodeType type = obj->getType();
 
@@ -1358,10 +1566,11 @@ void Manager::deleteSelectedObjects()
         else
             scene->removeMesh(static_cast<kMesh *>(obj));
 
-        deleted.push_back({ obj, type, scene });
+        deleted.push_back({obj, type, scene});
     }
 
-    if (deleted.empty()) return;
+    if (deleted.empty())
+        return;
 
     auto cmd = std::make_unique<DeleteCommand>(
         this, std::move(deleted), selectedObjects, selectedObject);
@@ -1385,7 +1594,8 @@ static void collectUuids(kObject *node, std::vector<kString> &out, kObject **fir
     for (kObject *child : node->getChildren())
     {
         out.push_back(child->getUuid());
-        if (*firstObj == nullptr) *firstObj = child;
+        if (*firstObj == nullptr)
+            *firstObj = child;
         collectUuids(child, out, firstObj);
     }
 }
@@ -1393,8 +1603,8 @@ static void collectUuids(kObject *node, std::vector<kString> &out, kObject **fir
 // Apply a Phong material to a mesh.
 static void applyDefaultMaterial(kMesh *mesh, kAssetManager *am)
 {
-    kShader   *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
-    kMaterial *mat    = am->createMaterial(shader);
+    kShader *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
+    kMaterial *mat = am->createMaterial(shader);
     mat->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
     mat->setDiffuseColor(kVec3(0.5f, 0.5f, 0.5f));
     mesh->setMaterial(mat);
@@ -1403,11 +1613,11 @@ static void applyDefaultMaterial(kMesh *mesh, kAssetManager *am)
 // Apply a gizmo icon material to a light.
 static void applyLightIcon(kLight *light, kAssetManager *am, const char *gizmoResource)
 {
-    kShader    *shader = am->loadGlslFromResource("SHADER_ICON");
-    kMaterial  *mat    = am->createMaterial(shader);
+    kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial *mat = am->createMaterial(shader);
     mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND); // blend so the icon's drop shadow / soft edges show
-    kTexture2D *tex    = am->loadTexture2DFromResource(gizmoResource, "albedoMap",
-                                                        kTextureFormat::TEX_FORMAT_RGBA);
+    kTexture2D *tex = am->loadTexture2DFromResource(gizmoResource, "albedoMap",
+                                                    kTextureFormat::TEX_FORMAT_RGBA);
     mat->addTexture(tex);
     light->setMaterial(mat);
 }
@@ -1417,11 +1627,11 @@ static void applyLightIcon(kLight *light, kAssetManager *am, const char *gizmoRe
 // the camera being drawn is also the active view camera).
 static void applyCameraIcon(kCamera *cam, kAssetManager *am)
 {
-    kShader    *shader = am->loadGlslFromResource("SHADER_ICON");
-    kMaterial  *mat    = am->createMaterial(shader);
+    kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial *mat = am->createMaterial(shader);
     mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND); // blend so the icon's drop shadow / soft edges show
-    kTexture2D *tex    = am->loadTexture2DFromResource("GIZMO_CAMERA", "albedoMap",
-                                                        kTextureFormat::TEX_FORMAT_RGBA);
+    kTexture2D *tex = am->loadTexture2DFromResource("GIZMO_CAMERA", "albedoMap",
+                                                    kTextureFormat::TEX_FORMAT_RGBA);
     mat->addTexture(tex);
     cam->setMaterial(mat);
 }
@@ -1432,28 +1642,31 @@ static void applyCameraIcon(kCamera *cam, kAssetManager *am)
 
 void Manager::selectAll()
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     std::vector<kString> newSel;
     kObject *newSelObj = nullptr;
     collectUuids(scene->getRootNode(), newSel, &newSelObj);
 
-    if (newSel == selectedObjects) return;
+    if (newSel == selectedObjects)
+        return;
 
-    auto before    = selectedObjects;
+    auto before = selectedObjects;
     auto beforeObj = selectedObject;
 
     selectedObjects = newSel;
-    selectedObject  = newSelObj;
+    selectedObject = newSelObj;
 
     undoRedo.push(std::make_unique<SelectCommand>(this, before, beforeObj, newSel, newSelObj));
 }
 
 void Manager::deselectAll()
 {
-    if (selectedObjects.empty()) return;
+    if (selectedObjects.empty())
+        return;
 
-    auto before    = selectedObjects;
+    auto before = selectedObjects;
     auto beforeObj = selectedObject;
 
     selectedObjects.clear();
@@ -1464,7 +1677,8 @@ void Manager::deselectAll()
 
 void Manager::invertSelection()
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     std::set<kString> currentSet(selectedObjects.begin(), selectedObjects.end());
 
@@ -1484,11 +1698,11 @@ void Manager::invertSelection()
         }
     }
 
-    auto before    = selectedObjects;
+    auto before = selectedObjects;
     auto beforeObj = selectedObject;
 
     selectedObjects = newSel;
-    selectedObject  = newSelObj;
+    selectedObject = newSelObj;
 
     undoRedo.push(std::make_unique<SelectCommand>(this, before, beforeObj, newSel, newSelObj));
 }
@@ -1520,9 +1734,10 @@ void Manager::createSceneObject()
     kScene *newScene = world->createScene("New Scene");
 
     undoRedo.push(std::make_unique<PropertyCommand>(
-        [this, newScene]() { world->removeScene(newScene); },
-        [this, newScene]() { world->addScene(newScene);    }
-    ));
+        [this, newScene]()
+        { world->removeScene(newScene); },
+        [this, newScene]()
+        { world->addScene(newScene); }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1531,30 +1746,26 @@ void Manager::createSceneObject()
 
 void Manager::createEmpty()
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     kObject *obj = new kObject();
     obj->setName("Empty");
     scene->addObject(obj);
     kString uuid = obj->getUuid();
 
-    finishCreate(this, obj, scene,
-        [this, obj, uuid]()
-        {
+    finishCreate(this, obj, scene, [this, obj, uuid]()
+                 {
             scene->removeObject(obj);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == obj) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList();
-        },
-        [this, obj, uuid]()
-        {
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, obj, uuid]()
+                 {
             scene->addObject(obj, uuid);
             selectedObject = obj;
             selectObject(uuid, true);
-            if (panelHierarchy) panelHierarchy->refreshList();
-        }
-    );
+            if (panelHierarchy) panelHierarchy->refreshList(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1563,32 +1774,29 @@ void Manager::createEmpty()
 
 void Manager::createMeshPrimitive(kMesh *mesh, const kString &name)
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     kAssetManager *am = getAssetManager();
-    if (am) applyDefaultMaterial(mesh, am);
+    if (am)
+        applyDefaultMaterial(mesh, am);
 
     mesh->setName(name);
     scene->addMesh(mesh);
     kString uuid = mesh->getUuid();
 
-    finishCreate(this, mesh, scene,
-        [this, mesh, uuid]()
-        {
+    finishCreate(this, mesh, scene, [this, mesh, uuid]()
+                 {
             scene->removeMesh(mesh);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == mesh) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList();
-        },
-        [this, mesh, uuid]()
-        {
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, mesh, uuid]()
+                 {
             scene->addMesh(mesh, uuid);
             selectedObject = mesh;
             selectObject(uuid, true);
-            if (panelHierarchy) panelHierarchy->refreshList();
-        }
-    );
+            if (panelHierarchy) panelHierarchy->refreshList(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1597,20 +1805,25 @@ void Manager::createMeshPrimitive(kMesh *mesh, const kString &name)
 
 void Manager::createMeshFromFile()
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     auto result = pfd::open_file("Open Mesh", "",
-        { "Mesh files", "*.obj *.fbx *.gltf *.glb",
-          "All files",  "*" }).result();
+                                 {"Mesh files", "*.obj *.fbx *.gltf *.glb",
+                                  "All files", "*"})
+                      .result();
 
-    if (result.empty()) return;
+    if (result.empty())
+        return;
 
     kString filePath = result[0];
     kAssetManager *am = getAssetManager();
-    if (!am) return;
+    if (!am)
+        return;
 
     kMesh *mesh = am->loadMesh(filePath);
-    if (!mesh) return;
+    if (!mesh)
+        return;
 
     mesh->setLoaded(true);
     mesh->setFileName(filePath);
@@ -1619,29 +1832,25 @@ void Manager::createMeshFromFile()
     fs::path p(filePath);
     mesh->setName(p.stem().string());
 
-    if (am) applyDefaultMaterial(mesh, am);
+    if (am)
+        applyDefaultMaterial(mesh, am);
     assignImportChildUuidsRec(mesh);
 
     scene->addMesh(mesh);
     kString uuid = mesh->getUuid();
 
-    finishCreate(this, mesh, scene,
-        [this, mesh, uuid]()
-        {
+    finishCreate(this, mesh, scene, [this, mesh, uuid]()
+                 {
             scene->removeMesh(mesh);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == mesh) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList();
-        },
-        [this, mesh, uuid]()
-        {
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, mesh, uuid]()
+                 {
             scene->addMesh(mesh, uuid);
             selectedObject = mesh;
             selectObject(uuid, true);
-            if (panelHierarchy) panelHierarchy->refreshList();
-        }
-    );
+            if (panelHierarchy) panelHierarchy->refreshList(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1650,7 +1859,8 @@ void Manager::createMeshFromFile()
 
 void Manager::createLight(kLightType type)
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     kAssetManager *am = getAssetManager();
 
@@ -1659,52 +1869,49 @@ void Manager::createLight(kLightType type)
 
     if (type == LIGHT_TYPE_SUN)
     {
-        light = scene->addSunLight(kVec3(0, 3, 0), kVec3(0,-1,0),
-                                    kVec3(1.0f, 1.0f, 1.0f),
-                                    kVec3(1.0f, 1.0f, 1.0f));
+        light = scene->addSunLight(kVec3(0, 3, 0), kVec3(0, -1, 0),
+                                   kVec3(1.0f, 1.0f, 1.0f),
+                                   kVec3(1.0f, 1.0f, 1.0f));
         light->setName("Sun Light");
         gizmoRes = "GIZMO_SUN_LIGHT";
     }
     else if (type == LIGHT_TYPE_POINT)
     {
         light = scene->addPointLight(kVec3(0, 2, 0),
-                                      kVec3(1.0f, 1.0f, 1.0f),
-                                      kVec3(1.0f, 1.0f, 1.0f));
+                                     kVec3(1.0f, 1.0f, 1.0f),
+                                     kVec3(1.0f, 1.0f, 1.0f));
         light->setName("Point Light");
         gizmoRes = "GIZMO_POINT_LIGHT";
     }
     else if (type == LIGHT_TYPE_SPOT)
     {
         light = scene->addSpotLight(kVec3(0, 3, 0),
-                                     kVec3(1.0f, 1.0f, 1.0f),
-                                     kVec3(1.0f, 1.0f, 1.0f));
+                                    kVec3(1.0f, 1.0f, 1.0f),
+                                    kVec3(1.0f, 1.0f, 1.0f));
         light->setName("Spot Light");
         gizmoRes = "GIZMO_SPOT_LIGHT";
     }
-    else return;
+    else
+        return;
 
     light->setPower(1.0f);
-    if (am) applyLightIcon(light, am, gizmoRes);
+    if (am)
+        applyLightIcon(light, am, gizmoRes);
 
     kString uuid = light->getUuid();
 
-    finishCreate(this, light, scene,
-        [this, light, uuid]()
-        {
+    finishCreate(this, light, scene, [this, light, uuid]()
+                 {
             scene->removeLight(light);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == light) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList();
-        },
-        [this, light, uuid]()
-        {
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, light, uuid]()
+                 {
             scene->addLight(light);
             selectedObject = light;
             selectObject(uuid, true);
-            if (panelHierarchy) panelHierarchy->refreshList();
-        }
-    );
+            if (panelHierarchy) panelHierarchy->refreshList(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -1713,7 +1920,8 @@ void Manager::createLight(kLightType type)
 
 void Manager::createCamera()
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     kCamera *cam = new kCamera();
     cam->setName("Camera");
@@ -1727,30 +1935,61 @@ void Manager::createCamera()
         applyCameraIcon(cam, am);
     kString uuid = cam->getUuid();
 
-    finishCreate(this, cam, scene,
-        [this, cam, uuid]()
-        {
+    finishCreate(this, cam, scene, [this, cam, uuid]()
+                 {
             scene->removeObject(cam);
             world->removeCamera(cam);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == cam) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList();
-        },
-        [this, cam, uuid]()
-        {
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, cam, uuid]()
+                 {
             scene->addObject(cam, uuid);
             world->addCamera(cam, uuid);
             selectedObject = cam;
             selectObject(uuid, true);
-            if (panelHierarchy) panelHierarchy->refreshList();
+            if (panelHierarchy) panelHierarchy->refreshList(); });
+}
+
+void Manager::createTerrain()
+{
+    if (!scene)
+        return;
+
+    // Lazily initialise the terrain manager
+    if (!terrainManager)
+    {
+        terrainManager = new kTerrainManager();
+        terrainManager->init(scene, getAssetManager(), 256.0f, 513);
+    }
+
+    kTerrain *tile = terrainManager->createTile(0, 0);
+    if (tile)
+    {
+        tile->fillHeight(0.0f);
+        tile->reload(true); // force mesh creation so it appears immediately
+
+        kMesh *mesh = tile->getMesh();
+        if (mesh)
+        {
+            selectedObject = mesh;
+            selectObject(mesh->getUuid(), true);
         }
-    );
+
+        if (renderer)
+            renderer->setOctreeDirty();
+        if (panelHierarchy)
+            panelHierarchy->refreshList();
+
+        projectSaved = false;
+        refreshWindowTitle();
+    }
 }
 
 void Manager::createNavMesh()
 {
-    if (!scene) return;
+    if (!scene)
+        return;
 
     // A navigation surface is a plain object carrying a nav-mesh component; the
     // object's transform also positions the optional area box.
@@ -1760,24 +1999,100 @@ void Manager::createNavMesh()
     scene->addObject(obj);
     kString uuid = obj->getUuid();
 
-    finishCreate(this, obj, scene,
-        [this, obj, uuid]()
-        {
+    finishCreate(this, obj, scene, [this, obj, uuid]()
+                 {
             clearNavMesh(obj);
             scene->removeObject(obj);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == obj) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList();
-        },
-        [this, obj, uuid]()
-        {
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, obj, uuid]()
+                 {
             scene->addObject(obj, uuid);
             selectedObject = obj;
             selectObject(uuid, true);
-            if (panelHierarchy) panelHierarchy->refreshList();
+            if (panelHierarchy) panelHierarchy->refreshList(); });
+}
+
+void Manager::createAudio()
+{
+    if (!scene)
+        return;
+
+    kObject *obj = new kObject();
+    obj->setType(kNodeType::NODE_TYPE_AUDIO);
+    obj->setName("Audio Source");
+    scene->addObject(obj);
+    kString uuid = obj->getUuid();
+
+    // Attach a default audio source descriptor
+    kAudioSource src;
+    src.uuid = generateUuid();
+    src.name = "Audio Source";
+    src.isActive = true;
+    src.playOnAwake = false;
+    src.loop = false;
+    src.volume = 1.0f;
+    src.pitch = 1.0f;
+    src.spatialize = true;
+    obj->addAudioSource(src);
+
+    // Assign the gizmo material for audio icon billboard
+    if (kAssetManager *am = getAssetManager())
+    {
+        kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+        kMaterial *mat = am->createMaterial(shader);
+        mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
+        kTexture2D *tex = am->loadTexture2DFromResource("ICON_FILE_AUDIO", "albedoMap",
+                                                        kTextureFormat::TEX_FORMAT_RGBA);
+        mat->addTexture(tex);
+        obj->setMaterial(mat);
+    }
+
+    finishCreate(this, obj, scene, [this, obj, uuid]()
+                 {
+            scene->removeObject(obj);
+            selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
+                                  selectedObjects.end());
+            if (selectedObject == obj) selectedObject = nullptr;
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, obj, uuid]()
+                 {
+            scene->addObject(obj, uuid);
+            selectedObject = obj;
+            selectObject(uuid, true);
+            if (panelHierarchy) panelHierarchy->refreshList(); });
+}
+
+void Manager::startAudioPreview(kAudioSource &src)
+{
+    if (!audioPreviewManager)
+    {
+        audioPreviewManager = createAudioManager();
+        if (!audioPreviewManager || !audioPreviewManager->init())
+        {
+            std::cerr << "Audio preview: failed to init audio manager\n";
+            audioPreviewManager = nullptr;
+            return;
         }
-    );
+    }
+    kAudio *clip = audioPreviewManager->loadAudio(src.audioFile);
+    if (clip)
+    {
+        clip->setLooping(src.loop);
+        clip->setVolume(src.volume);
+        clip->setPitch(src.pitch);
+        clip->setSpatialization(src.spatialize);
+        clip->play();
+    }
+}
+
+void Manager::stopAudioPreview(kAudioSource & /*src*/)
+{
+    if (!audioPreviewManager)
+        return;
+    // Simple approach: shutdown and re-init to stop all preview playback
+    audioPreviewManager->shutdown();
+    audioPreviewManager->init();
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,14 +2109,16 @@ void Manager::bakeNavMesh(kObject *navObj)
     // Area box centred on the nav object (full extents = areaSize).
     navObj->calculateModelMatrix();
     kVec3 center = navObj->getGlobalPosition();
-    kVec3 half   = desc.areaSize * 0.5f;
+    kVec3 half = desc.areaSize * 0.5f;
     kAABB areaBox(center - half, center + half);
 
     std::vector<float> verts;
-    std::vector<int>   tris;
+    std::vector<int> tris;
 
-    std::function<void(kObject *)> walk = [&](kObject *node) {
-        if (!node) return;
+    std::function<void(kObject *)> walk = [&](kObject *node)
+    {
+        if (!node)
+            return;
 
         // Only static mesh geometry contributes to the walkable surface.
         if (node->getType() == NODE_TYPE_MESH && node->getStatic())
@@ -1812,7 +2129,7 @@ void Manager::bakeNavMesh(kObject *navObj)
             if (!desc.useArea || areaBox.overlaps(mesh->getWorldAABB()))
             {
                 kMat4 world = mesh->getModelMatrixWorld();
-                std::vector<kVec3>    mv = mesh->getVertices();
+                std::vector<kVec3> mv = mesh->getVertices();
                 std::vector<uint32_t> mi = mesh->getIndices();
 
                 int base = (int)(verts.size() / 3);
@@ -1827,7 +2144,8 @@ void Manager::bakeNavMesh(kObject *navObj)
                     tris.push_back(base + (int)idx);
             }
         }
-        for (kObject *c : node->getChildren()) walk(c);
+        for (kObject *c : node->getChildren())
+            walk(c);
     };
     walk(scene->getRootNode());
 
@@ -1854,7 +2172,8 @@ void Manager::bakeNavMesh(kObject *navObj)
 
 void Manager::clearNavMesh(kObject *navObj)
 {
-    if (!navObj) return;
+    if (!navObj)
+        return;
     auto it = bakedNavMeshes.find(navObj->getUuid());
     if (it != bakedNavMeshes.end())
     {
@@ -1872,14 +2191,16 @@ void Manager::clearAllNavMeshes()
 
 bool Manager::isNavMeshBaked(kObject *navObj) const
 {
-    if (!navObj) return false;
+    if (!navObj)
+        return false;
     auto it = bakedNavMeshes.find(navObj->getUuid());
     return it != bakedNavMeshes.end() && it->second && it->second->isBaked();
 }
 
 kNavMesh *Manager::getBakedNavMesh(kObject *navObj) const
 {
-    if (!navObj) return nullptr;
+    if (!navObj)
+        return nullptr;
     auto it = bakedNavMeshes.find(navObj->getUuid());
     return it != bakedNavMeshes.end() ? it->second : nullptr;
 }
@@ -1927,8 +2248,8 @@ bool Manager::exportGame(const ExportSettings &s)
 
     // 4. Rename the generic runtime executable to the game name.
     const bool win = (s.platform == 0);
-    fs::path runExe  = outDir / (win ? "Kemena3DRuntime.exe" : "Kemena3DRuntime");
-    fs::path gameExe = outDir / (win ? (s.gameName + ".exe")  : s.gameName);
+    fs::path runExe = outDir / (win ? "Kemena3DRuntime.exe" : "Kemena3DRuntime");
+    fs::path gameExe = outDir / (win ? (s.gameName + ".exe") : s.gameName);
     if (fs::exists(runExe))
         fs::rename(runExe, gameExe, ec);
 
@@ -1939,7 +2260,8 @@ bool Manager::exportGame(const ExportSettings &s)
     if (fs::exists(worldPath))
         fs::copy(worldPath, dataDir / "scene.world", fs::copy_options::overwrite_existing, ec);
 
-    auto copyLibFolder = [&](const char *sub) {
+    auto copyLibFolder = [&](const char *sub)
+    {
         fs::path src = projectPath / "Library" / sub;
         if (fs::exists(src))
             fs::copy(src, dataDir / "Library" / sub,
@@ -1965,12 +2287,13 @@ bool Manager::exportGame(const ExportSettings &s)
     // 6. Write game.config (read by the runtime at startup).
     {
         nlohmann::json cfg;
-        cfg["title"]      = s.title.empty() ? s.gameName : s.title;
-        cfg["width"]      = s.width;
-        cfg["height"]     = s.height;
+        cfg["title"] = s.title.empty() ? s.gameName : s.title;
+        cfg["width"] = s.width;
+        cfg["height"] = s.height;
         cfg["fullscreen"] = s.fullscreen;
         std::ofstream f(dataDir / "game.config");
-        if (f.is_open()) f << cfg.dump(4);
+        if (f.is_open())
+            f << cfg.dump(4);
     }
 
     // 7. Per-OS metadata (best-effort). Windows exe icon via rcedit if present.
@@ -1993,7 +2316,8 @@ bool Manager::exportGame(const ExportSettings &s)
 
 void Manager::selectProjectAssetByPath(const fs::path &filePath)
 {
-    if (!panelProject) return;
+    if (!panelProject)
+        return;
     std::error_code ec;
     kString rel = fs::relative(filePath, projectPath / "Assets", ec).generic_string();
     auto it = uuidMap.find(rel);
@@ -2006,7 +2330,8 @@ void Manager::selectProjectAssetByPath(const fs::path &filePath)
 
 void Manager::createNewMaterial()
 {
-    if (!projectOpened) return;
+    if (!projectOpened)
+        return;
 
     fs::path dir = getCurrentDirPath();
 
@@ -2022,26 +2347,26 @@ void Manager::createNewMaterial()
     kString matUuid = generateUuid();
 
     nlohmann::json mat;
-    mat["uuid"]      = matUuid;
-    mat["shader"]    = "Phong";
-    mat["diffuse"]   = { 1.0f, 1.0f, 1.0f };
-    mat["ambient"]   = { 1.0f, 1.0f, 1.0f };
-    mat["specular"]  = { 1.0f, 1.0f, 1.0f };
-    mat["shininess"]  = 32.0f;
-    mat["metallic"]   = 0.0f;
-    mat["roughness"]  = 0.5f;
+    mat["uuid"] = matUuid;
+    mat["shader"] = "Phong";
+    mat["diffuse"] = {1.0f, 1.0f, 1.0f};
+    mat["ambient"] = {1.0f, 1.0f, 1.0f};
+    mat["specular"] = {1.0f, 1.0f, 1.0f};
+    mat["shininess"] = 32.0f;
+    mat["metallic"] = 0.0f;
+    mat["roughness"] = 0.5f;
     mat["glossiness"] = 1.0f;
-    mat["uv_tiling"]  = { 1.0f, 1.0f };
-    mat["transparent"]  = 0;
+    mat["uv_tiling"] = {1.0f, 1.0f};
+    mat["transparent"] = 0;
     mat["single_sided"] = true;
-    mat["cull_back"]    = true;
-    mat["texture_albedo"]             = "";
-    mat["texture_normal"]             = "";
-    mat["texture_specular"]           = "";
-    mat["texture_glossiness"]         = "";
+    mat["cull_back"] = true;
+    mat["texture_albedo"] = "";
+    mat["texture_normal"] = "";
+    mat["texture_specular"] = "";
+    mat["texture_glossiness"] = "";
     mat["texture_metallic_roughness"] = "";
-    mat["texture_ao"]                 = "";
-    mat["texture_emissive"]           = "";
+    mat["texture_ao"] = "";
+    mat["texture_emissive"] = "";
 
     std::ofstream f(filePath);
     if (!f.is_open())
@@ -2058,7 +2383,8 @@ void Manager::createNewMaterial()
 
 void Manager::createNewRawShader()
 {
-    if (!projectOpened) return;
+    if (!projectOpened)
+        return;
 
     fs::path dir = getCurrentDirPath();
     kString baseName = "New Raw Shader";
@@ -2117,7 +2443,8 @@ void Manager::createNewRawShader()
 
 void Manager::createNewFolder()
 {
-    if (!projectOpened) return;
+    if (!projectOpened)
+        return;
 
     fs::path dir = getCurrentDirPath();
     kString baseName = "New Folder";
@@ -2146,7 +2473,8 @@ void Manager::createNewFolder()
 
 void Manager::createNewShader()
 {
-    if (!projectOpened) return;
+    if (!projectOpened)
+        return;
 
     fs::path dir = getCurrentDirPath();
     kString baseName = "New Shader";
@@ -2176,7 +2504,8 @@ void Manager::createNewShader()
 
 void Manager::createNewScript()
 {
-    if (!projectOpened) return;
+    if (!projectOpened)
+        return;
 
     fs::path dir = getCurrentDirPath();
     kString baseName = "New Script";
@@ -2207,7 +2536,8 @@ void Manager::createNewScript()
 
 void Manager::createNewLogicGraph()
 {
-    if (!projectOpened) return;
+    if (!projectOpened)
+        return;
 
     fs::path dir = getCurrentDirPath();
     kString baseName = "New Logic Graph";
@@ -2245,24 +2575,29 @@ static void remapAssetRegistryPath(const fs::path &projectPath,
                                    const fs::path &srcPath, const fs::path &newPath)
 {
     std::error_code ec;
-    fs::path assetsPath     = projectPath / "Assets";
+    fs::path assetsPath = projectPath / "Assets";
     fs::path assetsJsonFile = projectPath / "Library" / "assets.json";
     std::string oldRel = fs::relative(srcPath, assetsPath, ec).generic_string();
     std::string newRel = fs::relative(newPath, assetsPath, ec).generic_string();
-    if (oldRel.empty() || newRel.empty() || !fs::exists(assetsJsonFile)) return;
+    if (oldRel.empty() || newRel.empty() || !fs::exists(assetsJsonFile))
+        return;
 
     try
     {
         nlohmann::json j;
-        { std::ifstream ifs(assetsJsonFile); ifs >> j; }
-        if (!j.contains("files") || !j["files"].is_array()) return;
+        {
+            std::ifstream ifs(assetsJsonFile);
+            ifs >> j;
+        }
+        if (!j.contains("files") || !j["files"].is_array())
+            return;
 
         const std::string oldPrefix = oldRel + "/";
         for (auto &entry : j["files"])
         {
             std::string name = entry.value("name", std::string());
             if (name == oldRel)
-                entry["name"] = newRel;                              // the file/folder itself
+                entry["name"] = newRel; // the file/folder itself
             else if (name.rfind(oldPrefix, 0) == 0)
                 entry["name"] = newRel + name.substr(oldRel.size()); // a child of a renamed folder
         }
@@ -2277,7 +2612,8 @@ static void remapAssetRegistryPath(const fs::path &projectPath,
 
 bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
 {
-    if (!projectOpened || srcPath.empty() || destDir.empty()) return false;
+    if (!projectOpened || srcPath.empty() || destDir.empty())
+        return false;
 
     std::error_code ec;
     if (!fs::exists(srcPath, ec) || ec)
@@ -2292,7 +2628,8 @@ bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
     }
 
     fs::path newPath = destDir / srcPath.filename();
-    if (newPath == srcPath) return true; // already in that folder
+    if (newPath == srcPath)
+        return true; // already in that folder
 
     if (fs::exists(newPath, ec))
     {
@@ -2323,10 +2660,12 @@ bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
 
 bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
 {
-    if (!projectOpened || newName.empty()) return false;
+    if (!projectOpened || newName.empty())
+        return false;
 
     fs::path newPath = oldPath.parent_path() / newName;
-    if (newPath == oldPath) return true;
+    if (newPath == oldPath)
+        return true;
 
     if (fs::exists(newPath))
     {
@@ -2340,6 +2679,12 @@ bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
     {
         std::cerr << "Rename failed: " << ec.message() << "\n";
         return false;
+    }
+
+    // Terrain rename: also rename the associated _data folder
+    if (oldPath.extension() == ".terrain" && panelTerrain)
+    {
+        panelTerrain->onTerrainFileRenamed(oldPath.string(), newPath.string());
     }
 
     // Preserve the asset's UUID across the rename so its generated script (for a
@@ -2358,21 +2703,24 @@ bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
 
 bool Manager::duplicateAsset(const fs::path &srcPath)
 {
-    if (!projectOpened || srcPath.empty() || !fs::exists(srcPath)) return false;
+    if (!projectOpened || srcPath.empty() || !fs::exists(srcPath))
+        return false;
 
-    const bool  isDir = fs::is_directory(srcPath);
-    fs::path    dir   = srcPath.parent_path();
-    std::string stem  = srcPath.stem().string();
-    std::string ext   = srcPath.extension().string();
+    const bool isDir = fs::is_directory(srcPath);
+    fs::path dir = srcPath.parent_path();
+    std::string stem = srcPath.stem().string();
+    std::string ext = srcPath.extension().string();
 
     // Find a free "<stem> copy[ N][.ext]" name.
-    auto candidate = [&](int n) -> fs::path {
+    auto candidate = [&](int n) -> fs::path
+    {
         std::string base = stem + " copy" + (n > 1 ? " " + std::to_string(n) : "");
         return isDir ? (dir / base) : (dir / (base + ext));
     };
     int n = 1;
     fs::path dst = candidate(n);
-    while (fs::exists(dst)) dst = candidate(++n);
+    while (fs::exists(dst))
+        dst = candidate(++n);
 
     std::error_code ec;
     if (isDir)
@@ -2387,24 +2735,36 @@ bool Manager::duplicateAsset(const fs::path &srcPath)
 
     // Regenerate the embedded UUID of JSON assets so the copy is independent of
     // the original (notably .logic, whose UUID names its generated script).
-    auto regenEmbeddedUuid = [](const fs::path &p) {
+    auto regenEmbeddedUuid = [](const fs::path &p)
+    {
         std::string e = p.extension().string();
-        if (e != ".mat" && e != ".logic" && e != ".shader") return;
+        if (e != ".mat" && e != ".logic" && e != ".shader")
+            return;
         try
         {
             nlohmann::json j;
-            { std::ifstream in(p); if (!in.is_open()) return; in >> j; }
-            if (j.contains("uuid")) j["uuid"] = generateUuid();
+            {
+                std::ifstream in(p);
+                if (!in.is_open())
+                    return;
+                in >> j;
+            }
+            if (j.contains("uuid"))
+                j["uuid"] = generateUuid();
             std::ofstream out(p);
-            if (out.is_open()) out << j.dump(4);
+            if (out.is_open())
+                out << j.dump(4);
         }
-        catch (...) {}
+        catch (...)
+        {
+        }
     };
     if (isDir)
     {
         for (auto it = fs::recursive_directory_iterator(dst, ec);
              it != fs::recursive_directory_iterator(); it.increment(ec))
-            if (!ec && it->is_regular_file()) regenEmbeddedUuid(it->path());
+            if (!ec && it->is_regular_file())
+                regenEmbeddedUuid(it->path());
     }
     else
     {
@@ -2422,9 +2782,10 @@ bool Manager::duplicateAsset(const fs::path &srcPath)
 
 void Manager::saveProjectConfig()
 {
-    if (!projectOpened || projectPath.empty()) return;
+    if (!projectOpened || projectPath.empty())
+        return;
 
-    fs::path cfgDir  = projectPath / "Config";
+    fs::path cfgDir = projectPath / "Config";
     std::error_code ec;
     fs::create_directories(cfgDir, ec);
     fs::path cfgFile = cfgDir / "project.json";
@@ -2435,7 +2796,13 @@ void Manager::saveProjectConfig()
         if (fs::exists(cfgFile))
         {
             std::ifstream in(cfgFile);
-            try { in >> j; } catch (...) {}
+            try
+            {
+                in >> j;
+            }
+            catch (...)
+            {
+            }
         }
         if (!worldPath.empty() && fs::exists(worldPath))
         {
@@ -2460,7 +2827,8 @@ void Manager::saveProjectConfig()
 
 fs::path Manager::loadLastWorldPath() const
 {
-    if (projectPath.empty()) return {};
+    if (projectPath.empty())
+        return {};
 
     // Preferred: the explicit "last_world" record written by saveWorld.
     fs::path cfgFile = projectPath / "Config" / "project.json";
@@ -2469,15 +2837,19 @@ fs::path Manager::loadLastWorldPath() const
         try
         {
             std::ifstream in(cfgFile);
-            json j; in >> j;
+            json j;
+            in >> j;
             std::string rel = j.value("last_world", std::string());
             if (!rel.empty())
             {
                 fs::path abs = projectPath / rel;
-                if (fs::exists(abs)) return abs;
+                if (fs::exists(abs))
+                    return abs;
             }
         }
-        catch (...) {}
+        catch (...)
+        {
+        }
     }
 
     // Fallback A: any .world file under Assets/. Pick the most-recently-
@@ -2487,23 +2859,32 @@ fs::path Manager::loadLastWorldPath() const
     if (fs::exists(assetsDir))
     {
         std::error_code ec;
-        fs::path           best;
+        fs::path best;
         fs::file_time_type bestTime{};
         for (auto it = fs::recursive_directory_iterator(assetsDir, ec);
              it != fs::recursive_directory_iterator(); it.increment(ec))
         {
-            if (ec) break;
-            if (!it->is_regular_file()) continue;
-            if (it->path().extension() != ".world") continue;
+            if (ec)
+                break;
+            if (!it->is_regular_file())
+                continue;
+            if (it->path().extension() != ".world")
+                continue;
             auto mt = fs::last_write_time(it->path(), ec);
-            if (best.empty() || mt > bestTime) { best = it->path(); bestTime = mt; }
+            if (best.empty() || mt > bestTime)
+            {
+                best = it->path();
+                bestTime = mt;
+            }
         }
-        if (!best.empty()) return best;
+        if (!best.empty())
+            return best;
     }
 
     // Fallback B: pre-Assets-rule projects kept the world at the project root.
     fs::path legacy = projectPath / "scene.world";
-    if (fs::exists(legacy)) return legacy;
+    if (fs::exists(legacy))
+        return legacy;
 
     return {};
 }
@@ -2518,9 +2899,11 @@ namespace
         std::error_code ec;
         fs::path c = fs::weakly_canonical(child, ec);
         fs::path p = fs::weakly_canonical(parent, ec);
-        if (ec) return false;
+        if (ec)
+            return false;
         fs::path rel = c.lexically_relative(p);
-        if (rel.empty()) return false;
+        if (rel.empty())
+            return false;
         auto it = rel.begin();
         return it != rel.end() && *it != "..";
     }
@@ -2528,7 +2911,8 @@ namespace
 
 kString Manager::promptWorldSavePath()
 {
-    if (!projectOpened) return "";
+    if (!projectOpened)
+        return "";
 
     fs::path assetsDir = projectPath / "Assets";
     std::error_code ec;
@@ -2536,11 +2920,13 @@ kString Manager::promptWorldSavePath()
 
     showingMessageBox = true;
     std::string chosen = pfd::save_file(
-        "Save World", assetsDir.string(),
-        { "World Files", "*.world", "All Files", "*" }).result();
+                             "Save World", assetsDir.string(),
+                             {"World Files", "*.world", "All Files", "*"})
+                             .result();
     showingMessageBox = false;
 
-    if (chosen.empty()) return "";
+    if (chosen.empty())
+        return "";
 
     fs::path p = chosen;
     if (p.extension() != ".world")
@@ -2552,9 +2938,12 @@ kString Manager::promptWorldSavePath()
         pfd::message(
             "Invalid Save Location",
             "Worlds can only be saved inside the project's Assets folder.\n\n"
-            "Selected:  " + p.string() + "\n"
-            "Required:  " + assetsDir.string(),
-            pfd::choice::ok, pfd::icon::warning).result();
+            "Selected:  " +
+                p.string() + "\n"
+                             "Required:  " +
+                assetsDir.string(),
+            pfd::choice::ok, pfd::icon::warning)
+            .result();
         showingMessageBox = false;
         return "";
     }
@@ -2564,15 +2953,17 @@ kString Manager::promptWorldSavePath()
 
 void Manager::applyDefaultSkybox(kScene *target)
 {
-    if (!target) return;
+    if (!target)
+        return;
     kAssetManager *am = getAssetManager();
-    if (!am) return;
+    if (!am)
+        return;
 
-    kShader      *skyShader = am->loadGlslFromResource("SHADER_SKYBOX");
-    kMaterial    *skyMat    = am->createMaterial(skyShader);
-    kTextureCube *skyTex    = am->loadTextureCubeFromResource(
+    kShader *skyShader = am->loadGlslFromResource("SHADER_SKYBOX");
+    kMaterial *skyMat = am->createMaterial(skyShader);
+    kTextureCube *skyTex = am->loadTextureCubeFromResource(
         "TEXTURE_SKYBOX_RIGHT", "TEXTURE_SKYBOX_LEFT",
-        "TEXTURE_SKYBOX_TOP",   "TEXTURE_SKYBOX_BOTTOM",
+        "TEXTURE_SKYBOX_TOP", "TEXTURE_SKYBOX_BOTTOM",
         "TEXTURE_SKYBOX_FRONT", "TEXTURE_SKYBOX_BACK",
         "cubeMap");
     skyMat->addTexture(skyTex);
@@ -2585,7 +2976,8 @@ void Manager::applyDefaultSkybox(kScene *target)
 
 void Manager::saveWorld()
 {
-    if (!projectOpened || !world) return;
+    if (!projectOpened || !world)
+        return;
 
     fs::path assetsDir = projectPath / "Assets";
 
@@ -2595,11 +2987,83 @@ void Manager::saveWorld()
     if (worldPath.empty() || !isPathUnder(worldPath, assetsDir))
     {
         kString chosen = promptWorldSavePath();
-        if (chosen.empty()) return; // cancelled or rejected
+        if (chosen.empty())
+            return; // cancelled or rejected
         worldPath = chosen;
     }
 
     json data = world->serialize(1); // skip editor scene at index 0
+
+    // --- Save terrain data alongside the world ---
+    // Walk the scene graph to find terrain meshes and save their
+    // height/splat data to Library/Terrains/{uuid}.{height,splat}.
+    // This works regardless of whether terrainManager is available.
+    {
+        fs::path libDir = projectPath / "Library" / "Terrains";
+        fs::create_directories(libDir);
+
+        std::function<void(kObject *)> walkTerrain = [&](kObject *node)
+        {
+            kMesh *mesh = dynamic_cast<kMesh *>(node);
+            if (mesh && mesh->getSerializeType() == "terrain")
+            {
+                kString uuid = mesh->getUuid();
+                if (!uuid.empty())
+                {
+                    // Try terrainManager first (has full kTerrain with height data)
+                    bool saved = false;
+                    if (terrainManager)
+                    {
+                        for (const auto &pair : terrainManager->getTiles())
+                        {
+                            const kTerrain *tile = pair.second.get();
+                            if (tile && tile->getMesh() && tile->getMesh()->getUuid() == uuid)
+                            {
+                                tile->saveHeightData((libDir / (uuid + ".height")).string());
+                                tile->saveSplatMap((libDir / (uuid + ".splat")).string());
+                                saved = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!saved)
+                    {
+                        // Fallback: reconstruct height from mesh vertex Y positions.
+                        // This is a lossy reconstruction from the GPU vertex data
+                        // but preserves the visible shape.
+                        const auto &verts = mesh->getVerticesRef();
+                        int count = static_cast<int>(verts.size());
+                        // Determine height resolution (nearest perfect square)
+                        int hRes = static_cast<int>(std::sqrt(static_cast<float>(count)));
+                        if (hRes * hRes == count && hRes > 1)
+                        {
+                            std::vector<float> heights(count);
+                            for (int i = 0; i < count; ++i)
+                                heights[i] = verts[i].y;
+                            std::ofstream hFile(libDir / (uuid + ".height"), std::ios::binary);
+                            if (hFile.is_open())
+                            {
+                                hFile.write(reinterpret_cast<const char *>(heights.data()),
+                                            heights.size() * sizeof(float));
+                                hFile.close();
+                            }
+                            // Save a blank splat map (all zeros)
+                            std::vector<unsigned char> splat(static_cast<size_t>(hRes) * hRes * 4, 0);
+                            stbi_write_png((libDir / (uuid + ".splat")).string().c_str(),
+                                           hRes, hRes, 4, splat.data(), hRes * 4);
+                        }
+                    }
+
+                }
+            }
+            for (kObject *child : node->getChildren())
+                walkTerrain(child);
+        };
+
+        for (kScene *s : world->getScenes())
+            if (s && s->getRootNode())
+                walkTerrain(s->getRootNode());
+    }
 
     // Persist the editor viewport camera so reopening the world restores the
     // same viewpoint (position, orientation, and orbit framing state).
@@ -2610,11 +3074,11 @@ void Manager::saveWorld()
         data["editor_camera"] = {
             {"position", {{"x", cp.x}, {"y", cp.y}, {"z", cp.z}}},
             {"rotation", {{"x", cq.x}, {"y", cq.y}, {"z", cq.z}, {"w", cq.w}}},
-            {"orbit_pivot", {{"x", editorCamOrbitPivot.x},
-                             {"y", editorCamOrbitPivot.y},
-                             {"z", editorCamOrbitPivot.z}}},
+            {"orbit_pivot", {{"x", editorCamOrbitPivot.x}, {"y", editorCamOrbitPivot.y}, {"z", editorCamOrbitPivot.z}}},
             {"orbit_distance", editorCamOrbitDistance},
             {"fov", editorCamera->getFOV()},
+            {"near_clip", editorCamera->getNearClip()},
+            {"far_clip", editorCamera->getFarClip()},
         };
     }
 
@@ -2627,6 +3091,10 @@ void Manager::saveWorld()
             return;
         }
         f << data.dump(4);
+        // Also save terrain data if the terrain panel is active
+        if (panelTerrain)
+            panelTerrain->saveProjectTerrains();
+
         projectSaved = true;
         worldName = worldPath.stem().string();
         refreshWindowTitle();
@@ -2643,7 +3111,8 @@ void Manager::saveWorld()
 
 void Manager::saveWorldAs(const kString &path)
 {
-    if (!projectOpened || !world) return;
+    if (!projectOpened || !world)
+        return;
 
     fs::path p = path;
     if (p.extension() != ".world")
@@ -2655,8 +3124,10 @@ void Manager::saveWorldAs(const kString &path)
         pfd::message(
             "Invalid Save Location",
             "Worlds can only be saved inside the project's Assets folder.\n\n"
-            "Refused:  " + p.string(),
-            pfd::choice::ok, pfd::icon::warning).result();
+            "Refused:  " +
+                p.string(),
+            pfd::choice::ok, pfd::icon::warning)
+            .result();
         showingMessageBox = false;
         return;
     }
@@ -2667,21 +3138,23 @@ void Manager::saveWorldAs(const kString &path)
 
 void Manager::saveWorldAs()
 {
-    if (!projectOpened || !world) return;
+    if (!projectOpened || !world)
+        return;
 
     kString chosen = promptWorldSavePath();
-    if (chosen.empty()) return;
+    if (chosen.empty())
+        return;
     worldPath = chosen;
     saveWorld();
 }
 
 static void applyLightIconLoad(kLight *light, kAssetManager *am, const char *gizmoResource)
 {
-    kShader    *shader = am->loadGlslFromResource("SHADER_ICON");
-    kMaterial  *mat    = am->createMaterial(shader);
+    kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial *mat = am->createMaterial(shader);
     mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND); // blend so the icon's drop shadow / soft edges show
-    kTexture2D *tex    = am->loadTexture2DFromResource(gizmoResource, "albedoMap",
-                                                        kTextureFormat::TEX_FORMAT_RGBA);
+    kTexture2D *tex = am->loadTexture2DFromResource(gizmoResource, "albedoMap",
+                                                    kTextureFormat::TEX_FORMAT_RGBA);
     mat->addTexture(tex);
     light->setMaterial(mat);
 }
@@ -2689,13 +3162,15 @@ static void applyLightIconLoad(kLight *light, kAssetManager *am, const char *giz
 // Resolve an import-child sub-mesh by the index-path produced by
 // kObject::serialize (collectSubmeshMaterials). Mirrors that traversal: count
 // only import-child siblings, descend per dotted segment.
-static kObject* resolveSubmeshByPath(kObject *node, const std::vector<int> &path, size_t depth)
+static kObject *resolveSubmeshByPath(kObject *node, const std::vector<int> &path, size_t depth)
 {
-    if (!node || depth >= path.size()) return nullptr;
+    if (!node || depth >= path.size())
+        return nullptr;
     int idx = 0;
     for (kObject *c : node->getChildren())
     {
-        if (!c->getImportChild()) continue;
+        if (!c->getImportChild())
+            continue;
         if (idx == path[depth])
             return (depth + 1 == path.size()) ? c
                                               : resolveSubmeshByPath(c, path, depth + 1);
@@ -2704,27 +3179,32 @@ static kObject* resolveSubmeshByPath(kObject *node, const std::vector<int> &path
     return nullptr;
 }
 
-static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world,
+static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world,
                                    kAssetManager *am, const fs::path &projectPath,
-                                   kCamera *editorCamera, kObject *parent = nullptr)
+                                   kCamera *editorCamera, kObject *parent,
+                                   kTerrainManager *terrainMgr)
 {
     std::string type = obj.value("type", "object");
     std::string uuid = obj.value("uuid", "");
     std::string name = obj.value("name", "");
-    bool active      = obj.value("active", true);
+    bool active = obj.value("active", true);
 
-    auto readVec3xyz = [&](const json &j, const char *key, kVec3 def = kVec3(0)) -> kVec3 {
-        if (!j.contains(key)) return def;
+    auto readVec3xyz = [&](const json &j, const char *key, kVec3 def = kVec3(0)) -> kVec3
+    {
+        if (!j.contains(key))
+            return def;
         const auto &v = j[key];
         return kVec3(v.value("x", def.x), v.value("y", def.y), v.value("z", def.z));
     };
-    auto readVec3rgb = [&](const json &j, const char *key, kVec3 def = kVec3(1)) -> kVec3 {
-        if (!j.contains(key)) return def;
+    auto readVec3rgb = [&](const json &j, const char *key, kVec3 def = kVec3(1)) -> kVec3
+    {
+        if (!j.contains(key))
+            return def;
         const auto &v = j[key];
         return kVec3(v.value("r", def.x), v.value("g", def.y), v.value("b", def.z));
     };
 
-    kVec3 pos   = readVec3xyz(obj, "position");
+    kVec3 pos = readVec3xyz(obj, "position");
     kVec3 rotEu = readVec3xyz(obj, "rotation");
     kVec3 scale = readVec3xyz(obj, "scale", kVec3(1.0f));
 
@@ -2735,7 +3215,7 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
 
     kObject *result = nullptr;
 
-    if (type == "mesh")
+    if (type == "mesh" || type == "terrain")
     {
         std::string refName = obj.value("reference", "");
         std::string fileName = obj.value("file_name", "");
@@ -2754,7 +3234,8 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             // Give the model (and its sub-meshes) the default material so it is
             // never invisible after a load. A stored material_uuid, if any, is
             // re-applied afterwards by reapplyStoredMaterials and overrides this.
-            if (mesh && am) applyDefaultMaterial(mesh, am);
+            if (mesh && am)
+                applyDefaultMaterial(mesh, am);
         }
 
         // Procedurally-generated primitive (cube / sphere / etc.) — used by
@@ -2762,11 +3243,16 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         // file. Only kicks in when no asset file is present.
         if (!mesh && !primitive.empty())
         {
-            if      (primitive == "cube")     mesh = kMeshGenerator::generateCube();
-            else if (primitive == "sphere")   mesh = kMeshGenerator::generateSphere();
-            else if (primitive == "cylinder") mesh = kMeshGenerator::generateCylinder();
-            else if (primitive == "capsule")  mesh = kMeshGenerator::generateCapsule();
-            else if (primitive == "plane")    mesh = kMeshGenerator::generatePlane();
+            if (primitive == "cube")
+                mesh = kMeshGenerator::generateCube();
+            else if (primitive == "sphere")
+                mesh = kMeshGenerator::generateSphere();
+            else if (primitive == "cylinder")
+                mesh = kMeshGenerator::generateCylinder();
+            else if (primitive == "capsule")
+                mesh = kMeshGenerator::generateCapsule();
+            else if (primitive == "plane")
+                mesh = kMeshGenerator::generatePlane();
             if (mesh && am)
                 applyDefaultMaterial(mesh, am);
         }
@@ -2778,10 +3264,11 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         }
 
         mesh->setName(name);
-        if (!refName.empty()) mesh->setRefName(refName); // keep asset link for save / re-import
+        if (!refName.empty())
+            mesh->setRefName(refName); // keep asset link for save / re-import
         mesh->setActive(active);
-        mesh->setStatic(obj.value("static", false));   // was serialized but never restored
-        mesh->setVisible(obj.value("visible", true));  // same: restore on load
+        mesh->setStatic(obj.value("static", false));  // was serialized but never restored
+        mesh->setVisible(obj.value("visible", true)); // same: restore on load
         mesh->setCastShadow(obj.value("cast_shadow", true));
         mesh->setReceiveShadow(obj.value("receive_shadow", true));
         if (topLevel)
@@ -2793,6 +3280,63 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             mesh->setUuid(uuid.empty() ? generateUuid() : uuid);
             mesh->setParent(parent);
         }
+
+        // For terrain tiles, create a kTerrain object instead of just a mesh.
+        if (type == "terrain")
+        {
+            mesh->setSerializeType("terrain");
+
+            int gx = obj.value("gridX", 0);
+            int gz = obj.value("gridZ", 0);
+
+            // Remove the empty mesh we just created (terrain will create its own)
+            scene->removeMesh(mesh);
+            delete mesh;
+            mesh = nullptr;
+
+            // terrainMgr must be non-null at this point — loadWorld pre-initialises
+            // it before calling loadObjectFromJson if any terrain objects exist.
+            if (!terrainMgr)
+            {
+                std::cerr << "loadObjectFromJson: terrainMgr is null, cannot create terrain tile\n";
+                result = nullptr;
+                return result;
+            }
+
+            kTerrain *tile = terrainMgr->createTile(gx, gz);
+            if (tile)
+            {
+                // Load height/splat data and rebuild the mesh
+                fs::path libDir = projectPath / "Library" / "Terrains";
+                kString hFile = libDir.string() + "/" + obj.value("heightFile", "");
+                kString sFile = libDir.string() + "/" + obj.value("splatFile", "");
+                if (fs::exists(hFile))
+                    tile->loadHeightData(hFile);
+                if (fs::exists(sFile))
+                    tile->loadSplatMap(sFile);
+
+                tile->reload(true);
+
+                mesh = tile->getMesh();
+                if (mesh)
+                {
+                    // Preserve the original UUID from the .world JSON so the
+                    // mesh keeps its identity across save/load cycles.
+                    if (!uuid.empty())
+                        mesh->setUuid(uuid);
+
+                    mesh->setSerializeType("terrain");
+                    mesh->setName(name);
+                    mesh->setActive(active);
+                    mesh->setPosition(pos);
+                    mesh->setRotation(kQuat(rotEu));
+                    mesh->setScale(scale);
+                }
+            }
+            result = mesh;
+            return result;
+        }
+
         // Give the model's import-derived sub-meshes UUIDs so they show
         // uniquely in the hierarchy and can be selected (they remain excluded
         // from serialization via the import-child flag).
@@ -2802,14 +3346,14 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
     else if (type == "light")
     {
         std::string ltStr = obj.value("light_type", "sun");
-        kVec3 diff  = readVec3rgb(obj, "diffuse",  kVec3(1));
-        kVec3 spec  = readVec3rgb(obj, "specular", kVec3(1));
+        kVec3 diff = readVec3rgb(obj, "diffuse", kVec3(1));
+        kVec3 spec = readVec3rgb(obj, "specular", kVec3(1));
         float power = obj.value("power", 1.0f);
-        float constant  = obj.value("constant",  1.0f);
-        float linear    = obj.value("linear",    0.7f);
+        float constant = obj.value("constant", 1.0f);
+        float linear = obj.value("linear", 0.7f);
         float quadratic = obj.value("quadratic", 1.8f);
-        kVec3 dir   = readVec3xyz(obj, "direction", kVec3(0,-1,0));
-        float cutOff      = obj.value("cut_off",       glm::cos(glm::radians(15.0f)));
+        kVec3 dir = readVec3xyz(obj, "direction", kVec3(0, -1, 0));
+        float cutOff = obj.value("cut_off", glm::cos(glm::radians(15.0f)));
         float outerCutOff = obj.value("outer_cut_off", glm::cos(glm::radians(20.0f)));
 
         kLight *light = nullptr;
@@ -2836,9 +3380,21 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         else
         {
             light = new kLight();
-            if (ltStr == "point")     { light->setLightType(kLightType::LIGHT_TYPE_POINT); gizmoRes = "GIZMO_POINT_LIGHT"; }
-            else if (ltStr == "spot") { light->setLightType(kLightType::LIGHT_TYPE_SPOT);  gizmoRes = "GIZMO_SPOT_LIGHT";  }
-            else                      { light->setLightType(kLightType::LIGHT_TYPE_SUN);   gizmoRes = "GIZMO_SUN_LIGHT";   }
+            if (ltStr == "point")
+            {
+                light->setLightType(kLightType::LIGHT_TYPE_POINT);
+                gizmoRes = "GIZMO_POINT_LIGHT";
+            }
+            else if (ltStr == "spot")
+            {
+                light->setLightType(kLightType::LIGHT_TYPE_SPOT);
+                gizmoRes = "GIZMO_SPOT_LIGHT";
+            }
+            else
+            {
+                light->setLightType(kLightType::LIGHT_TYPE_SUN);
+                gizmoRes = "GIZMO_SUN_LIGHT";
+            }
             light->setDiffuseColor(diff);
             light->setSpecularColor(spec);
             light->setUuid(uuid.empty() ? generateUuid() : uuid);
@@ -2854,7 +3410,8 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         light->setDirection(dir);
         light->setCutOff(cutOff);
         light->setOuterCutOff(outerCutOff);
-        if (am) applyLightIconLoad(light, am, gizmoRes);
+        if (am)
+            applyLightIconLoad(light, am, gizmoRes);
 
         result = light;
     }
@@ -2864,9 +3421,9 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         kCameraType camType = (camTypeStr == "locked") ? kCameraType::CAMERA_TYPE_LOCKED
                                                        : kCameraType::CAMERA_TYPE_FREE;
         kVec3 lookAt = readVec3xyz(obj, "look_at");
-        float fov    = obj.value("fov", 60.0f);
+        float fov = obj.value("fov", 60.0f);
         float nearClip = obj.value("near_clip", 0.1f);
-        float farClip  = obj.value("far_clip",  1000.0f);
+        float farClip = obj.value("far_clip", 1000.0f);
 
         kCamera *cam = new kCamera();
         cam->setName(name);
@@ -2893,7 +3450,8 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
 
         // Editor-side gizmo (icon billboard) — the renderer auto-hides it when
         // the camera is also the active view camera.
-        if (am) applyCameraIcon(cam, am);
+        if (am)
+            applyCameraIcon(cam, am);
 
         result = cam;
     }
@@ -2921,8 +3479,10 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         result->setScale(scale);
 
         // Prefab linkage — only set when present in JSON, otherwise stays empty.
-        if (obj.contains("prefab_ref"))    result->setPrefabRef(obj["prefab_ref"].get<std::string>());
-        if (obj.contains("template_uuid")) result->setTemplateUuid(obj["template_uuid"].get<std::string>());
+        if (obj.contains("prefab_ref"))
+            result->setPrefabRef(obj["prefab_ref"].get<std::string>());
+        if (obj.contains("template_uuid"))
+            result->setTemplateUuid(obj["template_uuid"].get<std::string>());
 
         // Assigned material asset UUID. Only the reference is restored here; the
         // runtime material is rebuilt afterwards by Manager::reapplyStoredMaterials
@@ -2939,26 +3499,34 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             for (const json &sm : obj["submesh_materials"])
             {
                 std::string ps = sm.value("path", std::string(""));
-                if (ps.empty()) continue;
+                if (ps.empty())
+                    continue;
 
                 std::vector<int> path;
                 std::stringstream ss(ps);
                 std::string seg;
                 while (std::getline(ss, seg, '.'))
-                    if (!seg.empty()) path.push_back(std::stoi(seg));
+                    if (!seg.empty())
+                        path.push_back(std::stoi(seg));
 
                 kObject *sub = resolveSubmeshByPath(result, path, 0);
-                if (!sub) continue;
+                if (!sub)
+                    continue;
 
                 if (sm.contains("material_uuid"))
                     sub->setMaterialUuid(sm["material_uuid"].get<std::string>());
-                if (sm.contains("active")) sub->setActive(sm["active"].get<bool>());
-                if (sm.contains("static")) sub->setStatic(sm["static"].get<bool>());
+                if (sm.contains("active"))
+                    sub->setActive(sm["active"].get<bool>());
+                if (sm.contains("static"))
+                    sub->setStatic(sm["static"].get<bool>());
                 if (kMesh *subMesh = dynamic_cast<kMesh *>(sub))
                 {
-                    if (sm.contains("visible"))        subMesh->setVisible(sm["visible"].get<bool>());
-                    if (sm.contains("cast_shadow"))    subMesh->setCastShadow(sm["cast_shadow"].get<bool>());
-                    if (sm.contains("receive_shadow")) subMesh->setReceiveShadow(sm["receive_shadow"].get<bool>());
+                    if (sm.contains("visible"))
+                        subMesh->setVisible(sm["visible"].get<bool>());
+                    if (sm.contains("cast_shadow"))
+                        subMesh->setCastShadow(sm["cast_shadow"].get<bool>());
+                    if (sm.contains("receive_shadow"))
+                        subMesh->setReceiveShadow(sm["receive_shadow"].get<bool>());
                 }
             }
         }
@@ -2976,15 +3544,15 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 desc.shape.halfExtents = kVec3(
                     he.value("x", 0.5f), he.value("y", 0.5f), he.value("z", 0.5f));
             }
-            desc.shape.radius   = phys.value("radius", 0.5f);
-            desc.shape.height   = phys.value("height", 1.0f);
-            desc.type           = (kPhysicsObjectType)phys.value("body_type", 0);
-            desc.mass           = phys.value("mass",            1.0f);
-            desc.friction       = phys.value("friction",        0.5f);
-            desc.restitution    = phys.value("restitution",     0.0f);
-            desc.linearDamping  = phys.value("linear_damping",  0.05f);
+            desc.shape.radius = phys.value("radius", 0.5f);
+            desc.shape.height = phys.value("height", 1.0f);
+            desc.type = (kPhysicsObjectType)phys.value("body_type", 0);
+            desc.mass = phys.value("mass", 1.0f);
+            desc.friction = phys.value("friction", 0.5f);
+            desc.restitution = phys.value("restitution", 0.0f);
+            desc.linearDamping = phys.value("linear_damping", 0.05f);
             desc.angularDamping = phys.value("angular_damping", 0.05f);
-            desc.gravityFactor  = phys.value("gravity_factor",  1.0f);
+            desc.gravityFactor = phys.value("gravity_factor", 1.0f);
             result->setHasPhysicsDesc(true);
         }
 
@@ -2993,13 +3561,13 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         {
             const json &ch = obj["character"];
             kCharacterControllerDesc &cd = result->getCharacterDesc();
-            cd.radius        = ch.value("radius",         0.3f);
-            cd.height        = ch.value("height",         1.8f);
-            cd.mass          = ch.value("mass",           80.0f);
-            cd.friction      = ch.value("friction",       0.5f);
+            cd.radius = ch.value("radius", 0.3f);
+            cd.height = ch.value("height", 1.8f);
+            cd.mass = ch.value("mass", 80.0f);
+            cd.friction = ch.value("friction", 0.5f);
             cd.gravityFactor = ch.value("gravity_factor", 1.0f);
-            cd.slopeLimit    = ch.value("slope_limit",    45.0f);
-            cd.stepHeight    = ch.value("step_height",    0.3f);
+            cd.slopeLimit = ch.value("slope_limit", 45.0f);
+            cd.stepHeight = ch.value("step_height", 0.3f);
             result->setHasCharacterDesc(true);
         }
 
@@ -3014,13 +3582,13 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 const auto &as = nm["area_size"];
                 nd.areaSize = kVec3(as.value("x", 20.0f), as.value("y", 10.0f), as.value("z", 20.0f));
             }
-            nd.config.cellSize      = nm.value("cell_size",       0.3f);
-            nd.config.cellHeight    = nm.value("cell_height",     0.2f);
-            nd.config.agentHeight   = nm.value("agent_height",    2.0f);
-            nd.config.agentRadius   = nm.value("agent_radius",    0.6f);
+            nd.config.cellSize = nm.value("cell_size", 0.3f);
+            nd.config.cellHeight = nm.value("cell_height", 0.2f);
+            nd.config.agentHeight = nm.value("agent_height", 2.0f);
+            nd.config.agentRadius = nm.value("agent_radius", 0.6f);
             nd.config.agentMaxClimb = nm.value("agent_max_climb", 0.9f);
             nd.config.agentMaxSlope = nm.value("agent_max_slope", 45.0f);
-            nd.config.tileSize      = nm.value("tile_size",       48.0f);
+            nd.config.tileSize = nm.value("tile_size", 48.0f);
             result->setHasNavMeshDesc(true);
         }
 
@@ -3031,11 +3599,11 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             for (const auto &sj : obj["script"])
             {
                 kScript s;
-                s.uuid       = sj.value("uuid", generateUuid());
+                s.uuid = sj.value("uuid", generateUuid());
                 s.scriptUuid = sj.value("script_uuid", std::string(""));
-                s.fileName   = sj.value("file_name",   std::string(""));
-                s.checksum   = sj.value("checksum",    std::string(""));
-                s.isActive   = sj.value("active", true);
+                s.fileName = sj.value("file_name", std::string(""));
+                s.checksum = sj.value("checksum", std::string(""));
+                s.isActive = sj.value("active", true);
                 result->addScript(s);
             }
         }
@@ -3053,7 +3621,8 @@ static kObject* loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
 
 void Manager::loadWorld(const kString &path)
 {
-    if (!projectOpened || !world) return;
+    if (!projectOpened || !world)
+        return;
 
     fs::path loadPath = path;
     if (!fs::exists(loadPath))
@@ -3102,8 +3671,8 @@ void Manager::loadWorld(const kString &path)
         }
     }
     defaultGameCamera = nullptr;
-    selectedObject    = nullptr;
-    selectedScene     = nullptr;
+    selectedObject = nullptr;
+    selectedScene = nullptr;
     selectedObjects.clear();
 
     kAssetManager *am = getAssetManager();
@@ -3118,7 +3687,7 @@ void Manager::loadWorld(const kString &path)
     {
         std::string sceneUuid = sceneJson.value("uuid", "");
         std::string sceneName = sceneJson.value("name", "Scene");
-        bool sceneActive      = sceneJson.value("active", true);
+        bool sceneActive = sceneJson.value("active", true);
 
         kScene *scene = world->createScene(sceneName, sceneUuid);
         scene->setActive(sceneActive);
@@ -3141,11 +3710,30 @@ void Manager::loadWorld(const kString &path)
         if (scene->getSkyboxMaterial() == nullptr)
             applyDefaultSkybox(scene);
 
+        // Pre-initialise the terrain manager if the scene contains terrain
+        // objects.  This must happen BEFORE the object loop so that
+        // loadObjectFromJson receives a non-null terrainMgr pointer (pass-by-
+        // value) and can create kTerrain tiles through it.
+        if (!terrainManager && sceneJson.contains("objects") && sceneJson["objects"].is_array())
+        {
+            for (const auto &objJson : sceneJson["objects"])
+            {
+                if (objJson.value("type", "") == "terrain")
+                {
+                    terrainManager = new kTerrainManager();
+                    terrainManager->init(scene, am,
+                                         objJson.value("worldSize", 256.0f),
+                                         objJson.value("heightRes", 513));
+                    break;
+                }
+            }
+        }
+
         if (sceneJson.contains("objects") && sceneJson["objects"].is_array())
         {
             for (const auto &objJson : sceneJson["objects"])
             {
-                loadObjectFromJson(objJson, scene, world, am, projectPath, editorCamera);
+                loadObjectFromJson(objJson, scene, world, am, projectPath, editorCamera, nullptr, terrainManager);
             }
         }
 
@@ -3184,13 +3772,45 @@ void Manager::loadWorld(const kString &path)
         editorCamOrbitDistance = ec.value("orbit_distance", editorCamOrbitDistance);
         if (ec.contains("fov"))
             editorCamera->setFOV(ec.value("fov", 60.0f));
+        if (ec.contains("near_clip"))
+            editorCamera->setNearClip(ec.value("near_clip", 0.1f));
+        if (ec.contains("far_clip"))
+            editorCamera->setFarClip(ec.value("far_clip", 10000.0f));
         editorCamLoadPending = true;
     }
 
-    worldName    = loadPath.stem().string();
-    worldPath    = loadPath;
+    worldName = loadPath.stem().string();
+    worldPath = loadPath;
     projectSaved = true;
     refreshWindowTitle();
+
+    // Walk all loaded terrain tiles and load their height/splat data.
+    // (The kTerrain objects were created by loadObjectFromJson but the
+    // data files need to be loaded from Library/Terrains/.)
+    if (terrainManager && projectOpened)
+    {
+        for (auto &pair : terrainManager->getTiles())
+        {
+            kTerrain *tile = pair.second.get();
+            if (tile && tile->getMesh())
+            {
+                fs::path libDir = projectPath / "Library" / "Terrains";
+                kString uuid = tile->getMesh()->getUuid();
+                kString hFile = libDir.string() + "/" + uuid + ".height";
+                kString sFile = libDir.string() + "/" + uuid + ".splat";
+                if (fs::exists(hFile))
+                    tile->loadHeightData(hFile);
+                if (fs::exists(sFile))
+                    tile->loadSplatMap(sFile);
+
+                // Rebuild the mesh so the GPU vertex buffer reflects the loaded height data.
+                // loadHeightData only updates the CPU array; reload() builds the GPU mesh.
+                tile->reload(true);
+            }
+        }
+        if (getRenderer())
+            getRenderer()->setOctreeDirty();
+    }
 
     if (panelHierarchy)
         panelHierarchy->refreshList();
@@ -3396,7 +4016,8 @@ void Manager::editPrefab(const fs::path &prefabPath)
 
 void Manager::closePrefabEditor(bool saveChanges)
 {
-    if (!prefabEditing) return;
+    if (!prefabEditing)
+        return;
 
     bool savedSuccessfully = false;
     kString savedPrefabUuid;
@@ -3408,7 +4029,7 @@ void Manager::closePrefabEditor(bool saveChanges)
         // re-randomized them on load.
         editingPrefab.setRootJson(prefabRoot->serialize());
         savedSuccessfully = editingPrefab.saveToFile(editingPrefabPath.string());
-        savedPrefabUuid   = editingPrefab.getUuid();
+        savedPrefabUuid = editingPrefab.getUuid();
     }
 
     // Tear down the editor scene. Children are owned by the scene-graph nodes,
@@ -3420,7 +4041,8 @@ void Manager::closePrefabEditor(bool saveChanges)
             for (kObject *child : prefabScene->getRootNode()->getChildren())
                 deleteObjectRecursive(child);
         }
-        if (world) world->removeScene(prefabScene);
+        if (world)
+            world->removeScene(prefabScene);
         delete prefabScene;
         prefabScene = nullptr;
     }
@@ -3466,7 +4088,8 @@ void Manager::closePrefabEditor(bool saveChanges)
 
 void Manager::startPhysicsSimulation()
 {
-    if (!scene) return;
+    if (!scene)
+        return;
     if (!physicsManager)
     {
         physicsManager = createPhysicsManager();
@@ -3481,8 +4104,10 @@ void Manager::startPhysicsSimulation()
     physicsBodies.clear();
     characterBodies.clear();
 
-    std::function<void(kObject *)> walk = [&](kObject *node) {
-        if (!node) return;
+    std::function<void(kObject *)> walk = [&](kObject *node)
+    {
+        if (!node)
+            return;
         if (node->getHasPhysicsDesc())
         {
             kPhysicsObjectDesc desc = node->getPhysicsDesc();
@@ -3519,14 +4144,16 @@ void Manager::startPhysicsSimulation()
                 std::cerr << "Physics: createCharacter failed for '" << node->getName() << "'\n";
             }
         }
-        for (kObject *c : node->getChildren()) walk(c);
+        for (kObject *c : node->getChildren())
+            walk(c);
     };
     walk(scene->getRootNode());
 }
 
 void Manager::stopPhysicsSimulation()
 {
-    if (!physicsManager) return;
+    if (!physicsManager)
+        return;
     for (kObject *obj : physicsBodies)
     {
         if (kPhysicsObject *body = obj->getPhysicsObject())
@@ -3550,7 +4177,8 @@ void Manager::stopPhysicsSimulation()
 
 void Manager::stepPhysics(float dt)
 {
-    if (!physicsManager || dt <= 0.0f) return;
+    if (!physicsManager || dt <= 0.0f)
+        return;
     physicsManager->update(dt);
     // Sync each body's transform back into the scene-graph node so the
     // renderer picks up the new positions on the next draw.
@@ -3576,21 +4204,25 @@ void Manager::stepPhysics(float dt)
 
 void Manager::buildScripts(bool logSummary)
 {
-    if (!world || !scene) return;
+    if (!world || !scene)
+        return;
     kScriptManager *sm = world->getScriptManager();
-    if (!sm) return;
+    if (!sm)
+        return;
 
     fs::path scriptsDir = projectPath / "Library" / "Scripts";
     std::error_code ec;
     fs::create_directories(scriptsDir, ec);
 
-    std::map<kString, kString> fileToAsset;   // source path -> script-asset UUID
-    std::map<kString, bool>    fileCompiled;  // script-asset UUID -> compile OK
+    std::map<kString, kString> fileToAsset; // source path -> script-asset UUID
+    std::map<kString, bool> fileCompiled;   // script-asset UUID -> compile OK
     bool changedMeta = false;
-    int  found = 0, okCount = 0, failCount = 0;
+    int found = 0, okCount = 0, failCount = 0;
 
-    std::function<void(kObject *)> walk = [&](kObject *node) {
-        if (!node) return;
+    std::function<void(kObject *)> walk = [&](kObject *node)
+    {
+        if (!node)
+            return;
         for (kScript &comp : node->getScripts())
         {
             if (comp.fileName.empty())
@@ -3602,8 +4234,8 @@ void Manager::buildScripts(bool logSummary)
                 std::cerr << "buildScripts: source missing: " << comp.fileName << "\n";
                 if (panelConsole)
                     panelConsole->addLog(LogLevel::Error,
-                        "[Script] Source missing for '%s': %s",
-                        node->getName().c_str(), comp.fileName.c_str());
+                                         "[Script] Source missing for '%s': %s",
+                                         node->getName().c_str(), comp.fileName.c_str());
                 continue;
             }
 
@@ -3611,11 +4243,11 @@ void Manager::buildScripts(bool logSummary)
             auto fit = fileToAsset.find(comp.fileName);
             bool firstForFile = (fit == fileToAsset.end());
             kString sid = firstForFile
-                ? (comp.scriptUuid.empty() ? generateUuid() : comp.scriptUuid)
-                : fit->second;
+                              ? (comp.scriptUuid.empty() ? generateUuid() : comp.scriptUuid)
+                              : fit->second;
 
             kString srcSum = generateFileChecksum(comp.fileName);
-            fs::path bc    = scriptsDir / (sid + ".kbc");
+            fs::path bc = scriptsDir / (sid + ".kbc");
 
             if (firstForFile)
             {
@@ -3631,7 +4263,7 @@ void Manager::buildScripts(bool logSummary)
                         std::cerr << "buildScripts: compile failed: " << comp.fileName << "\n";
                         if (panelConsole)
                             panelConsole->addLog(LogLevel::Error,
-                                "[Script] Compile failed: %s", comp.fileName.c_str());
+                                                 "[Script] Compile failed: %s", comp.fileName.c_str());
                     }
                 }
                 else
@@ -3639,10 +4271,17 @@ void Manager::buildScripts(bool logSummary)
                     sm->setBytecodePath(sid, bc.string());
                 }
                 fileCompiled[sid] = ok;
-                if (ok) ++okCount; else ++failCount;
+                if (ok)
+                    ++okCount;
+                else
+                    ++failCount;
             }
 
-            if (comp.scriptUuid != sid) { comp.scriptUuid = sid; changedMeta = true; }
+            if (comp.scriptUuid != sid)
+            {
+                comp.scriptUuid = sid;
+                changedMeta = true;
+            }
             // Only record the checksum once the source actually compiled, so a
             // broken script is retried on the next build.
             if (fileCompiled[sid] && comp.checksum != srcSum)
@@ -3658,7 +4297,7 @@ void Manager::buildScripts(bool logSummary)
 
     if (logSummary && panelConsole)
         panelConsole->addLog(found == 0 ? LogLevel::Warning : LogLevel::Info,
-            "[Script] Build: %d attached, %d compiled, %d failed.", found, okCount, failCount);
+                             "[Script] Build: %d attached, %d compiled, %d failed.", found, okCount, failCount);
 
     if (changedMeta)
         projectSaved = false;
@@ -3666,7 +4305,8 @@ void Manager::buildScripts(bool logSummary)
 
 void Manager::startScripts()
 {
-    if (!world) return;
+    if (!world)
+        return;
     buildScripts();        // checksum-gated compile of attached scripts
     world->startScripts(); // Awake() + Start() across the scene
 }
@@ -3700,12 +4340,15 @@ void Manager::pollScriptChanges(float dt)
 // operations need the full tree.
 static kObject *findInTree(kObject *node, const kString &uuid)
 {
-    if (!node) return nullptr;
-    if (node->getUuid() == uuid) return node;
+    if (!node)
+        return nullptr;
+    if (node->getUuid() == uuid)
+        return node;
     for (kObject *child : node->getChildren())
     {
         kObject *found = findInTree(child, uuid);
-        if (found) return found;
+        if (found)
+            return found;
     }
     return nullptr;
 }
@@ -3713,7 +4356,8 @@ static kObject *findInTree(kObject *node, const kString &uuid)
 fs::path Manager::findAssetPathByUuid(const kString &assetUuid)
 {
     auto it = fileMap.find(assetUuid);
-    if (it == fileMap.end()) return {};
+    if (it == fileMap.end())
+        return {};
     return projectPath / "Assets" / it->second.path;
 }
 
@@ -3722,12 +4366,13 @@ fs::path Manager::findAssetPathByUuid(const kString &assetUuid)
 // match in shape (and undo behavior).
 static void pushInstantiateCommand(Manager *mgr, kObject *root)
 {
-    if (!root || !mgr || !mgr->getScene()) return;
+    if (!root || !mgr || !mgr->getScene())
+        return;
     auto cmd = std::make_unique<InstantiateCommand>();
     cmd->manager = mgr;
-    cmd->root    = root;
-    cmd->parent  = root->getParent();
-    cmd->scene   = mgr->getScene();
+    cmd->root = root;
+    cmd->parent = root->getParent();
+    cmd->scene = mgr->getScene();
     // nextSibling: the sibling immediately following `root` in parent's
     // children list, or nullptr if it's the last child. Used by undo→redo
     // round-trips to preserve original sibling order.
@@ -3735,22 +4380,28 @@ static void pushInstantiateCommand(Manager *mgr, kObject *root)
     {
         auto kids = cmd->parent->getChildren();
         for (size_t i = 0; i < kids.size(); ++i)
-            if (kids[i] == root && i + 1 < kids.size()) { cmd->nextSibling = kids[i + 1]; break; }
+            if (kids[i] == root && i + 1 < kids.size())
+            {
+                cmd->nextSibling = kids[i + 1];
+                break;
+            }
     }
-    cmd->attached    = true;
+    cmd->attached = true;
     cmd->ownsSubtree = false;
     mgr->undoRedo.push(std::move(cmd));
 }
 
 kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3 &positionHint)
 {
-    if (!projectOpened || !scene) return nullptr;
+    if (!projectOpened || !scene)
+        return nullptr;
 
     auto it = fileMap.find(assetUuid);
-    if (it == fileMap.end()) return nullptr;
+    if (it == fileMap.end())
+        return nullptr;
     const FileInfo &info = it->second;
     fs::path assetPath = projectPath / "Assets" / info.path;
-    kAssetManager *am  = getAssetManager();
+    kAssetManager *am = getAssetManager();
 
     if (info.type == "mesh")
     {
@@ -3762,7 +4413,8 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
         if (!mesh)
             mesh = new kMesh();
         mesh->setRefName(assetUuid); // remember source asset for save / re-import reload
-        if (am) applyDefaultMaterial(mesh, am);
+        if (am)
+            applyDefaultMaterial(mesh, am);
         assignImportChildUuidsRec(mesh);
 
         mesh->setName(fs::path(info.path).stem().string());
@@ -3770,7 +4422,8 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
         mesh->setPosition(positionHint);
         kString uuid = mesh->getUuid();
 
-        if (panelHierarchy) panelHierarchy->refreshList();
+        if (panelHierarchy)
+            panelHierarchy->refreshList();
         selectedObject = mesh;
         selectObject(uuid, true);
         projectSaved = false;
@@ -3783,7 +4436,8 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
         // instantiatePrefabInScene already pushes its own InstantiateCommand
         // (added below), so we just forward.
         kObject *root = instantiatePrefabInScene(assetPath);
-        if (root) root->setPosition(positionHint);
+        if (root)
+            root->setPosition(positionHint);
         return root;
     }
     else if (info.type == "audio" || info.type == "particle")
@@ -3798,8 +4452,8 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
         if (info.type == "audio")
         {
             kAudioSource src;
-            src.uuid      = generateUuid();
-            src.audioFile = assetUuid;  // reference the audio asset by its project UUID
+            src.uuid = generateUuid();
+            src.audioFile = assetUuid; // reference the audio asset by its project UUID
             obj->addAudioSource(src);
         }
         else
@@ -3814,7 +4468,8 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
             obj->addParticle(p);
         }
 
-        if (panelHierarchy) panelHierarchy->refreshList();
+        if (panelHierarchy)
+            panelHierarchy->refreshList();
         selectedObject = obj;
         selectObject(obj->getUuid(), true);
         projectSaved = false;
@@ -3832,7 +4487,8 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
 // snapshot sibling order for reparent/reorder undo.
 static kObject *nextSiblingOf(kObject *obj)
 {
-    if (!obj || !obj->getParent()) return nullptr;
+    if (!obj || !obj->getParent())
+        return nullptr;
     auto kids = obj->getParent()->getChildren();
     for (size_t i = 0; i < kids.size(); ++i)
         if (kids[i] == obj && i + 1 < kids.size())
@@ -3845,7 +4501,8 @@ static kObject *nextSiblingOf(kObject *obj)
 // a public header).
 static void insertBefore(kObject *parent, kObject *child, kObject *beforeSibling)
 {
-    if (!parent || !child) return;
+    if (!parent || !child)
+        return;
     child->detachFromParent();
     if (!beforeSibling)
     {
@@ -3857,83 +4514,98 @@ static void insertBefore(kObject *parent, kObject *child, kObject *beforeSibling
     bool found = false;
     for (kObject *k : kids)
     {
-        if (k == beforeSibling) found = true;
-        if (found) tail.push_back(k);
+        if (k == beforeSibling)
+            found = true;
+        if (found)
+            tail.push_back(k);
     }
-    for (kObject *k : tail) k->detachFromParent();
+    for (kObject *k : tail)
+        k->detachFromParent();
     child->setParent(parent);
-    for (kObject *k : tail) k->setParent(parent);
+    for (kObject *k : tail)
+        k->setParent(parent);
 }
 
 void Manager::reparentObject(const kString &uuid, const kString &newParentUuid)
 {
-    if (!scene) return;
+    if (!scene)
+        return;
     kObject *obj = findInTree(scene->getRootNode(), uuid);
-    if (!obj) return;
+    if (!obj)
+        return;
 
     kObject *newParent = newParentUuid.empty()
-                          ? scene->getRootNode()
-                          : findInTree(scene->getRootNode(), newParentUuid);
-    if (!newParent) return;
+                             ? scene->getRootNode()
+                             : findInTree(scene->getRootNode(), newParentUuid);
+    if (!newParent)
+        return;
 
     // Refuse the move if it would create a cycle (new parent is the obj or
     // a descendant of it).
     for (kObject *p = newParent; p != nullptr; p = p->getParent())
-        if (p == obj) return;
+        if (p == obj)
+            return;
 
-    if (obj->getParent() == newParent) return;
+    if (obj->getParent() == newParent)
+        return;
 
     auto cmd = std::make_unique<ReparentCommand>();
-    cmd->manager        = this;
-    cmd->objUuid        = uuid;
-    cmd->oldParent      = obj->getParent();
+    cmd->manager = this;
+    cmd->objUuid = uuid;
+    cmd->oldParent = obj->getParent();
     cmd->oldNextSibling = nextSiblingOf(obj);
-    cmd->oldLocalPos    = obj->getPosition();
-    cmd->oldLocalRot    = obj->getRotation();
-    cmd->oldLocalScale  = obj->getScale();
+    cmd->oldLocalPos = obj->getPosition();
+    cmd->oldLocalRot = obj->getRotation();
+    cmd->oldLocalScale = obj->getScale();
 
     // Reparent while preserving the object's world transform so the user
     // doesn't see the object jump when dragging it under a new parent.
     obj->setParentKeepTransform(newParent);
 
-    cmd->newParent      = newParent;
+    cmd->newParent = newParent;
     cmd->newNextSibling = nextSiblingOf(obj);
-    cmd->newLocalPos    = obj->getPosition();
-    cmd->newLocalRot    = obj->getRotation();
-    cmd->newLocalScale  = obj->getScale();
+    cmd->newLocalPos = obj->getPosition();
+    cmd->newLocalRot = obj->getRotation();
+    cmd->newLocalScale = obj->getScale();
     undoRedo.push(std::move(cmd));
 
-    if (panelHierarchy) panelHierarchy->refreshList();
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
     projectSaved = false;
     refreshWindowTitle();
 }
 
 void Manager::reorderBefore(const kString &uuid, const kString &siblingUuid)
 {
-    if (!scene) return;
+    if (!scene)
+        return;
     kObject *obj = findInTree(scene->getRootNode(), uuid);
     kObject *sib = findInTree(scene->getRootNode(), siblingUuid);
-    if (!obj || !sib) return;
-    if (obj->getParent() != sib->getParent()) return;
+    if (!obj || !sib)
+        return;
+    if (obj->getParent() != sib->getParent())
+        return;
 
     kObject *parent = obj->getParent();
-    if (!parent) return;
+    if (!parent)
+        return;
 
     auto cmd = std::make_unique<ReparentCommand>();
-    cmd->manager        = this;
-    cmd->objUuid        = uuid;
-    cmd->oldParent      = parent;
+    cmd->manager = this;
+    cmd->objUuid = uuid;
+    cmd->oldParent = parent;
     cmd->oldNextSibling = nextSiblingOf(obj);
-    cmd->oldLocalPos    = obj->getPosition();
+    cmd->oldLocalPos = obj->getPosition();
 
     insertBefore(parent, obj, sib);
 
-    cmd->newParent      = parent;
+    cmd->newParent = parent;
     cmd->newNextSibling = nextSiblingOf(obj);
-    cmd->newLocalPos    = obj->getPosition();
+    cmd->newLocalPos = obj->getPosition();
     undoRedo.push(std::move(cmd));
 
-    if (panelHierarchy) panelHierarchy->refreshList();
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
     projectSaved = false;
     refreshWindowTitle();
 }
@@ -3948,8 +4620,10 @@ kObject *Manager::findPrefabInstanceRoot(kObject *obj)
 
 bool Manager::createPrefabFromSelection()
 {
-    if (!projectOpened || !scene) return false;
-    if (selectedObjects.empty())  return false;
+    if (!projectOpened || !scene)
+        return false;
+    if (selectedObjects.empty())
+        return false;
 
     // Resolve the selected objects in their original list order. The "last
     // selected" is the one held in `selectedObject` (if it's in the list),
@@ -3958,9 +4632,11 @@ bool Manager::createPrefabFromSelection()
     for (const kString &uuid : selectedObjects)
     {
         kObject *o = findInTree(scene->getRootNode(), uuid);
-        if (o) objs.push_back(o);
+        if (o)
+            objs.push_back(o);
     }
-    if (objs.empty()) return false;
+    if (objs.empty())
+        return false;
 
     kObject *lastSel = selectedObject ? selectedObject : objs.back();
 
@@ -3982,34 +4658,34 @@ bool Manager::createPrefabFromSelection()
         // prefab.
         kObject *empty = new kObject();
         empty->setName(lastSel->getName().empty()
-                          ? kString("PrefabGroup")
-                          : (lastSel->getName() + "_Group"));
+                           ? kString("PrefabGroup")
+                           : (lastSel->getName() + "_Group"));
         scene->addObject(empty);
         empty->setPosition(lastSel->getPosition());
 
-        cmd->createdEmpty       = empty;
+        cmd->createdEmpty = empty;
         cmd->createdEmptyParent = scene->getRootNode();
-        cmd->createdEmptyPos    = empty->getPosition();
+        cmd->createdEmptyPos = empty->getPosition();
 
         for (kObject *o : objs)
         {
             // Snapshot pre-move state so undo can restore parent + sibling +
             // full local transform exactly.
             CreatePrefabCommand::ChildMove m;
-            m.objUuid        = o->getUuid();
-            m.oldParent      = o->getParent();
+            m.objUuid = o->getUuid();
+            m.oldParent = o->getParent();
             m.oldNextSibling = nextSiblingOf(o);
-            m.oldLocalPos    = o->getPosition();
-            m.oldLocalRot    = o->getRotation();
-            m.oldLocalScale  = o->getScale();
+            m.oldLocalPos = o->getPosition();
+            m.oldLocalRot = o->getRotation();
+            m.oldLocalScale = o->getScale();
 
             // Reparent under the wrapper while preserving the world transform so
             // the grouped objects don't visually shift.
             o->setParentKeepTransform(empty);
 
-            m.newLocalPos    = o->getPosition();
-            m.newLocalRot    = o->getRotation();
-            m.newLocalScale  = o->getScale();
+            m.newLocalPos = o->getPosition();
+            m.newLocalRot = o->getRotation();
+            m.newLocalScale = o->getScale();
             cmd->childMoves.push_back(m);
         }
         root = empty;
@@ -4024,9 +4700,10 @@ bool Manager::createPrefabFromSelection()
     json templateJson = root->serialize();
 
     std::unordered_map<kString, kString> sceneToTemplate;
-    std::function<void(json &)> assignTemplateUuids = [&](json &node) {
+    std::function<void(json &)> assignTemplateUuids = [&](json &node)
+    {
         kString sceneUuid = node.value("uuid", kString(""));
-        kString tplUuid   = generateUuid();
+        kString tplUuid = generateUuid();
         node["uuid"] = tplUuid;
         // Strip prefab linkage from the template — only instances carry it.
         node.erase("prefab_ref");
@@ -4066,15 +4743,16 @@ bool Manager::createPrefabFromSelection()
     // Stamp every in-scene node with the matching template_uuid so the subtree
     // becomes a live instance of the prefab we just created. Capture before/
     // after stamps so the command can revert them on undo.
-    std::function<void(kObject *)> stampInstance = [&](kObject *node) {
+    std::function<void(kObject *)> stampInstance = [&](kObject *node)
+    {
         auto it = sceneToTemplate.find(node->getUuid());
         if (it != sceneToTemplate.end())
         {
             CreatePrefabCommand::StampChange s;
-            s.objUuid         = node->getUuid();
-            s.oldPrefabRef    = node->getPrefabRef();
+            s.objUuid = node->getUuid();
+            s.oldPrefabRef = node->getPrefabRef();
             s.oldTemplateUuid = node->getTemplateUuid();
-            s.newPrefabRef    = ""; // root gets prefab_ref below; descendants stay empty
+            s.newPrefabRef = ""; // root gets prefab_ref below; descendants stay empty
             s.newTemplateUuid = it->second;
             cmd->stamps.push_back(s);
 
@@ -4089,10 +4767,10 @@ bool Manager::createPrefabFromSelection()
     // entry so the command reproduces this on redo.
     {
         CreatePrefabCommand::StampChange s;
-        s.objUuid         = root->getUuid();
-        s.oldPrefabRef    = root->getPrefabRef();
+        s.objUuid = root->getUuid();
+        s.oldPrefabRef = root->getPrefabRef();
         s.oldTemplateUuid = root->getTemplateUuid(); // already set above
-        s.newPrefabRef    = prefab.getUuid();
+        s.newPrefabRef = prefab.getUuid();
         s.newTemplateUuid = root->getTemplateUuid();
         cmd->stamps.push_back(s);
         root->setPrefabRef(prefab.getUuid());
@@ -4101,7 +4779,8 @@ bool Manager::createPrefabFromSelection()
     selectedObject = root;
     selectObject(root->getUuid(), true);
 
-    if (panelHierarchy) panelHierarchy->refreshList();
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
     checkAssetChange();
     if (panelProject)
     {
@@ -4117,15 +4796,18 @@ bool Manager::createPrefabFromSelection()
 
 bool Manager::applyPrefabInstance(kObject *instanceRoot)
 {
-    if (!instanceRoot || instanceRoot->getPrefabRef().empty()) return false;
+    if (!instanceRoot || instanceRoot->getPrefabRef().empty())
+        return false;
 
     fs::path prefabPath;
     {
         kString refUuid = instanceRoot->getPrefabRef();
         for (const auto &p : fs::recursive_directory_iterator(projectPath / "Assets"))
         {
-            if (!p.is_regular_file()) continue;
-            if (p.path().extension() != ".prefab") continue;
+            if (!p.is_regular_file())
+                continue;
+            if (p.path().extension() != ".prefab")
+                continue;
             kPrefab tmp;
             if (tmp.loadFromFile(p.path().string()) && tmp.getUuid() == refUuid)
             {
@@ -4134,10 +4816,12 @@ bool Manager::applyPrefabInstance(kObject *instanceRoot)
             }
         }
     }
-    if (prefabPath.empty()) return false;
+    if (prefabPath.empty())
+        return false;
 
     kPrefab prefab;
-    if (!prefab.loadFromFile(prefabPath.string())) return false;
+    if (!prefab.loadFromFile(prefabPath.string()))
+        return false;
 
     // Serialize the in-scene subtree, then convert it into a template by
     // rewriting every node's UUID. Existing template_uuid values are preserved
@@ -4145,9 +4829,10 @@ bool Manager::applyPrefabInstance(kObject *instanceRoot)
     // get fresh template UUIDs assigned now.
     json instanceJson = instanceRoot->serialize();
 
-    std::function<void(json &)> toTemplate = [&](json &node) {
+    std::function<void(json &)> toTemplate = [&](json &node)
+    {
         kString existingTpl = node.value("template_uuid", kString(""));
-        kString newUuid     = existingTpl.empty() ? generateUuid() : existingTpl;
+        kString newUuid = existingTpl.empty() ? generateUuid() : existingTpl;
         node["uuid"] = newUuid;
         node.erase("prefab_ref");
         node.erase("template_uuid");
@@ -4158,14 +4843,18 @@ bool Manager::applyPrefabInstance(kObject *instanceRoot)
     toTemplate(instanceJson);
 
     prefab.setRootJson(instanceJson);
-    if (!prefab.saveToFile(prefabPath.string())) return false;
+    if (!prefab.saveToFile(prefabPath.string()))
+        return false;
 
     // Re-stamp the in-scene subtree with template_uuids that match the freshly
     // written template, so further "Apply" calls don't keep churning UUIDs.
-    std::function<void(json &, kObject *)> stamp = [&](json &node, kObject *obj) {
-        if (!obj) return;
+    std::function<void(json &, kObject *)> stamp = [&](json &node, kObject *obj)
+    {
+        if (!obj)
+            return;
         obj->setTemplateUuid(node.value("uuid", kString("")));
-        if (!node.contains("children") || !node["children"].is_array()) return;
+        if (!node.contains("children") || !node["children"].is_array())
+            return;
         auto kids = obj->getChildren();
         for (size_t i = 0; i < kids.size() && i < node["children"].size(); ++i)
             stamp(node["children"][i], kids[i]);
@@ -4177,14 +4866,17 @@ bool Manager::applyPrefabInstance(kObject *instanceRoot)
 
 void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
 {
-    if (!world || prefabUuid.empty()) return;
+    if (!world || prefabUuid.empty())
+        return;
 
     // Locate the .prefab file by UUID and load the (latest) template.
     fs::path prefabPath;
     for (const auto &p : fs::recursive_directory_iterator(projectPath / "Assets"))
     {
-        if (!p.is_regular_file()) continue;
-        if (p.path().extension() != ".prefab") continue;
+        if (!p.is_regular_file())
+            continue;
+        if (p.path().extension() != ".prefab")
+            continue;
         kPrefab tmp;
         if (tmp.loadFromFile(p.path().string()) && tmp.getUuid() == prefabUuid)
         {
@@ -4192,10 +4884,12 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
             break;
         }
     }
-    if (prefabPath.empty()) return;
+    if (prefabPath.empty())
+        return;
 
     kPrefab prefab;
-    if (!prefab.loadFromFile(prefabPath.string())) return;
+    if (!prefab.loadFromFile(prefabPath.string()))
+        return;
 
     // ---------------------------------------------------------------------
     // Phase 1 — snapshot every live instance of this prefab.
@@ -4207,20 +4901,21 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
     // descendants keep their scene UUIDs across refresh), plus selection
     // info covering both the root and any descendant.
     // ---------------------------------------------------------------------
-    struct InstanceState {
-        kScene  *scene             = nullptr;
-        kObject *root              = nullptr;   // valid only during snapshot
-        kString  rootUuid;
-        kObject *parent            = nullptr;
-        kObject *nextSibling       = nullptr;
-        kVec3    pos               = kVec3(0);
-        kQuat    rot               = kQuat();
-        kVec3    scl               = kVec3(1);
-        kString  name;
-        bool     active            = true;
-        bool     wasInSelectedList = false;
-        bool     wasSelectedObject = false;        // root was the active selection
-        kString  selectedDescendantUuid;           // selectedObject was a descendant; empty otherwise
+    struct InstanceState
+    {
+        kScene *scene = nullptr;
+        kObject *root = nullptr; // valid only during snapshot
+        kString rootUuid;
+        kObject *parent = nullptr;
+        kObject *nextSibling = nullptr;
+        kVec3 pos = kVec3(0);
+        kQuat rot = kQuat();
+        kVec3 scl = kVec3(1);
+        kString name;
+        bool active = true;
+        bool wasInSelectedList = false;
+        bool wasSelectedObject = false; // root was the active selection
+        kString selectedDescendantUuid; // selectedObject was a descendant; empty otherwise
 
         // template_uuid → old scene_uuid for every node in the subtree, root
         // included. Used to re-stamp UUIDs on the rebuilt instance JSON so
@@ -4229,47 +4924,52 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
     };
     std::vector<InstanceState> instances;
 
-    std::function<void(kScene *, kObject *)> collect = [&](kScene *s, kObject *node) {
+    std::function<void(kScene *, kObject *)> collect = [&](kScene *s, kObject *node)
+    {
         if (!node->getPrefabRef().empty() && node->getPrefabRef() == prefabUuid)
         {
             InstanceState st;
-            st.scene             = s;
-            st.root              = node;
-            st.rootUuid          = node->getUuid();
-            st.parent            = node->getParent();
-            st.nextSibling       = nextSiblingOf(node);
-            st.pos               = node->getPosition();
-            st.rot               = node->getRotation();
-            st.scl               = node->getScale();
-            st.name              = node->getName();
-            st.active            = node->getActive();
+            st.scene = s;
+            st.root = node;
+            st.rootUuid = node->getUuid();
+            st.parent = node->getParent();
+            st.nextSibling = nextSiblingOf(node);
+            st.pos = node->getPosition();
+            st.rot = node->getRotation();
+            st.scl = node->getScale();
+            st.name = node->getName();
+            st.active = node->getActive();
             st.wasInSelectedList = std::find(selectedObjects.begin(),
-                                              selectedObjects.end(),
-                                              st.rootUuid) != selectedObjects.end();
+                                             selectedObjects.end(),
+                                             st.rootUuid) != selectedObjects.end();
             st.wasSelectedObject = (selectedObject == node);
 
             // Walk the whole subtree to (a) record template→scene mappings
             // and (b) detect if the active selection points at any descendant.
-            std::function<void(kObject *)> walk = [&](kObject *n) {
+            std::function<void(kObject *)> walk = [&](kObject *n)
+            {
                 if (!n->getTemplateUuid().empty())
                     st.templateToScene[n->getTemplateUuid()] = n->getUuid();
                 if (selectedObject == n && !st.wasSelectedObject)
                     st.selectedDescendantUuid = n->getUuid();
-                for (kObject *c : n->getChildren()) walk(c);
+                for (kObject *c : n->getChildren())
+                    walk(c);
             };
             walk(node);
 
             instances.push_back(st);
             return; // don't descend into the prefab's own subtree
         }
-        for (kObject *c : node->getChildren()) collect(s, c);
+        for (kObject *c : node->getChildren())
+            collect(s, c);
     };
 
     for (kScene *s : world->getScenes())
         if (s && s->getRootNode())
             collect(s, s->getRootNode());
 
-    if (instances.empty()) return;
+    if (instances.empty())
+        return;
 
     kAssetManager *am = getAssetManager();
     kScene *savedScene = scene;
@@ -4280,7 +4980,8 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
     for (const auto &i : instances)
         if (i.wasSelectedObject || !i.selectedDescendantUuid.empty())
             anySelectedRefreshed = true;
-    if (anySelectedRefreshed) selectedObject = nullptr;
+    if (anySelectedRefreshed)
+        selectedObject = nullptr;
 
     // ---------------------------------------------------------------------
     // Phase 2 — destroy each old subtree, build a fresh one from the
@@ -4299,7 +5000,8 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
         // (template additions) keep their fresh uuids.
         json instanceJson = kPrefab::instantiateJson(prefab.getRootJson());
 
-        std::function<void(json &)> applyUuidMap = [&](json &n) {
+        std::function<void(json &)> applyUuidMap = [&](json &n)
+        {
             if (n.contains("template_uuid") && n["template_uuid"].is_string())
             {
                 kString tplUuid = n["template_uuid"].get<std::string>();
@@ -4308,7 +5010,8 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
                     n["uuid"] = it->second;
             }
             if (n.contains("children") && n["children"].is_array())
-                for (auto &c : n["children"]) applyUuidMap(c);
+                for (auto &c : n["children"])
+                    applyUuidMap(c);
         };
         applyUuidMap(instanceJson);
 
@@ -4321,11 +5024,13 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
         kObject *newRoot = loadObjectFromJson(instanceJson, i.scene, world,
                                               am, projectPath, editorCamera, nullptr);
         scene = savedScene;
-        if (!newRoot) continue;
+        if (!newRoot)
+            continue;
 
         // Re-stamp linkage and captured properties on the root.
         newRoot->setPrefabRef(prefabUuid);
-        if (!i.name.empty()) newRoot->setName(i.name);
+        if (!i.name.empty())
+            newRoot->setName(i.name);
         newRoot->setActive(i.active);
         newRoot->setPosition(i.pos);
         newRoot->setRotation(i.rot);
@@ -4347,11 +5052,15 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
             // Descendant selection: walk the new subtree to find the node
             // that now carries the preserved scene UUID.
             std::function<kObject *(kObject *)> findUuid =
-                [&](kObject *n) -> kObject * {
-                if (!n) return nullptr;
-                if (n->getUuid() == i.selectedDescendantUuid) return n;
+                [&](kObject *n) -> kObject *
+            {
+                if (!n)
+                    return nullptr;
+                if (n->getUuid() == i.selectedDescendantUuid)
+                    return n;
                 for (kObject *c : n->getChildren())
-                    if (kObject *f = findUuid(c)) return f;
+                    if (kObject *f = findUuid(c))
+                        return f;
                 return nullptr;
             };
             if (kObject *found = findUuid(newRoot))
@@ -4368,22 +5077,25 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
         }
     }
 
-    if (panelHierarchy) panelHierarchy->refreshList();
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
     projectSaved = false;
     refreshWindowTitle();
 }
 
 void Manager::unpackPrefabInstance(kObject *instanceRoot)
 {
-    if (!instanceRoot) return;
+    if (!instanceRoot)
+        return;
 
     auto cmd = std::make_unique<UnpackPrefabCommand>();
     cmd->manager = this;
 
-    std::function<void(kObject *)> walk = [&](kObject *node) {
+    std::function<void(kObject *)> walk = [&](kObject *node)
+    {
         UnpackPrefabCommand::Entry e;
-        e.objUuid      = node->getUuid();
-        e.prefabRef    = node->getPrefabRef();
+        e.objUuid = node->getUuid();
+        e.prefabRef = node->getPrefabRef();
         e.templateUuid = node->getTemplateUuid();
         cmd->entries.push_back(e);
 
@@ -4394,7 +5106,8 @@ void Manager::unpackPrefabInstance(kObject *instanceRoot)
     };
     walk(instanceRoot);
 
-    if (panelHierarchy) panelHierarchy->refreshList();
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
     projectSaved = false;
     refreshWindowTitle();
 
@@ -4403,44 +5116,52 @@ void Manager::unpackPrefabInstance(kObject *instanceRoot)
 
 kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString &uniformName)
 {
-    if (textureUuid.empty()) return nullptr;
+    if (textureUuid.empty())
+        return nullptr;
 
     // A texture used as a normal map must be sampled in linear space, no matter
     // its own color-space setting — sampling normal vectors through sRGB decode
     // tilts them and wrecks the lighting. Cache that variant under a distinct
     // key so the same image used as albedo (sRGB) and normal (linear) coexist.
     const bool forceLinear = (uniformName == "normalMap");
-    kString    cacheKey    = forceLinear ? (textureUuid + "#linear") : textureUuid;
+    kString cacheKey = forceLinear ? (textureUuid + "#linear") : textureUuid;
 
     auto cit = textureCache.find(cacheKey);
     if (cit != textureCache.end())
         return cit->second;
 
     kAssetManager *am = getAssetManager();
-    if (!am) return nullptr;
+    if (!am)
+        return nullptr;
 
     kTexture2D *tex = nullptr;
     auto fit = fileMap.find(textureUuid);
     if (fit != fileMap.end() && fit->second.type == "image")
     {
         // Per-texture import settings written by the Image Import Settings panel.
-        bool sRGB = true; int wrapMode = 0; int filterMode = 1;
+        bool sRGB = true;
+        int wrapMode = 0;
+        int filterMode = 1;
         fs::path metaPath = projectPath / "Library" / "Metadata" / (textureUuid + ".json");
         if (fs::exists(metaPath))
         {
             try
             {
                 std::ifstream mf(metaPath);
-                nlohmann::json mj; mf >> mj;
+                nlohmann::json mj;
+                mf >> mj;
                 // Channel: 0=sRGB, 1=Linear Color, 2=Linear Grayscale (migrate old bool).
                 int channel = mj.value("channel", mj.value("sRGB", true) ? 0 : 1);
-                sRGB       = (channel == 0);
-                wrapMode   = mj.value("wrapMode", 0);
+                sRGB = (channel == 0);
+                wrapMode = mj.value("wrapMode", 0);
                 filterMode = mj.value("filterMode", 1);
             }
-            catch (...) {}
+            catch (...)
+            {
+            }
         }
-        if (forceLinear) sRGB = false; // normal maps are always linear
+        if (forceLinear)
+            sRGB = false; // normal maps are always linear
 
         // Prefer the imported .dds in Library (resized/compressed per settings).
         // Fall back to the original image in Assets/ if it isn't imported yet
@@ -4465,13 +5186,15 @@ kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString
 bool Manager::reimportTexture(const kString &textureUuid)
 {
     auto fit = fileMap.find(textureUuid);
-    if (fit == fileMap.end() || fit->second.type != "image") return false;
+    if (fit == fileMap.end() || fit->second.type != "image")
+        return false;
 
     fs::path srcPath = projectPath / "Assets" / fit->second.path;
-    if (!fs::exists(srcPath)) return false;
+    if (!fs::exists(srcPath))
+        return false;
 
-    fs::path ddsPath  = projectPath / "Library" / "ImportedAssets" / (textureUuid + ".dds");
-    fs::path metaPath = projectPath / "Library" / "Metadata"       / (textureUuid + ".json");
+    fs::path ddsPath = projectPath / "Library" / "ImportedAssets" / (textureUuid + ".dds");
+    fs::path metaPath = projectPath / "Library" / "Metadata" / (textureUuid + ".json");
 
     // Map the inspector's import settings to converter options. (sRGB, wrap and
     // filter are load-time only, so they're not passed to the converter here —
@@ -4482,28 +5205,31 @@ bool Manager::reimportTexture(const kString &textureUuid)
         try
         {
             std::ifstream mf(metaPath);
-            nlohmann::json mj; mf >> mj;
+            nlohmann::json mj;
+            mf >> mj;
             static const int kSizes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
             int sizeIdx = mj.value("maxSizeIndex", 7);
             sizeIdx = std::max(0, std::min(7, sizeIdx));
-            opt.maxSize        = kSizes[sizeIdx];
-            opt.compression    = mj.value("compression", 2);
-            opt.alphaSource    = mj.value("alphaSource", 0);
+            opt.maxSize = kSizes[sizeIdx];
+            opt.compression = mj.value("compression", 2);
+            opt.alphaSource = mj.value("alphaSource", 0);
             // Channel: 0=sRGB, 1=Linear Color, 2=Linear Grayscale (migrate old bool).
-            int channel        = mj.value("channel", mj.value("sRGB", true) ? 0 : 1);
-            opt.sRGB           = (channel == 0);
-            opt.grayscale      = (channel == 2);
+            int channel = mj.value("channel", mj.value("sRGB", true) ? 0 : 1);
+            opt.sRGB = (channel == 0);
+            opt.grayscale = (channel == 2);
             opt.generateMipmap = mj.value("generateMipmap", true);
-            opt.flipVertical   = mj.value("flipVertical", false);
+            opt.flipVertical = mj.value("flipVertical", false);
 
             // Normal map (imageType 3): linear data, with its own options.
-            opt.isNormalMap    = (mj.value("imageType", 0) == 3);
-            opt.flipGreen      = mj.value("flipGreen", false);
-            opt.fromGrayscale  = mj.value("fromGrayscale", false);
-            opt.bumpiness      = mj.value("bumpiness", 1.0f);
-            opt.normalFilter   = mj.value("normalFilter", 0);
+            opt.isNormalMap = (mj.value("imageType", 0) == 3);
+            opt.flipGreen = mj.value("flipGreen", false);
+            opt.fromGrayscale = mj.value("fromGrayscale", false);
+            opt.bumpiness = mj.value("bumpiness", 1.0f);
+            opt.normalFilter = mj.value("normalFilter", 0);
         }
-        catch (...) {}
+        catch (...)
+        {
+        }
     }
 
     std::error_code ec;
@@ -4528,14 +5254,16 @@ bool Manager::reimportTexture(const kString &textureUuid)
 bool Manager::reimportMesh(const kString &meshUuid)
 {
     auto fit = fileMap.find(meshUuid);
-    if (fit == fileMap.end() || fit->second.type != "mesh") return false;
+    if (fit == fileMap.end() || fit->second.type != "mesh")
+        return false;
 
     fs::path srcPath = projectPath / "Assets" / fit->second.path;
-    if (!fs::exists(srcPath)) return false;
+    if (!fs::exists(srcPath))
+        return false;
 
-    fs::path glbPath   = projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
-    fs::path metaPath  = projectPath / "Library" / "Metadata"       / (meshUuid + ".json");
-    fs::path thumbPath = projectPath / "Library" / "Thumbnails"     / (meshUuid + ".png");
+    fs::path glbPath = projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
+    fs::path metaPath = projectPath / "Library" / "Metadata" / (meshUuid + ".json");
+    fs::path thumbPath = projectPath / "Library" / "Thumbnails" / (meshUuid + ".png");
 
     MeshImportOptions opt;
     if (fs::exists(metaPath))
@@ -4543,12 +5271,15 @@ bool Manager::reimportMesh(const kString &meshUuid)
         try
         {
             std::ifstream mf(metaPath);
-            nlohmann::json mj; mf >> mj;
-            opt.scaleFactor     = mj.value("scaleFactor", 1.0f);
-            opt.tangents        = mj.value("tangents", 0);
+            nlohmann::json mj;
+            mf >> mj;
+            opt.scaleFactor = mj.value("scaleFactor", 1.0f);
+            opt.tangents = mj.value("tangents", 0);
             opt.importAnimation = mj.value("importAnimation", true);
         }
-        catch (...) {}
+        catch (...)
+        {
+        }
     }
 
     std::error_code ec;
@@ -4571,8 +5302,9 @@ bool Manager::reimportMesh(const kString &meshUuid)
     }
 
     // Regenerate the thumbnail from the new .glb (deleted so it isn't skipped).
-    if (fs::exists(thumbPath)) fs::remove(thumbPath, ec);
-    thumbnailQueue.push_back({ meshUuid, glbPath, thumbPath, "mesh" });
+    if (fs::exists(thumbPath))
+        fs::remove(thumbPath, ec);
+    thumbnailQueue.push_back({meshUuid, glbPath, thumbPath, "mesh"});
 
     // Queue a deferred reload so scene instances pick up the new geometry. Done
     // next frame (not here) to avoid tearing down objects mid panel-draw.
@@ -4590,7 +5322,8 @@ bool Manager::reimportMesh(const kString &meshUuid)
 
 void Manager::processPendingMeshReloads()
 {
-    if (pendingMeshReloads.empty() || !world) return;
+    if (pendingMeshReloads.empty() || !world)
+        return;
 
     kAssetManager *am = getAssetManager();
     bool any = false;
@@ -4600,7 +5333,8 @@ void Manager::processPendingMeshReloads()
     for (size_t si = 1; si < scenes.size(); ++si)
     {
         kScene *s = scenes[si];
-        if (!s || !s->getRootNode()) continue;
+        if (!s || !s->getRootNode())
+            continue;
 
         // Collect the top-level objects instanced from a queued mesh first
         // (their serialized JSON carries the source asset UUID as "reference").
@@ -4622,12 +5356,13 @@ void Manager::processPendingMeshReloads()
         {
             kObject *obj = matches[i];
             // Drop selection that points at the subtree we're about to free.
-            if (selectedObject == obj) selectedObject = nullptr;
+            if (selectedObject == obj)
+                selectedObject = nullptr;
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), obj->getUuid()),
                                   selectedObjects.end());
 
-            s->removeMesh(static_cast<kMesh *>(obj)); // unlink from scene root
-            deleteObjectRecursive(obj);               // free the old subtree
+            s->removeMesh(static_cast<kMesh *>(obj));                                  // unlink from scene root
+            deleteObjectRecursive(obj);                                                // free the old subtree
             loadObjectFromJson(snapshots[i], s, world, am, projectPath, editorCamera); // rebuild from new .glb
             any = true;
         }
@@ -4638,15 +5373,18 @@ void Manager::processPendingMeshReloads()
     if (any)
     {
         reapplyStoredMaterials();
-        if (panelHierarchy) panelHierarchy->refreshList();
+        if (panelHierarchy)
+            panelHierarchy->refreshList();
     }
 }
 
 kShader *Manager::getRawShader(const kString &shaderUuid)
 {
-    if (shaderUuid.empty()) return nullptr;
+    if (shaderUuid.empty())
+        return nullptr;
     auto cit = shaderCache.find(shaderUuid);
-    if (cit != shaderCache.end()) return cit->second;
+    if (cit != shaderCache.end())
+        return cit->second;
 
     kShader *shader = nullptr;
     auto fit = fileMap.find(shaderUuid);
@@ -4656,10 +5394,15 @@ kShader *Manager::getRawShader(const kString &shaderUuid)
         std::ifstream f(path);
         if (f)
         {
-            std::stringstream ss; ss << f.rdbuf();
+            std::stringstream ss;
+            ss << f.rdbuf();
             shader = new kShader();
             shader->loadGlslCode(ss.str());
-            if (shader->getShaderProgram() == 0) { delete shader; shader = nullptr; }
+            if (shader->getShaderProgram() == 0)
+            {
+                delete shader;
+                shader = nullptr;
+            }
         }
     }
     shaderCache[shaderUuid] = shader; // cache misses too, to avoid re-probing
@@ -4675,7 +5418,12 @@ kString Manager::getMaterialShaderSource(const nlohmann::json &matJson)
         if (fit != fileMap.end() && fit->second.type == "shader")
         {
             std::ifstream f(projectPath / "Assets" / fit->second.path);
-            if (f) { std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
+            if (f)
+            {
+                std::stringstream ss;
+                ss << f.rdbuf();
+                return ss.str();
+            }
         }
         return "";
     }
@@ -4686,11 +5434,12 @@ kString Manager::getMaterialShaderSource(const nlohmann::json &matJson)
 kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
 {
     kAssetManager *am = getAssetManager();
-    if (!am) return nullptr;
+    if (!am)
+        return nullptr;
 
     // Resolve the shader: a referenced raw shader asset, else a built-in.
     kString shaderUuid = matJson.value("shader_uuid", std::string(""));
-    kShader *shader    = nullptr;
+    kShader *shader = nullptr;
     if (!shaderUuid.empty())
     {
         shader = getRawShader(shaderUuid);
@@ -4698,10 +5447,12 @@ kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
     else
     {
         kString resName = builtinShaderResource(matJson.value("shader", std::string("Phong")));
-        if (resName.empty()) resName = "SHADER_MESH_PHONG";
+        if (resName.empty())
+            resName = "SHADER_MESH_PHONG";
         shader = am->loadGlslFromResource(resName.c_str());
     }
-    if (!shader || shader->getShaderProgram() == 0) return nullptr;
+    if (!shader || shader->getShaderProgram() == 0)
+        return nullptr;
 
     kString source = getMaterialShaderSource(matJson);
 
@@ -4716,31 +5467,50 @@ kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
 
     // Legacy top-level .mat key for a built-in @var name, so materials saved
     // before the @var system keep their look until re-saved.
-    auto legacyKey = [](const kString &name) -> kString {
-        if (name == "material.diffuse")   return "diffuse";
-        if (name == "material.ambient")   return "ambient";
-        if (name == "material.specular")  return "specular";
-        if (name == "material.shininess")  return "shininess";
-        if (name == "material.metallic")   return "metallic";
-        if (name == "material.roughness")  return "roughness";
-        if (name == "material.glossiness") return "glossiness";
-        if (name == "material.tiling")     return "uv_tiling";
-        if (name == "albedoMap")           return "texture_albedo";
-        if (name == "normalMap")           return "texture_normal";
-        if (name == "specularMap")         return "texture_specular";
-        if (name == "glossinessMap")       return "texture_glossiness";
-        if (name == "emissiveMap")         return "texture_emissive";
+    auto legacyKey = [](const kString &name) -> kString
+    {
+        if (name == "material.diffuse")
+            return "diffuse";
+        if (name == "material.ambient")
+            return "ambient";
+        if (name == "material.specular")
+            return "specular";
+        if (name == "material.shininess")
+            return "shininess";
+        if (name == "material.metallic")
+            return "metallic";
+        if (name == "material.roughness")
+            return "roughness";
+        if (name == "material.glossiness")
+            return "glossiness";
+        if (name == "material.tiling")
+            return "uv_tiling";
+        if (name == "albedoMap")
+            return "texture_albedo";
+        if (name == "normalMap")
+            return "texture_normal";
+        if (name == "specularMap")
+            return "texture_specular";
+        if (name == "glossinessMap")
+            return "texture_glossiness";
+        if (name == "emissiveMap")
+            return "texture_emissive";
         return "";
     };
-    auto valueFor = [&](const ShaderVar &v) -> const nlohmann::json * {
-        if (params && params->contains(v.name)) return &params->at(v.name);
+    auto valueFor = [&](const ShaderVar &v) -> const nlohmann::json *
+    {
+        if (params && params->contains(v.name))
+            return &params->at(v.name);
         kString lk = legacyKey(v.name);
-        if (!lk.empty() && matJson.contains(lk)) return &matJson.at(lk);
+        if (!lk.empty() && matJson.contains(lk))
+            return &matJson.at(lk);
         return nullptr;
     };
-    auto readVecN = [](const nlohmann::json *j, int n, kVec4 def) -> kVec4 {
+    auto readVecN = [](const nlohmann::json *j, int n, kVec4 def) -> kVec4
+    {
         if (j && j->is_array() && (int)j->size() >= n)
-            for (int i = 0; i < n && i < 4; ++i) def[i] = (*j)[i].get<float>();
+            for (int i = 0; i < n && i < 4; ++i)
+                def[i] = (*j)[i].get<float>();
         return def;
     };
 
@@ -4749,9 +5519,10 @@ kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
         const nlohmann::json *j = valueFor(v);
         if (v.type == "float")
         {
-            float def = (v.name == "material.shininess")  ? 32.0f
-                      : (v.name == "material.roughness")  ? 0.5f
-                      : (v.name == "material.glossiness") ? 1.0f : 0.0f;
+            float def = (v.name == "material.shininess")    ? 32.0f
+                        : (v.name == "material.roughness")  ? 0.5f
+                        : (v.name == "material.glossiness") ? 1.0f
+                                                            : 0.0f;
             mat->setParamFloat(v.name, (j && j->is_number()) ? j->get<float>() : def);
         }
         else if (v.type == "int")
@@ -4776,8 +5547,10 @@ kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
             kTexture2D *tex = getProjectTexture(uuid, v.name);
             if (tex)
             {
-                if (v.type == "sampler2D") mat->setParamSampler2D(v.name, tex);
-                else                       mat->setParamSamplerCube(v.name, tex);
+                if (v.type == "sampler2D")
+                    mat->setParamSampler2D(v.name, tex);
+                else
+                    mat->setParamSamplerCube(v.name, tex);
             }
         }
     }
@@ -4814,9 +5587,11 @@ kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
 bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
                                     const kString &materialUuid)
 {
-    if (!obj) return false;
+    if (!obj)
+        return false;
     kAssetManager *am = getAssetManager();
-    if (!am) return false;
+    if (!am)
+        return false;
 
     // Read the .mat JSON and build a runtime kMaterial. Mirrors
     // PanelInspector::rebuildMatViewMaterial — kept duplicated here to avoid
@@ -4825,13 +5600,18 @@ bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
     try
     {
         std::ifstream f(materialPath);
-        if (!f.is_open()) return false;
+        if (!f.is_open())
+            return false;
         matJson = json::parse(f);
     }
-    catch (...) { return false; }
+    catch (...)
+    {
+        return false;
+    }
 
     kMaterial *mat = buildMaterialFromJson(matJson);
-    if (!mat) return false;
+    if (!mat)
+        return false;
 
     // Apply to THIS node only (not its children). Material assignment is now
     // per-sub-mesh: drag-drop targets the exact sub-mesh hit by Object ID, and
@@ -4848,13 +5628,15 @@ bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
 
 void Manager::applyDefaultMaterialToObject(kObject *obj)
 {
-    if (!obj) return;
+    if (!obj)
+        return;
     kAssetManager *am = getAssetManager();
-    if (!am) return;
+    if (!am)
+        return;
 
     // Mirrors the default material assigned to freshly-created meshes.
-    kShader   *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
-    kMaterial *mat    = am->createMaterial(shader);
+    kShader *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
+    kMaterial *mat = am->createMaterial(shader);
     mat->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
     mat->setDiffuseColor(kVec3(0.5f, 0.5f, 0.5f));
     obj->setMaterial(mat, /*setChildren*/ false);
@@ -4867,7 +5649,8 @@ void Manager::applyDefaultMaterialToObject(kObject *obj)
 static void reapplyMaterialsRecursive(Manager *mgr, kObject *node,
                                       const fs::path &projectPath)
 {
-    if (!node) return;
+    if (!node)
+        return;
     const kString mu = node->getMaterialUuid();
     if (!mu.empty())
     {
@@ -4882,7 +5665,8 @@ static void reapplyMaterialsRecursive(Manager *mgr, kObject *node,
 
 void Manager::reapplyStoredMaterials()
 {
-    if (!world) return;
+    if (!world)
+        return;
     for (kScene *s : world->getScenes())
         if (s && s->getRootNode())
             for (kObject *child : s->getRootNode()->getChildren())
@@ -4891,8 +5675,9 @@ void Manager::reapplyStoredMaterials()
 
 static void captureMaterialSubtreeRec(kObject *node, std::vector<MaterialSnapshot> &out)
 {
-    if (!node) return;
-    out.push_back({ node->getUuid(), node->getMaterial(), node->getMaterialUuid() });
+    if (!node)
+        return;
+    out.push_back({node->getUuid(), node->getMaterial(), node->getMaterialUuid()});
     for (kObject *c : node->getChildren())
         captureMaterialSubtreeRec(c, out);
 }
@@ -4909,7 +5694,8 @@ void Manager::restoreMaterialSubtree(const std::vector<MaterialSnapshot> &snap)
     for (const MaterialSnapshot &s : snap)
     {
         kObject *obj = findObjectByUuid(s.uuid);
-        if (!obj) continue;
+        if (!obj)
+            continue;
         obj->setMaterial(s.material, /*setChildren*/ false);
         obj->setMaterialUuid(s.materialUuid);
     }
@@ -4920,7 +5706,8 @@ void Manager::restoreMaterialSubtree(const std::vector<MaterialSnapshot> &snap)
 // Free helper so the static loadObjectFromJson (which has no Manager) can use it.
 static void assignImportChildUuidsRec(kObject *root)
 {
-    if (!root) return;
+    if (!root)
+        return;
     for (kObject *c : root->getChildren())
     {
         // UUID-less descendants are the importer's sub-meshes: give them a

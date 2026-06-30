@@ -2,7 +2,7 @@
 
 PanelWorld::PanelWorld(kGuiManager *setGuiManager, Manager *setManager)
 {
-    gui     = setGuiManager;
+    gui = setGuiManager;
     manager = setManager;
 
     // Disable the hatched/dashed overlay on gizmo axis lines
@@ -18,7 +18,7 @@ static void pivotButton(kGuiManager *gui, const char *label, PivotMode mode, Piv
     bool active = (current == mode);
     if (active)
     {
-        gui->pushStyleColor(ImGuiCol_Button,        kVec4(0.26f, 0.59f, 0.98f, 1.00f));
+        gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
     }
     if (gui->button(label, kIvec2(26, 22)))
@@ -43,14 +43,17 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
     gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 2));
 
-    pivotButton(gui, "I", PivotMode::Individual,   manager->pivotMode);
-    if (gui->isItemHovered()) gui->setItemTooltip("Individual pivot");
+    pivotButton(gui, "I", PivotMode::Individual, manager->pivotMode);
+    if (gui->isItemHovered())
+        gui->setItemTooltip("Individual pivot");
     gui->sameLine();
     pivotButton(gui, "C", PivotMode::Center, manager->pivotMode);
-    if (gui->isItemHovered()) gui->setItemTooltip("Center pivot");
+    if (gui->isItemHovered())
+        gui->setItemTooltip("Center pivot");
     gui->sameLine();
     pivotButton(gui, "L", PivotMode::LastSelected, manager->pivotMode);
-    if (gui->isItemHovered()) gui->setItemTooltip("Last selected pivot");
+    if (gui->isItemHovered())
+        gui->setItemTooltip("Last selected pivot");
 
     gui->sameLine();
     gui->dummy(kVec2(8, 0));
@@ -58,8 +61,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
     // Render mode selector
     static const char *kRenderModeNames[] = {
-        "Full", "Albedo", "Normals", "Wireframe", "Depth", "Object IDs", "Full+Wire"
-    };
+        "Full", "Albedo", "Normals", "Wireframe", "Depth", "Object IDs", "Full+Wire"};
     int currentMode = (int)renderer->getRenderMode();
     gui->setNextItemWidth(110.0f);
     if (ImGui::Combo("##RenderMode", &currentMode, kRenderModeNames, 7))
@@ -74,7 +76,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         bool octreeDebug = renderer->getOctreeDebugEnabled();
         if (gui->checkbox("Octree", &octreeDebug))
             renderer->setOctreeDebugEnabled(octreeDebug);
-        if (gui->isItemHovered()) gui->setItemTooltip("Show octree node bounds");
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Show octree node bounds");
     }
 
     gui->sameLine();
@@ -88,7 +91,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             bool active = (manager->manipulatorMode == m);
             if (active)
             {
-                gui->pushStyleColor(ImGuiCol_Button,        kVec4(0.26f, 0.59f, 0.98f, 1.00f));
+                gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
                 gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
             }
             if (gui->button(label, kIvec2(54, 22)))
@@ -97,23 +100,69 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 gui->popStyleColor(2);
         };
         modeBtn("Local", ImGuizmo::LOCAL);
-        if (gui->isItemHovered()) gui->setItemTooltip("Gizmo aligned to the object's local orientation");
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Gizmo aligned to the object's local orientation");
         gui->sameLine();
         modeBtn("World", ImGuizmo::WORLD);
-        if (gui->isItemHovered()) gui->setItemTooltip("Gizmo aligned to world axes");
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Gizmo aligned to world axes");
+    }
+
+    gui->sameLine();
+    gui->dummy(kVec2(8, 0));
+    gui->sameLine();
+
+    // Camera settings popup
+    if (gui->button("Camera...", kIvec2(72, 22)))
+        ImGui::OpenPopup("CameraSettings");
+    if (gui->isItemHovered())
+        gui->setItemTooltip("Adjust editor camera settings");
+
+    if (ImGui::BeginPopup("CameraSettings"))
+    {
+        ImGui::Text("Editor Camera Settings");
+        ImGui::Separator();
+
+        float fov = editorCamera->getFOV();
+        if (ImGui::SliderFloat("FOV", &fov, 20.0f, 160.0f, "%.0f"))
+            editorCamera->setFOV(fov);
+
+        float nearClip = editorCamera->getNearClip();
+        if (ImGui::SliderFloat("Near Clip", &nearClip, 0.01f, 1000.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
+            editorCamera->setNearClip(nearClip);
+
+        float farClip = editorCamera->getFarClip();
+        if (ImGui::SliderFloat("Far Clip", &farClip, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_Logarithmic))
+            editorCamera->setFarClip(farClip);
+
+        float orbitDist = manager->editorCamOrbitDistance;
+        if (ImGui::SliderFloat("Orbit Distance", &orbitDist, 1.0f, 1000.0f, "%.1f"))
+            manager->editorCamOrbitDistance = orbitDist;
+
+        ImGui::Separator();
+
+        if (ImGui::Button("Reset to Defaults"))
+        {
+            editorCamera->setFOV(60.0f);
+            editorCamera->setNearClip(0.1f);
+            editorCamera->setFarClip(10000.0f);
+            manager->editorCamOrbitDistance = 10.0f;
+        }
+
+        ImGui::EndPopup();
     }
 
     gui->popStyleVar();
 
     gui->separator();
 
-    kVec2 availSize  = gui->getContentRegionAvail();
-    width       = (int)availSize.x;
-    height      = (int)availSize.y;
+    kVec2 availSize = gui->getContentRegionAvail();
+    width = (int)availSize.x;
+    height = (int)availSize.y;
     aspectRatio = (height > 0.0f) ? (availSize.x / availSize.y) : 1.0f;
 
-    panelPos         = gui->getCursorScreenPos();
-    kVec2 panelSize  = availSize;
+    panelPos = gui->getCursorScreenPos();
+    kVec2 panelSize = availSize;
 
     // Display framebuffer texture
     ImTextureRef tex_ref((ImTextureID)(uintptr_t)renderer->getFboTexture());
@@ -134,7 +183,11 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             kString assetUuid((const char *)payload->Data);
             // The project panel may pack several newline-separated UUIDs when
             // multiple files are dragged; this target acts on the first one.
-            { auto nl = assetUuid.find('\n'); if (nl != kString::npos) assetUuid = assetUuid.substr(0, nl); }
+            {
+                auto nl = assetUuid.find('\n');
+                if (nl != kString::npos)
+                    assetUuid = assetUuid.substr(0, nl);
+            }
             auto it = manager->fileMap.find(assetUuid);
             if (it != manager->fileMap.end())
             {
@@ -166,10 +219,10 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                         if (manager->matPreviewObject)
                             manager->restoreMaterialSubtree(manager->matPreviewSnapshot);
 
-                        manager->matPreviewObject     = hovObj;
-                        manager->matPreviewSnapshot   = hovObj
-                            ? manager->captureMaterialSubtree(hovObj)
-                            : std::vector<MaterialSnapshot>();
+                        manager->matPreviewObject = hovObj;
+                        manager->matPreviewSnapshot = hovObj
+                                                          ? manager->captureMaterialSubtree(hovObj)
+                                                          : std::vector<MaterialSnapshot>();
                         manager->matPreviewSourceUuid = assetUuid;
 
                         if (hovObj)
@@ -183,8 +236,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     {
                         auto cmd = std::make_unique<MaterialCommand>();
                         cmd->manager = manager;
-                        cmd->before  = manager->matPreviewSnapshot;
-                        cmd->after   = manager->captureMaterialSubtree(manager->matPreviewObject);
+                        cmd->before = manager->matPreviewSnapshot;
+                        cmd->after = manager->captureMaterialSubtree(manager->matPreviewObject);
                         manager->undoRedo.push(std::move(cmd));
 
                         manager->matPreviewObject = nullptr;
@@ -196,8 +249,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 {
                     // Spawn at a point in front of the editor camera so the new
                     // object appears in view rather than at the world origin.
-                    kVec3 spawn = editorCamera->getPosition()
-                                 + editorCamera->calculateForward() * 5.0f;
+                    kVec3 spawn = editorCamera->getPosition() + editorCamera->calculateForward() * 5.0f;
                     manager->instantiateAssetFromUuid(assetUuid, spawn);
                 }
             }
@@ -223,6 +275,395 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     hovered = gui->isWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
+    // Track whether the cursor is over terrain for any active tool mode
+    bool cursorOverTerrain = false;
+
+    // --- Terrain sculpt / paint ---
+    if (manager->panelTerrain)
+    {
+        bool isSculpting = manager->panelTerrain->sculpt.active;
+        bool isPainting = manager->panelTerrain->paint.active;
+        bool isHeightPaint = manager->panelTerrain->paint.heightActive;
+        bool inToolMode = isSculpting || isPainting || isHeightPaint;
+
+        // Reset cursor validity every frame — only set to true below when
+        // the raycast actually hits terrain. This prevents the cursor from
+        // lingering at its last position when the mouse leaves the viewport
+        // or hovers over empty space / a non-terrain object.
+        manager->panelTerrain->paintCursorValid = false;
+
+        // Block painting when modifier keys are held (Alt/Ctrl/Shift)
+        // so the user can orbit/pan/zoom without painting the terrain.
+        bool modifiersDown = ImGui::GetIO().KeyAlt || ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+
+        // When in sculpt or paint mode, block object picking so the user
+        // cannot select 3D objects by clicking in the viewport.
+        // (The hierarchy panel bypasses this — it selects by tree click.)
+        // DIAGNOSTIC: print whether conditions are met
+        if (isSculpting) {
+            std::cerr << "DIAG: inToolMode=" << inToolMode << " hovered=" << hovered
+                      << " gizmoUsing=" << ImGuizmo::IsUsing()
+                      << " modsDown=" << modifiersDown
+                      << " scene=" << (manager->getScene() ? "ok" : "null")
+                      << " tmgr=" << (manager->terrainManager ? "ok" : "null")
+                      << "\n";
+        }
+
+        if (inToolMode && (hovered || focused) && !ImGuizmo::IsUsing() && !modifiersDown)
+        {
+            kVec2 imMouse = gui->getMousePos();
+
+            bool doSculpt = isSculpting && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            // Mask paint: left=add, right=erase
+            bool doPaintLower = isPainting && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            bool doPaintRaise = isPainting && ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            // Height paint: left=lower, right=raise
+            bool doHeightLower = isHeightPaint && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            bool doHeightRaise = isHeightPaint && ImGui::IsMouseDown(ImGuiMouseButton_Right);
+
+            if (doSculpt || doPaintLower || doPaintRaise || doHeightLower || doHeightRaise)
+            {
+                kVec3 origin, dir;
+                editorCamera->screenToRay(
+                    imMouse.x - panelPos.x,
+                    imMouse.y - panelPos.y,
+                    panelSize.x, panelSize.y,
+                    origin, dir);
+
+                kTerrainManager *tmgr = manager->terrainManager;
+                if (tmgr)
+                {
+                    float dirXZ = std::sqrt(dir.x * dir.x + dir.z * dir.z);
+                    if (dirXZ > 0.0001f)
+                    {
+                        const float tileSize = 256.0f;
+                        const int heightRes = 513;
+                        const float sampleSpacing = tileSize / static_cast<float>(heightRes - 1);
+                        const float stepSize = sampleSpacing * 0.5f;
+                        const float maxDist = 10000.0f;
+
+                        float s = stepSize / dirXZ;
+                        float rayT = 0.0f;
+                        bool hitTerrain = false;
+                        kVec3 hitPos(0.0f);
+                        kVec3 hitNormal(0.0f, 1.0f, 0.0f);
+
+                        float prevTerrainY = -1e30f;
+                        {
+                            int gx, gz;
+                            kTerrainManager::worldToGrid(origin, tileSize, gx, gz);
+                            kTerrain *startTile = tmgr->getTile(gx, gz);
+                            if (startTile)
+                                prevTerrainY = startTile->sampleHeight(origin);
+                        }
+
+                        for (int step = 0; step < 20000 && rayT < maxDist; ++step)
+                        {
+                            rayT += s;
+                            kVec3 p = origin + dir * rayT;
+                            float rayY = p.y;
+
+                            int gx, gz;
+                            kTerrainManager::worldToGrid(p, tileSize, gx, gz);
+                            kTerrain *tile = tmgr->getTile(gx, gz);
+
+                            float terrainY = 0.0f;
+                            if (tile)
+                                terrainY = tile->sampleHeight(p);
+
+                            if (prevTerrainY > -1e29f && rayY <= terrainY)
+                            {
+                                float prevRayY = rayY - dir.y * s;
+                                float tCross = (prevTerrainY - prevRayY) /
+                                               ((terrainY - rayY) - (prevTerrainY - prevRayY));
+                                tCross = glm::clamp(tCross, 0.0f, 1.0f);
+                                hitPos = (origin + dir * (rayT - s)) + dir * (s * tCross);
+
+                                // Compute approximate surface normal at hit
+                                if (tile)
+                                {
+                                    int hx, hz;
+                                    if (tile->worldToHeightmap(hitPos, hx, hz))
+                                    {
+                                        int res = tile->getHeightRes();
+                                        float *data = tile->getHeightData();
+                                        float sp = tile->getWorldSize() / static_cast<float>(res - 1);
+                                        float hL = (hx > 0) ? data[hz * res + (hx - 1)] : data[hz * res + hx];
+                                        float hR = (hx < res - 1) ? data[hz * res + (hx + 1)] : data[hz * res + hx];
+                                        float hD = (hz > 0) ? data[(hz - 1) * res + hx] : data[hz * res + hx];
+                                        float hU = (hz < res - 1) ? data[(hz + 1) * res + hx] : data[hz * res + hx];
+                                        hitNormal = glm::normalize(kVec3(
+                                            -(hR - hL) / (sp * 2.0f), 1.0f, -(hU - hD) / (sp * 2.0f)));
+                                    }
+                                }
+
+                                hitTerrain = true;
+                                break;
+                            }
+
+                            prevTerrainY = terrainY;
+                        }
+
+                        if (hitTerrain)
+                        {
+                            if (doSculpt)
+                                manager->panelTerrain->sculptAtWorldPos(hitPos);
+                            else if (doPaintLower || doPaintRaise)
+                                manager->panelTerrain->paintSplatAtWorldPos(hitPos, doPaintLower);
+                            else if (doHeightLower || doHeightRaise)
+                                manager->panelTerrain->paintAtWorldPos(hitPos, doHeightLower);
+
+                            // Real-time GPU update: fast VBO sub-update during painting
+                            {
+                                int gx, gz;
+                                kTerrainManager::worldToGrid(hitPos, 256.0f, gx, gz);
+                                kTerrain *foundTile = tmgr->getTile(gx, gz);
+                                if (foundTile)
+                                {
+                                    if (doSculpt || doHeightLower || doHeightRaise)
+                                        foundTile->updateMesh();
+                                    else if (doPaintLower || doPaintRaise)
+                                        foundTile->updateSplatTexture();
+                                }
+                            }
+                        }
+
+                        // Remember hit for paint cursor
+                        manager->panelTerrain->paintCursorPos = hitPos;
+                        manager->panelTerrain->paintCursorNormal = hitNormal;
+                        manager->panelTerrain->paintCursorValid = hitTerrain;
+                        cursorOverTerrain = hitTerrain;
+                    }
+                }
+            }
+            else
+            {
+                // On mouse-up, rebuild any edited tile
+                if (isSculpting && manager->panelTerrain->sculpt.needsRebuild)
+                    manager->panelTerrain->rebuildSculptedTile();
+                if (isPainting && manager->panelTerrain->paint.needsRebuild)
+                    manager->panelTerrain->rebuildPaintedSplatTile();
+                else if (isHeightPaint && manager->panelTerrain->paint.needsRebuild)
+                    manager->panelTerrain->rebuildPaintedTile();
+
+                // Update cursor position even when not clicking (for paint cursor display)
+                if (isSculpting || isPainting || isHeightPaint)
+                {
+                    kVec3 origin, dir;
+                    editorCamera->screenToRay(
+                        imMouse.x - panelPos.x,
+                        imMouse.y - panelPos.y,
+                        panelSize.x, panelSize.y,
+                        origin, dir);
+
+                    kTerrainManager *tmgr = manager->terrainManager;
+                    if (tmgr)
+                    {
+                        float dirXZ = std::sqrt(dir.x * dir.x + dir.z * dir.z);
+                        if (dirXZ > 0.0001f)
+                        {
+                            const float tileSize = 256.0f;
+                            const int heightRes = 513;
+                            const float sampleSpacing = tileSize / static_cast<float>(heightRes - 1);
+                            const float stepSize = sampleSpacing * 0.5f;
+                            const float maxDist = 10000.0f;
+
+                            float s = stepSize / dirXZ;
+                            float rayT = 0.0f;
+                            kVec3 hitPos(0.0f);
+                            kVec3 hitNormal(0.0f, 1.0f, 0.0f);
+                            bool hitTerrain = false;
+
+                            float prevTerrainY = -1e30f;
+                            {
+                                int gx, gz;
+                                kTerrainManager::worldToGrid(origin, tileSize, gx, gz);
+                                kTerrain *startTile = tmgr->getTile(gx, gz);
+                                if (startTile)
+                                    prevTerrainY = startTile->sampleHeight(origin);
+                            }
+
+                            for (int step = 0; step < 20000 && rayT < maxDist; ++step)
+                            {
+                                rayT += s;
+                                kVec3 p = origin + dir * rayT;
+                                float rayY = p.y;
+
+                                int gx, gz;
+                                kTerrainManager::worldToGrid(p, tileSize, gx, gz);
+                                kTerrain *tile = tmgr->getTile(gx, gz);
+
+                                float terrainY = 0.0f;
+                                if (tile)
+                                    terrainY = tile->sampleHeight(p);
+
+                                if (prevTerrainY > -1e29f && rayY <= terrainY)
+                                {
+                                    float prevRayY = rayY - dir.y * s;
+                                    float tCross = (prevTerrainY - prevRayY) /
+                                                   ((terrainY - rayY) - (prevTerrainY - prevRayY));
+                                    tCross = glm::clamp(tCross, 0.0f, 1.0f);
+                                    hitPos = (origin + dir * (rayT - s)) + dir * (s * tCross);
+
+                                    if (tile)
+                                    {
+                                        int hx, hz;
+                                        if (tile->worldToHeightmap(hitPos, hx, hz))
+                                        {
+                                            int res = tile->getHeightRes();
+                                            float *data = tile->getHeightData();
+                                            float sp = tile->getWorldSize() / static_cast<float>(res - 1);
+                                            float hL = (hx > 0) ? data[hz * res + (hx - 1)] : data[hz * res + hx];
+                                            float hR = (hx < res - 1) ? data[hz * res + (hx + 1)] : data[hz * res + hx];
+                                            float hD = (hz > 0) ? data[(hz - 1) * res + hx] : data[hz * res + hx];
+                                            float hU = (hz < res - 1) ? data[(hz + 1) * res + hx] : data[hz * res + hx];
+                                            hitNormal = glm::normalize(kVec3(
+                                                -(hR - hL) / (sp * 2.0f), 1.0f, -(hU - hD) / (sp * 2.0f)));
+                                        }
+                                    }
+
+                                    hitTerrain = true;
+                                    break;
+                                }
+
+                                prevTerrainY = terrainY;
+                            }
+
+                            manager->panelTerrain->paintCursorPos = hitPos;
+                            manager->panelTerrain->paintCursorNormal = hitNormal;
+                            manager->panelTerrain->paintCursorValid = hitTerrain;
+                            cursorOverTerrain = hitTerrain;
+                        }
+                        else
+                        {
+                            manager->panelTerrain->paintCursorValid = false;
+                            cursorOverTerrain = false;
+                        }
+                    }
+                    else
+                    {
+                        manager->panelTerrain->paintCursorValid = false;
+                        cursorOverTerrain = false;
+                    }
+                }
+            }
+        }
+
+        // --- Render paint cursor in the viewport (also shown for sculpt) ---
+        // Only show the cursor when the mouse is actually over the terrain
+        if ((isSculpting || isPainting || isHeightPaint) && manager->panelTerrain->paintCursorValid)
+        {
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+
+            // Project the world-space hit position to screen
+            glm::mat4 view = editorCamera->getViewMatrix();
+            glm::mat4 proj = editorCamera->getProjectionMatrix();
+            glm::mat4 vp = proj * view;
+
+            kVec3 wp = manager->panelTerrain->paintCursorPos;
+            glm::vec4 clip = vp * glm::vec4(wp.x, wp.y, wp.z, 1.0f);
+
+            if (clip.w > 0.0001f)
+            {
+                glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                // Convert NDC [-1,1] to screen pixel coords
+                float sx = panelPos.x + (ndc.x * 0.5f + 0.5f) * panelSize.x;
+                float sy = panelPos.y + (0.5f - ndc.y * 0.5f) * panelSize.y;
+
+                // Scale circle by brush radius projected to screen
+                float brushRadius = manager->panelTerrain->sculpt.radius;
+                kVec3 offsetX = wp + kVec3(brushRadius, 0.0f, 0.0f);
+                glm::vec4 clipX = vp * glm::vec4(offsetX.x, offsetX.y, offsetX.z, 1.0f);
+                float screenRadius = 5.0f;
+                if (clipX.w > 0.0001f)
+                {
+                    glm::vec3 ndcX = glm::vec3(clipX) / clipX.w;
+                    float sx2 = panelPos.x + (ndcX.x * 0.5f + 0.5f) * panelSize.x;
+                    screenRadius = std::abs(sx2 - sx);
+                }
+                screenRadius = (std::min)(screenRadius, 200.0f);
+                screenRadius = (std::max)(screenRadius, 10.0f);
+
+                // Channel color (green for height paint, R/G/B/A for mask paint)
+                ImU32 circleColor = IM_COL32(255, 255, 255, 180);
+                if (isHeightPaint)
+                {
+                    circleColor = IM_COL32(112, 171, 100, 200); // green for height paint
+                }
+                else
+                {
+                    switch (manager->panelTerrain->paint.channel)
+                    {
+                    case 0:
+                        circleColor = IM_COL32(220, 60, 60, 180);
+                        break; // R
+                    case 1:
+                        circleColor = IM_COL32(60, 220, 60, 180);
+                        break; // G
+                    case 2:
+                        circleColor = IM_COL32(60, 60, 220, 180);
+                        break; // B
+                    case 3:
+                        circleColor = IM_COL32(180, 180, 180, 180);
+                        break; // A
+                    }
+                }
+
+                // Draw circle projected in 3D, facing the terrain normal
+                kVec3 n = manager->panelTerrain->paintCursorNormal;
+
+                // Build two perpendicular tangent vectors to the normal
+                kVec3 t1, t2;
+                if (std::abs(n.y) < 0.999f)
+                    t1 = glm::normalize(glm::cross(n, kVec3(0.0f, 1.0f, 0.0f)));
+                else
+                    t1 = glm::normalize(glm::cross(n, kVec3(1.0f, 0.0f, 0.0f)));
+                t2 = glm::normalize(glm::cross(n, t1));
+
+                const int circleSegs = 48;
+                std::vector<ImVec2> circlePts;
+                circlePts.reserve(circleSegs);
+                float r = brushRadius;
+
+                for (int seg = 0; seg < circleSegs; ++seg)
+                {
+                    float angle = (float)seg / (float)circleSegs * 6.283185307f;
+                    kVec3 pt = wp + t1 * std::cos(angle) * r + t2 * std::sin(angle) * r;
+                    glm::vec4 cp = vp * glm::vec4(pt.x, pt.y, pt.z, 1.0f);
+                    if (cp.w > 0.0001f)
+                    {
+                        glm::vec3 nd = glm::vec3(cp) / cp.w;
+                        float px = panelPos.x + (nd.x * 0.5f + 0.5f) * panelSize.x;
+                        float py = panelPos.y + (0.5f - nd.y * 0.5f) * panelSize.y;
+                        circlePts.push_back(ImVec2(px, py));
+                    }
+                }
+
+                // Draw the circle as a closed polyline
+                if (circlePts.size() >= 3)
+                {
+                    circlePts.push_back(circlePts[0]); // close the loop
+                    dl->AddPolyline(circlePts.data(), (int)circlePts.size(), circleColor,
+                                    ImDrawFlags_Closed, 2.5f);
+                }
+
+                // Draw an up indicator line along the normal
+                kVec3 upEnd = wp + n * r * 0.5f;
+                glm::vec4 clipUp = vp * glm::vec4(upEnd.x, upEnd.y, upEnd.z, 1.0f);
+                if (clipUp.w > 0.0001f)
+                {
+                    glm::vec3 ndcUp = glm::vec3(clipUp) / clipUp.w;
+                    float ux = panelPos.x + (ndcUp.x * 0.5f + 0.5f) * panelSize.x;
+                    float uy = panelPos.y + (0.5f - ndcUp.y * 0.5f) * panelSize.y;
+
+                    // Thick end dot
+                    dl->AddCircleFilled(ImVec2(sx, sy), 3.5f, circleColor);
+                    dl->AddLine(ImVec2(sx, sy), ImVec2(ux, uy), circleColor, 2.5f);
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Multi-object gizmo
     // ------------------------------------------------------------------
@@ -233,7 +674,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         for (const auto &uuid : manager->selectedObjects)
         {
             kObject *obj = manager->findObjectByUuid(uuid);
-            if (obj && obj->getActive()) selObjs.push_back(obj);
+            if (obj && obj->getActive())
+                selObjs.push_back(obj);
         }
 
         if (!selObjs.empty())
@@ -362,7 +804,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
         int targetW = std::max(96, std::min((int)(panelSize.x * 0.30f), 480));
         float aspect = previewCam->getAspectRatio();
-        if (aspect <= 0.0f) aspect = 16.0f / 9.0f;
+        if (aspect <= 0.0f)
+            aspect = 16.0f / 9.0f;
         int targetH = (int)((float)targetW / aspect);
         const int maxH = std::max(64, (int)(panelSize.y * 0.40f));
         if (targetH > maxH)
@@ -376,7 +819,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         {
             if (!cameraPreview)
                 cameraPreview = new kOffscreenRenderer(targetW, targetH);
-            if (cameraPreview->getWidth()  != targetW ||
+            if (cameraPreview->getWidth() != targetW ||
                 cameraPreview->getHeight() != targetH)
                 cameraPreview->resize(targetW, targetH);
 
@@ -401,7 +844,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
             // Label strip across the top so the user knows which camera.
             std::string label = previewCam->getName();
-            if (label.empty()) label = "Camera";
+            if (label.empty())
+                label = "Camera";
             ImVec2 ts = ImGui::CalcTextSize(label.c_str());
             ImVec2 labelMin(a.x, a.y - ts.y - 4.0f);
             ImVec2 labelMax(a.x + ts.x + 8.0f, a.y);

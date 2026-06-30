@@ -29,6 +29,7 @@ SHADER_MESH_PBR    RCDATA "res/shaders/mesh_pbr.glsl"
 SHADER_GRID        RCDATA "res/shaders/grid.glsl"
 SHADER_ICON        RCDATA "res/shaders/icon.glsl"
 SHADER_SKYBOX      RCDATA "res/shaders/skybox.glsl"
+SHADER_TERRAIN_PBR RCDATA "res/shaders/TerrainPBR.glsl"
 
 // Shapes
 MODEL_SHAPE_CONE RCDATA "res/models/shape/cone.obj"
@@ -67,7 +68,9 @@ ICON_OBJECT_SCENE RCDATA "res/icons/label/scene.png"
 ICON_OBJECT_EMPTY RCDATA "res/icons/label/axis.png"
 ICON_OBJECT_LIGHT RCDATA "res/icons/label/light.png"
 ICON_OBJECT_CAMERA RCDATA "res/icons/label/camera.png"
+ICON_OBJECT_AUDIO RCDATA "res/icons/label/audio.png"
 ICON_OBJECT_PREFAB RCDATA "res/icons/label/cube-black.png"
+ICON_OBJECT_TERRAIN RCDATA "res/icons/label/mountain.png"
 
 ICON_DETACH_BUTTON RCDATA "res/icons/button/detach.png"
 ICON_MAXIMIZE_BUTTON RCDATA "res/icons/button/scalability.png"
