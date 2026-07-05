@@ -211,6 +211,11 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					manager->createNewScript();
 				if (ImGui::MenuItem("Logic Graph"))
 					manager->createNewLogicGraph();
+				ImGui::Separator();
+				if (ImGui::MenuItem("Animator"))
+					manager->createNewAnimator();
+				if (ImGui::MenuItem("Animation Clip"))
+					manager->createNewAnimation();
 				ImGui::EndMenu();
 			}
 			if (gui->menuItem("Show In Explorer", "", false, manager->projectOpened))
@@ -357,6 +362,12 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 
 				if (gui->menuItem("Game", "", showPanel.game))
 					showPanel.game = !showPanel.game;
+
+				if (gui->menuItem("Animator Editor", "", showPanel.animatorEditor))
+					showPanel.animatorEditor = !showPanel.animatorEditor;
+
+				if (gui->menuItem("Animation Editor", "", showPanel.animationEditor))
+					showPanel.animationEditor = !showPanel.animationEditor;
 
 				ImGui::EndMenu();
 			}
@@ -655,6 +666,10 @@ void MainMenu::readLine(ImGuiContext *, ImGuiSettingsHandler *, void *, const ch
 		showPanel.shaderEditor = (tmp != 0);
 	else if (sscanf_s(line, "GameOpened=%d", &tmp) == 1)
 		showPanel.game = (tmp != 0);
+	else if (sscanf_s(line, "AnimatorEditorOpened=%d", &tmp) == 1)
+		showPanel.animatorEditor = (tmp != 0);
+	else if (sscanf_s(line, "AnimationEditorOpened=%d", &tmp) == 1)
+		showPanel.animationEditor = (tmp != 0);
 }
 
 void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer *out_buf)
@@ -667,6 +682,8 @@ void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer 
 	out_buf->appendf("ProjectOpened=%d\n", showPanel.project ? 1 : 0);
 	out_buf->appendf("ShaderEditorOpened=%d\n", showPanel.shaderEditor ? 1 : 0);
 	out_buf->appendf("GameOpened=%d\n", showPanel.game ? 1 : 0);
+	out_buf->appendf("AnimatorEditorOpened=%d\n", showPanel.animatorEditor ? 1 : 0);
+	out_buf->appendf("AnimationEditorOpened=%d\n", showPanel.animationEditor ? 1 : 0);
 
 	out_buf->append("\n");
 }

@@ -230,6 +230,58 @@ private:
 	 * @param matJson JSON describing the material properties to apply.
 	 */
 	void rebuildMatViewMaterial(const nlohmann::json &matJson);
+
+	// -----------------------------------------------------------------------
+	// Animation preview
+	// -----------------------------------------------------------------------
+	kOffscreenRenderer *animPreviewRenderer = nullptr; ///< Offscreen renderer for the animation preview.
+	kWorld *animPreviewWorld = nullptr;                ///< Standalone world for the animation preview.
+	kScene *animPreviewScene = nullptr;                ///< Animation preview scene, owned by animPreviewWorld.
+	kCamera *animPreviewCamera = nullptr;              ///< Animation preview orbit camera.
+	kLight *animPreviewLight = nullptr;                ///< Animation preview sun light.
+	kMesh *animPreviewMesh = nullptr;                  ///< Displayed mesh, owned by the asset manager.
+	kMaterial *animPreviewMat = nullptr;               ///< Material applied to the preview mesh, manually owned.
+	kAnimator *animPreviewAnimator = nullptr;          ///< Skeletal animator driving the preview.
+	kSkeletalAnimation *animPreviewClip = nullptr;     ///< Skeletal animation clip.
+
+	std::string animPreviewUuid;         ///< .animation asset UUID currently previewed.
+	std::string animPreviewMeshUuid;     ///< Mesh UUID linked to this animation.
+	int animPreviewStartFrame = 0;       ///< First frame of the animation clip.
+	int animPreviewEndFrame   = 30;      ///< Last frame of the animation clip.
+
+	bool animPreviewLightEnabled = false; ///< Whether the preview light is enabled.
+	float animPreviewLightYaw   = 45.0f; ///< Preview light azimuth, in degrees.
+	float animPreviewLightPitch = 60.0f; ///< Preview light elevation, in degrees.
+	float animPreviewRotX = 24.09f;      ///< Orbit pitch; matches thumbnail dir normalize(0.5,0.5,1).
+	float animPreviewRotY = 26.57f;      ///< Orbit yaw, in degrees.
+	kVec3 animPreviewCenter = kVec3(0.0f); ///< Orbit pivot at the model's bounding centre.
+	float animPreviewCamDist = 3.0f;     ///< Orbit camera distance from the pivot.
+	bool isDraggingAPLight = false;      ///< Whether the user is dragging to rotate the preview light.
+	bool isDraggingAPModel = false;      ///< Whether the user is dragging to orbit the model.
+
+	float animPreviewFrame = 0.0f;       ///< Current playback frame.
+	bool animPreviewPlaying = false;     ///< Whether playback is running.
+	bool animPreviewLoop    = true;      ///< Whether playback loops.
+	float animPreviewSpeed  = 1.0f;      ///< Playback speed multiplier.
+
+	/**
+	 * @brief Draws a 3D animation preview for a selected .animation asset.
+	 *
+	 * Renders the mesh with a default Phong material, plays the skeletal
+	 * animation clip between startFrame and endFrame with play/pause/stop
+	 * controls, a progress bar, and orbit/light interaction.
+	 * @param asset The selected project asset to preview.
+	 */
+	void drawAnimationPreview(const PanelProject::SelectedProjectAsset &asset);
+
+	/** @brief Lazily creates the standalone animation-preview world, scene, camera and light. */
+	void initAnimPreviewScene();
+
+	/** @brief Updates the animation-preview light direction from its yaw/pitch and enabled state. */
+	void updateAnimPreviewLight();
+
+	/** @brief Positions the orbit camera to frame the animation preview mesh's bounds. */
+	void frameAnimPreviewCamera();
 };
 
 #endif

@@ -9,6 +9,8 @@
 #include <cmath>
 #include <regex>
 #include <GL/glew.h>
+#include <kemena/kanimator.h>
+#include <kemena/kskelanimation.h>
 
 using namespace kemena;
 namespace fs = std::filesystem;
@@ -72,6 +74,13 @@ PanelInspector::~PanelInspector()
     delete matViewRenderer;
     delete matViewCamera;
     delete matViewWorld; // owns matViewScene, matViewMesh, matViewLight
+
+    delete animPreviewRenderer;
+    delete animPreviewCamera;
+    delete animPreviewWorld; // owns animPreviewScene, animPreviewLight (not animPreviewMesh — AM-owned)
+    delete animPreviewMat;
+    delete animPreviewAnimator;
+    // animPreviewClip is owned by the asset manager, not us
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +294,10 @@ void PanelInspector::rebuildPreviewShader()
 void PanelInspector::drawShaderPreview()
 {
     if (!previewRenderer)
+    {
         previewRenderer = new kOffscreenRenderer(256, 256);
+        previewRenderer->setAssetManager(manager->getAssetManager());
+    }
 
     initPreviewScene();
 
@@ -584,7 +596,10 @@ void PanelInspector::applyDefaultMaterial(kMesh *mesh, kShader *defaultShader)
 void PanelInspector::drawModelViewer(const PanelProject::SelectedProjectAsset &asset)
 {
     if (!modelViewRenderer)
+    {
         modelViewRenderer = new kOffscreenRenderer(256, 256);
+        modelViewRenderer->setAssetManager(manager->getAssetManager());
+    }
 
     initModelViewScene();
 
@@ -820,7 +835,10 @@ void PanelInspector::rebuildMatViewMaterial(const nlohmann::json &matJson)
 void PanelInspector::drawMaterialViewer(const PanelProject::SelectedProjectAsset &asset)
 {
     if (!matViewRenderer)
+    {
         matViewRenderer = new kOffscreenRenderer(256, 256);
+        matViewRenderer->setAssetManager(manager->getAssetManager());
+    }
 
     initMatViewScene();
 
@@ -1490,6 +1508,88 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
                 }
             }
             ImGui::EndDragDropTarget();
+        }
+
+        // ── Tile Expansion ───────────────────────────────────────────────────
+        gui->spacing();
+        gui->separator();
+        gui->spacing();
+
+        // Find the kTerrain that owns this mesh by scanning the terrain manager.
+        kTerrain *ownerTerrain = nullptr;
+        if (mgr->terrainManager)
+        {
+            for (const auto &pair : mgr->terrainManager->getTiles())
+            {
+                kTerrain *tile = pair.second.get();
+                if (tile && tile->getMesh() == mesh)
+                {
+                    ownerTerrain = tile;
+                    break;
+                }
+            }
+        }
+
+        // Helper lambda: expand in a given direction (create + fill + load).
+        auto expandInDir = [mgr, ownerTerrain](int gx, int gz, const char *dir)
+        {
+            if (!mgr->terrainManager || !ownerTerrain)
+                return;
+            int nx = gx, nz = gz;
+            if (strcmp(dir, "north") == 0)   nz += 1;
+            else if (strcmp(dir, "south") == 0) nz -= 1;
+            else if (strcmp(dir, "east") == 0)  nx += 1;
+            else if (strcmp(dir, "west") == 0)  nx -= 1;
+
+            kTerrain *tile = mgr->terrainManager->createTile(nx, nz);
+            if (tile)
+            {
+                // Load immediately so it appears in the viewport
+                if (!tile->isLoaded())
+                {
+                    tile->reload(true);
+                    // Also register the mesh with the scene for rendering
+                    if (mgr->getRenderer())
+                        mgr->getRenderer()->setOctreeDirty();
+                }
+            }
+        };
+
+        if (ownerTerrain)
+        {
+            int gx = ownerTerrain->getGridX();
+            int gz = ownerTerrain->getGridZ();
+            ImGui::Text("Tile (%d, %d)", gx, gz);
+
+            gui->spacing();
+
+            // 2×3 layout:     [+Z] [spacer] [+X]
+            //                  [-Z] [spacer] [-X]
+            float btnW = 60.0f;
+
+            // Row 1
+            if (gui->button("+Z##tn", kIvec2(btnW, 28)))
+                expandInDir(gx, gz, "north");
+            gui->sameLine();
+            gui->text("     ");
+            gui->sameLine();
+            if (gui->button("+X##te", kIvec2(btnW, 28)))
+                expandInDir(gx, gz, "east");
+
+            // Row 2
+            if (gui->button("-Z##ts", kIvec2(btnW, 28)))
+                expandInDir(gx, gz, "south");
+            gui->sameLine();
+            gui->text("     ");
+            gui->sameLine();
+            if (gui->button("-X##tw", kIvec2(btnW, 28)))
+                expandInDir(gx, gz, "west");
+
+            gui->spacing();
+        }
+        else
+        {
+            gui->textDisabled("Expand: (tile not found in manager)");
         }
     }
 }
@@ -3753,6 +3853,388 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
         gui->endDisabled();
 }
 
+// ===========================================================================
+// Animation preview — mirrors the model viewer pattern: standalone offscreen
+// renderer, orbit camera, light toggle, LMB orbit / RMB light drag.
+// ===========================================================================
+
+void PanelInspector::initAnimPreviewScene()
+{
+    if (animPreviewScene)
+        return;
+
+    animPreviewWorld = createWorld(createAssetManager());
+    animPreviewScene = animPreviewWorld->createScene("animPreviewer");
+    animPreviewScene->setFrustumCullingEnabled(false);
+    animPreviewScene->setShadowsEnabled(false);
+    animPreviewScene->setAmbientLightColor(kVec3(0.08f, 0.08f, 0.08f));
+
+    animPreviewLight = animPreviewScene->addSunLight(
+        kVec3(0.0f, 3.0f, 0.0f),
+        kVec3(-0.5f, -1.0f, -0.5f),
+        kVec3(1.0f, 1.0f, 1.0f),
+        kVec3(1.0f, 1.0f, 1.0f));
+    animPreviewLight->setPower(1.5f);
+
+    animPreviewCamera = new kCamera(nullptr, kCameraType::CAMERA_TYPE_LOCKED);
+    animPreviewCamera->setFOV(45.0f);
+    animPreviewCamera->setAspectRatio(1.0f);
+    animPreviewCamera->setNearClip(0.1f);
+    animPreviewCamera->setFarClip(500.0f);
+    animPreviewCamera->setLookAt(kVec3(0.0f));
+    animPreviewCamera->setPosition(kVec3(0.0f, 0.3f, 3.0f));
+}
+
+void PanelInspector::updateAnimPreviewLight()
+{
+    if (!animPreviewLight || !animPreviewScene)
+        return;
+    if (!animPreviewLightEnabled)
+    {
+        animPreviewLight->setPower(0.0f);
+        return;
+    }
+    animPreviewLight->setPower(1.5f);
+    animPreviewScene->setAmbientLightColor(kVec3(0.08f, 0.08f, 0.08f));
+    animPreviewLight->setRotation(kVec3(animPreviewLightPitch, animPreviewLightYaw, 0.0f));
+}
+
+void PanelInspector::frameAnimPreviewCamera()
+{
+    if (!animPreviewMesh || !animPreviewCamera)
+        return;
+
+    kAABB combined;
+    std::function<void(kMesh *)> expand = [&](kMesh *m)
+    {
+        m->calculateModelMatrix();
+        kAABB b = m->getWorldAABB();
+        if (b.isValid()) { combined.expandBy(b.min); combined.expandBy(b.max); }
+        for (kObject *c : m->getChildren())
+            if (c->getType() == kNodeType::NODE_TYPE_MESH)
+                expand(static_cast<kMesh *>(c));
+    };
+    expand(animPreviewMesh);
+
+    animPreviewCenter = combined.isValid() ? combined.center() : kVec3(0.0f);
+    kVec3 he = combined.isValid() ? combined.halfExtents() : kVec3(1.0f);
+    float radius = glm::length(he);
+    if (radius < 0.001f) radius = 1.0f;
+
+    float fov = 45.0f;
+    animPreviewCamDist = (radius / glm::tan(glm::radians(fov * 0.5f))) * 1.1f;
+    kVec3 dir = glm::normalize(kVec3(0.5f, 0.5f, 1.0f));
+    float heAlong = std::abs(dir.x) * he.x + std::abs(dir.y) * he.y + std::abs(dir.z) * he.z;
+
+    animPreviewCamera->setFOV(fov);
+    animPreviewCamera->setNearClip(std::max(0.001f, animPreviewCamDist - heAlong - radius * 0.05f));
+    animPreviewCamera->setFarClip(animPreviewCamDist + heAlong + radius * 0.05f);
+}
+
+void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAsset &asset)
+{
+    if (!animPreviewRenderer)
+    {
+        animPreviewRenderer = new kOffscreenRenderer(256, 256);
+        animPreviewRenderer->setAssetManager(manager->getAssetManager());
+    }
+
+    initAnimPreviewScene();
+
+    // Resolve the .animation file path
+    fs::path animPath;
+    auto it = manager->fileMap.find(asset.uuid);
+    if (it != manager->fileMap.end())
+        animPath = manager->projectPath / "Assets" / it->second.path;
+
+    if (animPath.empty() || !fs::exists(animPath))
+        { drawAssetThumbnail(gui, asset); return; }
+
+    std::ifstream f(animPath);
+    if (!f.is_open()) { drawAssetThumbnail(gui, asset); return; }
+    nlohmann::json j;
+    try { f >> j; }
+    catch (...) { drawAssetThumbnail(gui, asset); return; }
+
+    std::string animType = j.value("type", std::string("scene"));
+
+    // Scene-type: simple info card
+    if (animType != "mesh")
+    {
+        drawAssetThumbnail(gui, asset);
+        gui->spacing();
+        float dur = j.value("duration", 5.0f);
+        float fps = j.value("fps", 30.0f);
+        int numTracks = (int)j.value("tracks", nlohmann::json::array()).size();
+        int numEvents = (int)j.value("events", nlohmann::json::array()).size();
+        char infoBuf[256];
+        snprintf(infoBuf, sizeof(infoBuf), "Duration: %.1fs\nFPS: %.0f\nTracks: %d\nEvents: %d",
+                 dur, fps, numTracks, numEvents);
+        ImGui::TextUnformatted(infoBuf);
+        if (ImGui::Button("Open in Animation Editor", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
+        {
+            if (manager->panelAnimation)
+            {
+                manager->panelAnimation->openFile(animPath.string());
+                manager->pendingOpenAnimationEditor = true;
+            }
+        }
+        return;
+    }
+
+    // --- Mesh animation ---
+    std::string meshUuid = j.value("meshUuid", "");
+    int startF = j.value("startFrame", 0);
+    int endF   = j.value("endFrame", 30);
+    if (meshUuid.empty()) { drawAssetThumbnail(gui, asset); return; }
+
+    // Reload mesh/preview assets when selection changes
+    if (animPreviewUuid != asset.uuid || animPreviewMeshUuid != meshUuid)
+    {
+        animPreviewUuid     = asset.uuid;
+        animPreviewMeshUuid = meshUuid;
+        animPreviewStartFrame = startF;
+        animPreviewEndFrame   = endF;
+        animPreviewLightEnabled = false;
+        animPreviewRotX = 24.09f;
+        animPreviewRotY = 26.57f;
+        animPreviewLightYaw   = 45.0f;
+        animPreviewLightPitch = 60.0f;
+        isDraggingAPLight = false;
+        isDraggingAPModel = false;
+
+        if (animPreviewMesh && animPreviewScene)
+            animPreviewScene->removeMesh(animPreviewMesh);
+        animPreviewMesh = nullptr;
+        delete animPreviewAnimator; animPreviewAnimator = nullptr;
+        animPreviewClip = nullptr;
+        delete animPreviewMat; animPreviewMat = nullptr;
+
+        fs::path glbPath = manager->projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
+        if (!fs::exists(glbPath)) { drawAssetThumbnail(gui, asset); return; }
+
+        kAssetManager *am = manager->getAssetManager();
+        if (!am) { drawAssetThumbnail(gui, asset); return; }
+
+        animPreviewMesh = am->loadMesh(glbPath.generic_string());
+        if (!animPreviewMesh) { drawAssetThumbnail(gui, asset); return; }
+
+        // Phong material (supports bone skinning)
+        kShader *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
+        if (shader)
+        {
+            animPreviewMat = new kMaterial();
+            animPreviewMat->setShader(shader);
+            animPreviewMat->setDiffuseColor(kVec3(0.8f, 0.8f, 0.8f));
+            animPreviewMat->setAmbientColor(kVec3(0.3f, 0.3f, 0.3f));
+            animPreviewMat->setSpecularColor(kVec3(0.2f, 0.2f, 0.2f));
+            animPreviewMat->setShininess(16.0f);
+            animPreviewMesh->setMaterial(animPreviewMat);
+        }
+
+        // Skeletal animation — only attempt when the mesh actually has bones
+        if (animPreviewMesh->getBoneCount() > 0)
+        {
+            kSkeletalAnimation *skel = am->loadAnimation(glbPath.generic_string(), animPreviewMesh);
+            if (skel)
+            {
+                animPreviewClip = skel;
+                animPreviewAnimator = new kAnimator(skel);
+                animPreviewMesh->setAnimator(animPreviewAnimator);
+            }
+        }
+
+        animPreviewScene->addMesh(animPreviewMesh);
+        frameAnimPreviewCamera();
+
+        animPreviewFrame   = (float)startF;
+        animPreviewPlaying = false;
+    }
+
+    // Orbit camera around animPreviewCenter
+    if (animPreviewCamera)
+    {
+        float pr = glm::radians(animPreviewRotX);
+        float yr = glm::radians(animPreviewRotY);
+        kVec3 camDir(std::cos(pr) * std::sin(yr),
+                     std::sin(pr),
+                     std::cos(pr) * std::cos(yr));
+        animPreviewCamera->setPosition(animPreviewCenter + camDir * animPreviewCamDist);
+        animPreviewCamera->setLookAt(animPreviewCenter);
+    }
+
+    updateAnimPreviewLight();
+
+    // Step animation
+    float dt = ImGui::GetIO().DeltaTime;
+    if (animPreviewPlaying && animPreviewAnimator)
+    {
+        animPreviewFrame += dt * 30.0f * animPreviewSpeed;
+        if (animPreviewFrame > (float)animPreviewEndFrame)
+        {
+            if (animPreviewLoop)
+                animPreviewFrame = (float)animPreviewStartFrame;
+            else
+            {
+                animPreviewFrame  = (float)animPreviewEndFrame;
+                animPreviewPlaying = false;
+            }
+        }
+        animPreviewAnimator->setCurrentTime(animPreviewFrame / 30.0f);
+        animPreviewAnimator->setSpeed(animPreviewPlaying ? animPreviewSpeed : 0.0f);
+    }
+
+    // Render offscreen
+    if (animPreviewMesh && animPreviewCamera && animPreviewRenderer)
+    {
+        animPreviewRenderer->setBackgroundColor(kVec4(42 / 255.0f, 42 / 255.0f, 42 / 255.0f, 1.0f));
+        animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
+    }
+
+    // -----------------------------------------------------------------------
+    // Layout
+    // -----------------------------------------------------------------------
+    float avail = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f - ImGui::GetStyle().ScrollbarSize;
+    float sz = std::min(std::max(avail, 1.0f), 256.0f);
+    float ox = std::max((avail - sz) * 0.5f, 0.0f);
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    ImVec2 screenPos = ImGui::GetCursorScreenPos();
+
+    if (animPreviewMesh && animPreviewRenderer)
+    {
+        dl->AddImage((ImTextureID)(uintptr_t)animPreviewRenderer->getTexture(),
+                     screenPos, ImVec2(screenPos.x + sz, screenPos.y + sz),
+                     ImVec2(0, 1), ImVec2(1, 0));
+    }
+    else
+    {
+        dl->AddRectFilled(screenPos, ImVec2(screenPos.x + sz, screenPos.y + sz),
+                          IM_COL32(28, 28, 32, 255));
+        const char *msg = "No preview available";
+        ImVec2 ts = ImGui::CalcTextSize(msg);
+        dl->AddText(ImVec2(screenPos.x + (sz - ts.x) * 0.5f,
+                           screenPos.y + (sz - ts.y) * 0.5f),
+                    IM_COL32(110, 115, 140, 200), msg);
+    }
+
+    // InvisibleButton captures mouse for both LMB and RMB drag
+    ImGui::InvisibleButton("##animPreviewer", ImVec2(sz, sz),
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    ImVec2 imgMax = ImVec2(screenPos.x + sz, screenPos.y + sz);
+
+    bool pvHovered = ImGui::IsItemHovered();
+    if (pvHovered || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+
+    // -----------------------------------------------------------------------
+    // Light-bulb toggle (top-right corner)
+    // -----------------------------------------------------------------------
+    const float btR = 11.0f;
+    const float btPad = 7.0f;
+    ImVec2 btCenter = ImVec2(imgMax.x - btR - btPad, screenPos.y + btR + btPad);
+    bool btHover = ImGui::IsMouseHoveringRect(
+        ImVec2(btCenter.x - btR, btCenter.y - btR),
+        ImVec2(btCenter.x + btR, btCenter.y + btR), false);
+
+    ImU32 btFg = animPreviewLightEnabled
+                     ? (btHover ? IM_COL32(255, 235, 100, 255) : IM_COL32(245, 215, 60, 220))
+                     : (btHover ? IM_COL32(140, 140, 155, 255) : IM_COL32(80, 80, 95, 200));
+    dl->AddCircleFilled(btCenter, btR, IM_COL32(15, 15, 20, 190));
+    dl->AddCircleFilled(btCenter, btR - 1.5f, btFg);
+
+    float bx = btCenter.x, by = btCenter.y;
+    ImU32 bulbInk = IM_COL32(25, 18, 5, animPreviewLightEnabled ? 230 : 160);
+    dl->AddCircle(ImVec2(bx, by - 1.0f), 4.5f, bulbInk, 10, 1.3f);
+    dl->AddLine(ImVec2(bx - 3.0f, by + 5.0f), ImVec2(bx + 3.0f, by + 5.0f), bulbInk, 1.3f);
+    dl->AddLine(ImVec2(bx - 2.5f, by + 7.0f), ImVec2(bx + 2.5f, by + 7.0f), bulbInk, 1.3f);
+
+    if (btHover && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        animPreviewLightEnabled = !animPreviewLightEnabled;
+    if (btHover)
+        ImGui::SetTooltip("%s", animPreviewLightEnabled ? "Disable preview lighting" : "Enable preview lighting");
+
+    // -----------------------------------------------------------------------
+    // Left-click drag = rotate model
+    // -----------------------------------------------------------------------
+    if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !btHover && !isDraggingAPModel)
+        isDraggingAPModel = true;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        isDraggingAPModel = false;
+
+    if (isDraggingAPModel)
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        ImVec2 delta = ImGui::GetIO().MouseDelta;
+        animPreviewRotY -= delta.x * 0.5f;
+        animPreviewRotX += delta.y * 0.5f;
+        animPreviewRotX = std::clamp(animPreviewRotX, -89.0f, 89.0f);
+    }
+
+    // -----------------------------------------------------------------------
+    // Right-click drag = move light
+    // -----------------------------------------------------------------------
+    if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Right) && !isDraggingAPLight)
+        isDraggingAPLight = true;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Right))
+        isDraggingAPLight = false;
+
+    if (isDraggingAPLight)
+    {
+        ImVec2 delta = ImGui::GetIO().MouseDelta;
+        animPreviewLightYaw += delta.x * 0.015f;
+        animPreviewLightPitch -= delta.y * 0.015f;
+        animPreviewLightPitch = std::clamp(animPreviewLightPitch, -89.0f, 89.0f);
+    }
+
+    gui->spacing();
+
+    // Progress bar
+    float progress = 0.0f;
+    int numFrames = (animPreviewEndFrame - animPreviewStartFrame);
+    if (numFrames > 0)
+        progress = (animPreviewFrame - (float)animPreviewStartFrame) / (float)numFrames;
+    progress = std::clamp(progress, 0.0f, 1.0f);
+
+    char frameLabel[64];
+    snprintf(frameLabel, sizeof(frameLabel), "Frame %d / %d  (%.1f%%)",
+             (int)animPreviewFrame, animPreviewEndFrame, progress * 100.0f);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    ImGui::ProgressBar(progress, ImVec2(sz, 0), frameLabel);
+
+    // Playback buttons
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    if (ImGui::Button(animPreviewPlaying ? "|| Pause" : "> Play", ImVec2(sz * 0.32f, 0)))
+        animPreviewPlaying = !animPreviewPlaying;
+    ImGui::SameLine();
+    if (ImGui::Button("Stop", ImVec2(sz * 0.32f, 0)))
+    {
+        animPreviewPlaying = false;
+        animPreviewFrame   = (float)animPreviewStartFrame;
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Loop", &animPreviewLoop);
+
+    // Info row
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    char infoBuf[128];
+    snprintf(infoBuf, sizeof(infoBuf), "Mesh: %s  |  Frames: %d - %d",
+             meshUuid.substr(0, 12).c_str(), animPreviewStartFrame, animPreviewEndFrame);
+    ImGui::TextUnformatted(infoBuf);
+
+    // Open in Animation Editor
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    if (ImGui::Button("Open in Animation Editor", ImVec2(sz, 0)))
+    {
+        if (manager->panelAnimation)
+        {
+            manager->panelAnimation->openFile(animPath.string());
+            manager->pendingOpenAnimationEditor = true;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main draw
 // ---------------------------------------------------------------------------
@@ -3812,6 +4294,8 @@ void PanelInspector::draw(bool &opened)
                 drawModelViewer(asset);
             else if (!asset.isFolder && asset.fileType == "material")
                 drawMaterialViewer(asset);
+            else if (!asset.isFolder && asset.fileType == "animation")
+                drawAnimationPreview(asset);
             else
                 drawAssetThumbnail(gui, asset);
             if (!asset.isFolder)

@@ -13,6 +13,8 @@
 #include "panel_game.h"
 #include "panel_prefab.h"
 #include "panel_terrain.h"
+#include "panel_animator.h"
+#include "panel_animation.h"
 #include "splash_screen.h"
 #include "crashhandler.h"
 
@@ -61,7 +63,11 @@ int main()
 
 	// Prefab editor renders into its own offscreen target with a dark-grey
 	// background so it's visually distinct from the World panel.
+	manager->prefabRenderer.setAssetManager(assetManager);
 	manager->prefabRenderer.setBackgroundColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+
+	// Thumbnail renderer also loads preview / shadow shaders from resources.
+	manager->thumbnailRenderer.setAssetManager(assetManager);
 
 	// Initialize panels
 	MainMenu *mainmenu = new MainMenu(gui, manager);
@@ -76,6 +82,10 @@ int main()
 	manager->panelGame = panelGame;
 	PanelTerrain *panelTerrain = new PanelTerrain(gui, manager);
 	manager->panelTerrain = panelTerrain;
+	PanelAnimator *panelAnimator = new PanelAnimator(gui, manager);
+	manager->panelAnimator = panelAnimator;
+	PanelAnimation *panelAnimation = new PanelAnimation(gui, manager);
+	manager->panelAnimation = panelAnimation;
 	PanelPrefab *panelPrefab = new PanelPrefab(gui, manager);
 
 	// Route .shader and .prefab double-clicks from the project panel.
@@ -95,6 +105,16 @@ int main()
 		{
 			manager->editPrefab(path);
 			showPanel.prefab = manager->prefabEditing;
+		}
+		else if (path.size() >= 9 && path.substr(path.size() - 9) == ".animator")
+		{
+			showPanel.animatorEditor = true;
+			panelAnimator->openFile(path);
+		}
+		else if (path.size() >= 10 && path.substr(path.size() - 10) == ".animation")
+		{
+			showPanel.animationEditor = true;
+			panelAnimation->openFile(path);
 		}
 	};
 
@@ -495,6 +515,10 @@ int main()
 						panelScriptEditor->saveCurrent();
 					else if (panelShaderEditor->focused)
 						panelShaderEditor->saveCurrent();
+					else if (panelAnimator->focused)
+						panelAnimator->saveCurrent();
+					else if (panelAnimation->focused)
+						panelAnimation->saveCurrent();
 					else if (manager->projectOpened)
 						manager->saveWorld();
 				}
@@ -797,6 +821,15 @@ int main()
 		panelScriptEditor->draw(showPanel.scriptEditor);
 		panelGame->draw(showPanel.game);
 		panelPrefab->draw(showPanel.prefab);
+		// Consume pending Animation Editor open request from inspector
+		if (manager->pendingOpenAnimationEditor)
+		{
+			showPanel.animationEditor = true;
+			manager->pendingOpenAnimationEditor = false;
+		}
+
+		panelAnimator->draw(showPanel.animatorEditor);
+		panelAnimation->draw(showPanel.animationEditor);
 
 		// If there's a need to import assets
 		manager->drawImportPopup(panelConsole);
@@ -821,6 +854,8 @@ int main()
 	}
 
 	// Clean up
+	delete panelAnimation;
+	delete panelAnimator;
 	delete panelTerrain;
 	delete splashScreen;
 	gui->destroy();

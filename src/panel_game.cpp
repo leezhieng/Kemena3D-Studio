@@ -260,6 +260,7 @@ void PanelGame::draw(bool &isOpened)
         if (!gameRenderer)
         {
             gameRenderer = new kOffscreenRenderer(newW, newH);
+            gameRenderer->setAssetManager(manager->getAssetManager());
             gameRenderer->setBackgroundColor(kVec4(0.0f, 0.0f, 0.0f, 1.0f));
             lastRendererW = newW;
             lastRendererH = newH;

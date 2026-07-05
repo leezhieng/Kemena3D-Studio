@@ -1005,6 +1005,10 @@ kString Manager::checkAssetType(const fs::path &p)
         return "material";
     else if (ext == ".glsl" || ext == ".hlsl")
         return "shader"; // hand-written raw shader (with `// @var` annotations)
+    else if (ext == ".animator")
+        return "animator";
+    else if (ext == ".animation")
+        return "animation";
 
     return "unknown"; // Unknown
 }
@@ -2559,6 +2563,122 @@ void Manager::createNewLogicGraph()
         return;
     }
     f << graph.toJson().dump(2);
+    f.close();
+
+    checkAssetChange();
+    selectProjectAssetByPath(filePath);
+}
+
+void Manager::createNewAnimator()
+{
+    if (!projectOpened)
+        return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Animator";
+    fs::path filePath = dir / (baseName + ".animator");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".animator");
+
+    // Write a minimal .animator with a default entry state.
+    nlohmann::json j;
+    j["uuid"] = generateUuid();
+    j["name"] = filePath.stem().string();
+    j["nextNodeId"] = 2;
+    j["nextLinkId"] = 1;
+    j["clips"] = nlohmann::json::array();
+    j["variables"] = nlohmann::json::array();
+
+    nlohmann::json entryState;
+    entryState["id"]        = 1;
+    entryState["name"]      = "Entry";
+    entryState["animationUuid"] = "";
+    entryState["speed"]     = 1.0f;
+    entryState["loop"]      = true;
+    entryState["isDefault"] = true;
+    entryState["posX"]      = 300.0f;
+    entryState["posY"]      = 200.0f;
+    j["states"] = nlohmann::json::array({entryState});
+    j["transitions"] = nlohmann::json::array();
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create animator file: " << filePath << "\n";
+        return;
+    }
+    f << j.dump(4);
+    f.close();
+
+    checkAssetChange();
+    selectProjectAssetByPath(filePath);
+}
+
+void Manager::createNewAnimation()
+{
+    if (!projectOpened)
+        return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Animation";
+    fs::path filePath = dir / (baseName + ".animation");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".animation");
+
+    // Write a default .animation file (scene type).
+    nlohmann::json j;
+    j["uuid"]       = generateUuid();
+    j["name"]       = filePath.stem().string();
+    j["type"]       = "scene";
+    j["duration"]   = 5.0f;
+    j["fps"]        = 30.0f;
+    j["tracks"]     = nlohmann::json::array();
+    j["events"]     = nlohmann::json::array();
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create animation file: " << filePath << "\n";
+        return;
+    }
+    f << j.dump(4);
+    f.close();
+
+    checkAssetChange();
+    selectProjectAssetByPath(filePath);
+}
+
+void Manager::createNewAnimationFromMesh(const kString &meshUuid, const fs::path &meshPath)
+{
+    if (!projectOpened)
+        return;
+
+    // Create the .animation file in the same folder as the mesh
+    fs::path dir = meshPath.parent_path();
+    kString baseName = meshPath.stem().string() + " Animation";
+    fs::path filePath = dir / (baseName + ".animation");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".animation");
+
+    // Write a mesh-linked .animation file.
+    nlohmann::json j;
+    j["uuid"]       = generateUuid();
+    j["name"]       = filePath.stem().string();
+    j["type"]       = "mesh";
+    j["meshUuid"]   = meshUuid;
+    j["startFrame"] = 0;
+    j["endFrame"]   = 30;
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create animation file: " << filePath << "\n";
+        return;
+    }
+    f << j.dump(4);
     f.close();
 
     checkAssetChange();

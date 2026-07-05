@@ -818,7 +818,10 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             targetW < (int)panelSize.x && targetH < (int)panelSize.y)
         {
             if (!cameraPreview)
+            {
                 cameraPreview = new kOffscreenRenderer(targetW, targetH);
+                cameraPreview->setAssetManager(manager->getAssetManager());
+            }
             if (cameraPreview->getWidth() != targetW ||
                 cameraPreview->getHeight() != targetH)
                 cameraPreview->resize(targetW, targetH);

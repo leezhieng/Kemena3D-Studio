@@ -34,6 +34,8 @@
 #include "panel_console.h"
 #include "panel_game.h"
 #include "panel_terrain.h"
+#include "panel_animator.h"
+#include "panel_animation.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -120,6 +122,8 @@ class PanelConsole;
 class PanelScriptEditor;
 class PanelGame;
 class PanelTerrain;
+class PanelAnimator;
+class PanelAnimation;
 
 /**
  * @brief Central editor controller for a Kemena3D Studio project.
@@ -245,6 +249,10 @@ public:
     };
 
     ExportSettings exportSettings; ///< Persisted between dialog opens.
+
+    /// Pending request to show the Animation Editor panel (set by inspector, consumed in main.cpp).
+    bool pendingOpenAnimationEditor = false;
+
     bool showExportDialog = false; ///< Controls visibility of the export dialog.
 
     /**
@@ -303,6 +311,20 @@ public:
 
     /** @brief Creates a new visual logic-graph asset in the current folder. */
     void createNewLogicGraph();
+
+    /** @brief Creates a new animator controller asset in the current folder. */
+    void createNewAnimator();
+
+    /** @brief Creates a new animation clip asset in the current folder. */
+    void createNewAnimation();
+
+    /**
+     * @brief Creates a new .animation file in the same folder as the given mesh,
+     *        pre-linked to that mesh as a mesh-type animation.
+     * @param meshUuid UUID of the source mesh asset.
+     * @param meshPath Filesystem path of the mesh file.
+     */
+    void createNewAnimationFromMesh(const kString &meshUuid, const fs::path &meshPath);
 
     /** @brief Deletes the given project assets from disk and tracking maps.
      *  @param paths Filesystem paths of the assets to delete. */
@@ -772,6 +794,8 @@ public:
     PanelConsole *panelConsole = nullptr;           ///< Console panel (for build/script logging).
     PanelGame *panelGame = nullptr;                 ///< Game/play panel.
     PanelTerrain *panelTerrain = nullptr;           ///< Terrain management panel.
+    PanelAnimator *panelAnimator = nullptr;         ///< Animator state-machine editor.
+    PanelAnimation *panelAnimation = nullptr;       ///< Animation timeline/curve editor.
 
     kTerrainManager *terrainManager = nullptr; ///< Grid-based terrain system manager.
 

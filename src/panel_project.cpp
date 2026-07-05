@@ -661,6 +661,10 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 				icon = iconShader;
 			else if (ext == ".gui")
 				icon = iconGui;
+			else if (ext == ".animator")
+				icon = iconLogic;    // Graph-editor visual, use logic icon
+			else if (ext == ".animation")
+				icon = iconModel;    // Animation data, model-adjacent
 			else
 				icon = iconOther;
 
@@ -793,6 +797,10 @@ void PanelProject::refreshThumbnailList()
 								icon = iconShader;
 							else if (ext == ".gui")
 								icon = iconGui;
+							else if (ext == ".animator")
+								icon = iconLogic;
+							else if (ext == ".animation")
+								icon = iconModel;
 							else
 								icon = iconOther;
 
@@ -898,6 +906,20 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 						{ manager->duplicateAsset(child->fullPath); needRefreshList = true; }
 					if (ImGui::MenuItem("Delete"))
 						executeDeleteSelected();
+					ImGui::Separator();
+					// "Create Animation" for mesh files
+					if (child->type == 1 && !child->uuid.empty())
+					{
+						auto it = manager->fileMap.find(child->uuid);
+						if (it != manager->fileMap.end() && it->second.type == "mesh")
+						{
+							if (ImGui::MenuItem("Create Animation"))
+							{
+								manager->createNewAnimationFromMesh(child->uuid, child->fullPath);
+								needRefreshList = true;
+							}
+						}
+					}
 					ImGui::EndPopup();
 				}
 
@@ -957,6 +979,11 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 					{ manager->createNewScript();     needRefreshList = true; }
 				if (ImGui::MenuItem("Logic Graph"))
 					{ manager->createNewLogicGraph(); needRefreshList = true; }
+				ImGui::Separator();
+				if (ImGui::MenuItem("Animator"))
+					{ manager->createNewAnimator();   needRefreshList = true; }
+				if (ImGui::MenuItem("Animation Clip"))
+					{ manager->createNewAnimation();  needRefreshList = true; }
 				ImGui::EndMenu();
 			}
 			ImGui::EndPopup();

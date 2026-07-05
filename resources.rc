@@ -30,6 +30,9 @@ SHADER_GRID        RCDATA "res/shaders/grid.glsl"
 SHADER_ICON        RCDATA "res/shaders/icon.glsl"
 SHADER_SKYBOX      RCDATA "res/shaders/skybox.glsl"
 SHADER_TERRAIN_PBR RCDATA "res/shaders/TerrainPBR.glsl"
+SHADER_OFFSCREEN_PREVIEW RCDATA "res/shaders/offscreen_preview.glsl"
+SHADER_OFFSCREEN_SHADOW  RCDATA "res/shaders/offscreen_shadow.glsl"
+SHADER_OFFSCREEN_WHITE   RCDATA "res/shaders/offscreen_white.glsl"
 
 // Shapes
 MODEL_SHAPE_CONE RCDATA "res/models/shape/cone.obj"
