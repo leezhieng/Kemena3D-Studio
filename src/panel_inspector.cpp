@@ -4088,7 +4088,10 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
     if (animPreviewMesh && animPreviewCamera && animPreviewRenderer)
     {
         animPreviewRenderer->setBackgroundColor(kVec4(42 / 255.0f, 42 / 255.0f, 42 / 255.0f, 1.0f));
-        animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
+        if (animPreviewLightEnabled)
+            animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
+        else
+            animPreviewRenderer->renderMesh(animPreviewMesh, animPreviewCamera);
     }
 
     // -----------------------------------------------------------------------
