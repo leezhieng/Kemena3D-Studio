@@ -4091,7 +4091,7 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         if (animPreviewLightEnabled)
             animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
         else
-            animPreviewRenderer->renderMesh(animPreviewMesh, animPreviewCamera);
+            animPreviewRenderer->renderMeshWithMaterial(animPreviewMesh, animPreviewCamera);
     }
 
     // -----------------------------------------------------------------------
