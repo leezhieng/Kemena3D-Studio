@@ -4019,7 +4019,10 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         animPreviewMesh = am->loadMesh(glbPath.generic_string());
         if (!animPreviewMesh) { drawAssetThumbnail(gui, asset); return; }
 
-        // Phong material (supports bone skinning)
+        // Phong material (supports bone skinning) — apply to submeshes that
+        // don't already have a valid shader from the GLB file.  Use
+        // setChildren=false and manually recurse (same pattern as
+        // applyDefaultMaterial in the model viewer).
         kShader *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
         if (shader)
         {
@@ -4029,18 +4032,70 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
             animPreviewMat->setAmbientColor(kVec3(0.3f, 0.3f, 0.3f));
             animPreviewMat->setSpecularColor(kVec3(0.2f, 0.2f, 0.2f));
             animPreviewMat->setShininess(16.0f);
-            animPreviewMesh->setMaterial(animPreviewMat);
+
+            std::function<void(kMesh *)> applyMat = [&](kMesh *m)
+            {
+                kMaterial *existing = m->getMaterial();
+                if (!existing || !existing->getShader() ||
+                    existing->getShader()->getShaderProgram() == 0)
+                    m->setMaterial(animPreviewMat, false); // false = don't auto-apply to children
+                for (kObject *c : m->getChildren())
+                    if (c->getType() == NODE_TYPE_MESH)
+                        applyMat(static_cast<kMesh *>(c));
+            };
+            applyMat(animPreviewMesh);
         }
 
-        // Skeletal animation — only attempt when the mesh actually has bones
-        if (animPreviewMesh->getBoneCount() > 0)
+        // Skeletal animation — search the entire hierarchy for bones
+        // (the root may be just a transform container).  Load the clip
+        // bound to the root mesh (so bone-name→id maps resolve correctly),
+        // then share one kAnimator across every bone-bearing submesh.
+        bool hasBones = false;
         {
-            kSkeletalAnimation *skel = am->loadAnimation(glbPath.generic_string(), animPreviewMesh);
-            if (skel)
+            std::function<void(kMesh *)> checkBones = [&](kMesh *m)
             {
-                animPreviewClip = skel;
-                animPreviewAnimator = new kAnimator(skel);
-                animPreviewMesh->setAnimator(animPreviewAnimator);
+                if (hasBones) return;
+                if (m->getBoneCount() > 0) { hasBones = true; return; }
+                for (kObject *c : m->getChildren())
+                    if (c->getType() == NODE_TYPE_MESH)
+                        checkBones(static_cast<kMesh *>(c));
+            };
+            checkBones(animPreviewMesh);
+        }
+        if (hasBones)
+        {
+            // loadAnimation throws if the GLB has bone data but no animation
+            // clips — that's legitimate (static skinned mesh), so guard it.
+            try
+            {
+                kSkeletalAnimation *skel = am->loadAnimation(glbPath.generic_string(), animPreviewMesh);
+                if (skel)
+                {
+                    animPreviewClip = skel;
+                    animPreviewAnimator = new kAnimator(skel);
+
+                    std::function<void(kMesh *)> applyAnim = [&](kMesh *m)
+                    {
+                        if (m->getBoneCount() > 0)
+                            m->setAnimator(animPreviewAnimator);
+                        for (kObject *c : m->getChildren())
+                            if (c->getType() == NODE_TYPE_MESH)
+                                applyAnim(static_cast<kMesh *>(c));
+                    };
+                    applyAnim(animPreviewMesh);
+
+                    // Show the start-frame pose immediately instead of the
+                    // bind pose while waiting for the user to press Play.
+                    float startTicks = (animPreviewStartFrame / 30.0f) *
+                        skel->getTicksPerSecond();
+                    animPreviewAnimator->setCurrentTime(startTicks);
+                    const kNodeData &initRoot = skel->getRootNode();
+                    animPreviewAnimator->calculateBoneTransform(&initRoot, kMat4(1.0f));
+                }
+            }
+            catch (const std::exception &)
+            {
+                // static skinned mesh — no animation clips, that's fine
             }
         }
 
@@ -4080,18 +4135,31 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
                 animPreviewPlaying = false;
             }
         }
-        animPreviewAnimator->setCurrentTime(animPreviewFrame / 30.0f);
+        // Convert frame count to animation time in ticks.  The animation
+        // system stores keyframe timestamps in ticks (from Assimp's mTime);
+        // setCurrentTime expects the same unit, otherwise interpolation
+        // samples at the wrong scale and the pose appears frozen.
+        float timeInSeconds = animPreviewFrame / 30.0f;
+        float timeInTicks   = timeInSeconds *
+            animPreviewAnimator->getCurrentAnimation()->getTicksPerSecond();
+        animPreviewAnimator->setCurrentTime(timeInTicks);
         animPreviewAnimator->setSpeed(animPreviewPlaying ? animPreviewSpeed : 0.0f);
+
+        // setCurrentTime only stores the time value — we must explicitly
+        // walk the skeleton to produce the final bone matrices that the
+        // shader will read via getFinalBoneMatrices().
+        if (animPreviewAnimator->getCurrentAnimation())
+        {
+            const kNodeData &root = animPreviewAnimator->getCurrentAnimation()->getRootNode();
+            animPreviewAnimator->calculateBoneTransform(&root, kMat4(1.0f));
+        }
     }
 
     // Render offscreen
     if (animPreviewMesh && animPreviewCamera && animPreviewRenderer)
     {
         animPreviewRenderer->setBackgroundColor(kVec4(42 / 255.0f, 42 / 255.0f, 42 / 255.0f, 1.0f));
-        if (animPreviewLightEnabled)
-            animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
-        else
-            animPreviewRenderer->renderMeshWithMaterial(animPreviewMesh, animPreviewCamera);
+        animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
     }
 
     // -----------------------------------------------------------------------
