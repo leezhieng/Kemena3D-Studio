@@ -4155,11 +4155,17 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         }
     }
 
-    // Render offscreen
+    // Render offscreen — use the builtin white/preview shader when lighting
+    // is off (mirrors drawModelViewer behaviour) so the mesh stays visible
+    // instead of going dark.  The builtin shader now supports skeletal
+    // animation via finalBoneMatrices so the pose is preserved.
     if (animPreviewMesh && animPreviewCamera && animPreviewRenderer)
     {
         animPreviewRenderer->setBackgroundColor(kVec4(42 / 255.0f, 42 / 255.0f, 42 / 255.0f, 1.0f));
-        animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
+        if (animPreviewLightEnabled)
+            animPreviewRenderer->render(animPreviewWorld, animPreviewScene, animPreviewCamera);
+        else
+            animPreviewRenderer->renderMesh(animPreviewMesh, animPreviewCamera);
     }
 
     // -----------------------------------------------------------------------
