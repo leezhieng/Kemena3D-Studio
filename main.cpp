@@ -15,6 +15,7 @@
 #include "panel_terrain.h"
 #include "panel_animator.h"
 #include "panel_animation.h"
+#include "panel_particle.h"
 #include "splash_screen.h"
 #include "crashhandler.h"
 
@@ -86,6 +87,8 @@ int main()
 	manager->panelAnimator = panelAnimator;
 	PanelAnimation *panelAnimation = new PanelAnimation(gui, manager);
 	manager->panelAnimation = panelAnimation;
+	PanelParticle *panelParticle = new PanelParticle(gui, manager);
+	manager->panelParticle = panelParticle;
 	PanelPrefab *panelPrefab = new PanelPrefab(gui, manager);
 
 	// Route .shader and .prefab double-clicks from the project panel.
@@ -115,6 +118,11 @@ int main()
 		{
 			showPanel.animationEditor = true;
 			panelAnimation->openFile(path);
+		}
+		else if (path.size() >= 9 && path.substr(path.size() - 9) == ".particle")
+		{
+			showPanel.particleEditor = true;
+			panelParticle->openFile(path);
 		}
 	};
 
@@ -519,6 +527,8 @@ int main()
 						panelAnimator->saveCurrent();
 					else if (panelAnimation->focused)
 						panelAnimation->saveCurrent();
+					else if (panelParticle->focused)
+						panelParticle->saveCurrent();
 					else if (manager->projectOpened)
 						manager->saveWorld();
 				}
@@ -830,6 +840,7 @@ int main()
 
 		panelAnimator->draw(showPanel.animatorEditor);
 		panelAnimation->draw(showPanel.animationEditor);
+		panelParticle->draw(showPanel.particleEditor);
 
 		// If there's a need to import assets
 		manager->drawImportPopup(panelConsole);
@@ -855,6 +866,7 @@ int main()
 
 	// Clean up
 	delete panelAnimation;
+	delete panelParticle;
 	delete panelAnimator;
 	delete panelTerrain;
 	delete splashScreen;

@@ -34,6 +34,7 @@ struct ShowPanel
 	bool prefab = false;        ///< Show the Prefab editor; toggled by Manager::editPrefab / closePrefabEditor.
 	bool animatorEditor = false;///< Show the Animator editor panel.
 	bool animationEditor = false;///< Show the Animation editor panel.
+	bool particleEditor = false; ///< Show the Particle editor panel.
 };
 
 inline ShowPanel showPanel;                       ///< Global panel-visibility state shared across the editor UI.

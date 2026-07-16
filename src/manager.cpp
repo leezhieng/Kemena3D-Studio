@@ -2,6 +2,8 @@
 #include "util.h"
 #include "panel_script_editor.h" // for panelScriptEditor->notifyAssetMoved()
 
+#include <kemena/kpackage.h>
+
 #include <stb/stb_image.h>
 #include <stb/stb_image_write.h>
 #define STB_IMAGE_RESIZE2_IMPLEMENTATION
@@ -2257,27 +2259,29 @@ bool Manager::exportGame(const ExportSettings &s)
     if (fs::exists(runExe))
         fs::rename(runExe, gameExe, ec);
 
-    // 5. Bundle game data under data/.
-    fs::path dataDir = outDir / "data";
-    fs::create_directories(dataDir, ec);
+    // 5. Bundle game data into a temp staging folder, then create .kpak.
+    fs::path stagingDir = outDir / "_staging";
+    fs::create_directories(stagingDir, ec);
 
+    // Copy scene.world
     if (fs::exists(worldPath))
-        fs::copy(worldPath, dataDir / "scene.world", fs::copy_options::overwrite_existing, ec);
+        fs::copy(worldPath, stagingDir / "scene.world", fs::copy_options::overwrite_existing, ec);
 
+    // Copy Library folders into staging
     auto copyLibFolder = [&](const char *sub)
     {
         fs::path src = projectPath / "Library" / sub;
         if (fs::exists(src))
-            fs::copy(src, dataDir / "Library" / sub,
+            fs::copy(src, stagingDir / "Library" / sub,
                      fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
     };
-    copyLibFolder("ImportedAssets"); // .glb meshes (textures baked in)
-    copyLibFolder("Shaders");        // compiled shader graphs
+    copyLibFolder("ImportedAssets");
+    copyLibFolder("Shaders");
 
-    // Scripts: ship compiled bytecode only — never the .as / .logic sources.
+    // Scripts: ship compiled bytecode only
     {
         fs::path src = projectPath / "Library" / "Scripts";
-        fs::path dst = dataDir / "Library" / "Scripts";
+        fs::path dst = stagingDir / "Library" / "Scripts";
         if (fs::exists(src))
         {
             fs::create_directories(dst, ec);
@@ -2288,30 +2292,351 @@ bool Manager::exportGame(const ExportSettings &s)
         }
     }
 
-    // 6. Write game.config (read by the runtime at startup).
+    // Write game.config into staging
     {
         nlohmann::json cfg;
         cfg["title"] = s.title.empty() ? s.gameName : s.title;
         cfg["width"] = s.width;
         cfg["height"] = s.height;
         cfg["fullscreen"] = s.fullscreen;
-        std::ofstream f(dataDir / "game.config");
+        std::ofstream f(stagingDir / "game.config");
         if (f.is_open())
             f << cfg.dump(4);
     }
 
-    // 7. Per-OS metadata (best-effort). Windows exe icon via rcedit if present.
+    // 6. Create the .kpak package from the staging directory.
+    fs::path pakPath = outDir / (s.gameName + ".kpak");
+    {
+        kPackageWriter writer;
+        if (!writer.create(pakPath.string(), stagingDir.string(),
+                           kPackageWriter::Compression::Default))
+        {
+            std::cerr << "Export: failed to create package. Falling back to loose files.\n";
+            // Fallback: copy staging contents to data/ folder
+            fs::path dataDir = outDir / "data";
+            fs::create_directories(dataDir, ec);
+            for (const auto &entry : fs::directory_iterator(stagingDir, ec))
+            {
+                fs::copy(entry.path(), dataDir / entry.path().filename(),
+                         fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
+            }
+        }
+    }
+
+    // 7. Clean up staging directory.
+    fs::remove_all(stagingDir, ec);
+
+    // 8. Per-OS metadata (best-effort). Windows exe icon via rcedit if present.
     if (win && !s.iconPath.empty() && fs::exists(s.iconPath))
     {
         std::string cmd = "rcedit \"" + gameExe.string() +
                           "\" --set-icon \"" + s.iconPath + "\"";
-        int r = std::system(cmd.c_str()); // requires rcedit on PATH; non-fatal
+        int r = std::system(cmd.c_str());
         if (r != 0)
             std::cerr << "Export: rcedit icon step skipped (rcedit not found?).\n";
     }
 
     std::cout << "Export complete: " << outDir << "\n";
     return true;
+}
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Publish Game (new multi-platform system)
+// ---------------------------------------------------------------------------
+
+void Manager::collectWorldAssetPaths(const fs::path &worldPath, std::set<kString> &outAssets)
+{
+    if (!fs::exists(worldPath)) return;
+
+    std::ifstream f(worldPath);
+    if (!f.is_open()) return;
+
+    json worldJson;
+    try { worldJson = json::parse(f); }
+    catch (...) { return; }
+    f.close();
+
+    std::function<void(const json&)> walkJson = [&](const json &node)
+    {
+        if (node.is_object())
+        {
+            if (node.contains("reference") && node["reference"].is_string())
+            {
+                kString ref = node["reference"].get<kString>();
+                if (!ref.empty())
+                    outAssets.insert("Library/ImportedAssets/" + ref + ".glb");
+            }
+            if (node.contains("material_uuid") && node["material_uuid"].is_string())
+            {
+                kString matUuid = node["material_uuid"].get<kString>();
+                if (!matUuid.empty())
+                {
+                    auto it = uuidMap.find(matUuid);
+                    if (it != uuidMap.end())
+                        outAssets.insert(it->second);
+                }
+            }
+            if (node.contains("script_uuid") && node["script_uuid"].is_string())
+            {
+                kString sid = node["script_uuid"].get<kString>();
+                if (!sid.empty())
+                    outAssets.insert("Library/Scripts/" + sid + ".kbc");
+            }
+            for (const auto &[key, val] : node.items())
+                walkJson(val);
+        }
+        else if (node.is_array())
+        {
+            for (const auto &item : node)
+                walkJson(item);
+        }
+    };
+
+    walkJson(worldJson);
+}
+
+bool Manager::publishGame(int platformIdx)
+{
+    if (!projectOpened) return false;
+
+    PublishSettings &ps = publishSettings;
+    PlatformPublishSettings &plat = ps.platforms[platformIdx];
+    if (!plat.enabled) return false;
+
+    if (plat.gameName.empty()) plat.gameName = projectName.empty() ? "Game" : projectName;
+    if (plat.title.empty()) plat.title = plat.gameName;
+    if (plat.outputDir.empty())
+    {
+        auto sel = pfd::select_folder("Choose output folder").result();
+        if (sel.empty()) return false;
+        plat.outputDir = sel;
+    }
+
+    if (plat.templateDir.empty()) plat.templateDir = ps.templateDir;
+    if (plat.templateDir.empty() || !fs::exists(plat.templateDir))
+    {
+        auto sel = pfd::select_folder("Choose runtime template folder").result();
+        if (sel.empty()) return false;
+        plat.templateDir = sel;
+    }
+
+    std::error_code ec;
+    const bool win = (platformIdx == 0);
+
+    buildScripts();
+    saveWorld();
+
+    fs::path outDir = plat.outputDir;
+    fs::create_directories(outDir, ec);
+
+    for (const auto &entry : fs::directory_iterator(plat.templateDir, ec))
+    {
+        fs::copy(entry.path(), outDir / entry.path().filename(),
+                 fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
+    }
+
+    fs::path runExe = outDir / (win ? "Kemena3DRuntime.exe" : "Kemena3DRuntime");
+    fs::path gameExe = outDir / (win ? (plat.gameName + ".exe") : plat.gameName);
+    if (fs::exists(runExe))
+        fs::rename(runExe, gameExe, ec);
+
+    fs::path stagingDir = outDir / "_staging";
+    fs::create_directories(stagingDir, ec);
+
+    std::set<kString> allAssets;
+
+    if (ps.includeWorlds.empty())
+    {
+        if (!worldPath.empty() && fs::exists(worldPath))
+        {
+            fs::copy(worldPath, stagingDir / "scene.world", fs::copy_options::overwrite_existing, ec);
+            collectWorldAssetPaths(worldPath, allAssets);
+        }
+    }
+    else
+    {
+        for (const auto &iw : ps.includeWorlds)
+        {
+            fs::path worldFile = projectPath / "Assets" / iw;
+            if (fs::exists(worldFile))
+            {
+                fs::path destPath = stagingDir / iw;
+                fs::create_directories(destPath.parent_path(), ec);
+                fs::copy(worldFile, destPath, fs::copy_options::overwrite_existing, ec);
+                collectWorldAssetPaths(worldFile, allAssets);
+            }
+        }
+        if (!ps.defaultLevel.empty())
+        {
+            fs::path defaultWorld = stagingDir / ps.defaultLevel;
+            if (fs::exists(defaultWorld))
+            {
+                fs::copy(defaultWorld, stagingDir / "scene.world", fs::copy_options::overwrite_existing, ec);
+            }
+        }
+    }
+
+    for (const auto &asset : allAssets)
+    {
+        fs::path src = projectPath / "Assets" / asset;
+        fs::path dst = stagingDir / asset;
+        if (fs::exists(src))
+        {
+            fs::create_directories(dst.parent_path(), ec);
+            fs::copy(src, dst, fs::copy_options::overwrite_existing, ec);
+        }
+    }
+
+    auto copyLibIfExists = [&](const char *sub)
+    {
+        fs::path srcDir = projectPath / "Library" / sub;
+        fs::path dstDir = stagingDir / "Library" / sub;
+        if (fs::exists(srcDir))
+            fs::copy(srcDir, dstDir, fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
+    };
+    copyLibIfExists("ImportedAssets");
+    copyLibIfExists("Shaders");
+
+    {
+        fs::path srcDir = projectPath / "Library" / "Scripts";
+        fs::path dstDir = stagingDir / "Library" / "Scripts";
+        if (fs::exists(srcDir))
+        {
+            fs::create_directories(dstDir, ec);
+            for (const auto &e : fs::directory_iterator(srcDir, ec))
+                if (e.path().extension() == ".kbc")
+                    fs::copy(e.path(), dstDir / e.path().filename(), fs::copy_options::overwrite_existing, ec);
+        }
+    }
+
+    {
+        nlohmann::json cfg;
+        cfg["title"] = plat.title.empty() ? plat.gameName : plat.title;
+        cfg["width"] = plat.width;
+        cfg["height"] = plat.height;
+        cfg["fullscreen"] = plat.fullscreen;
+        if (!ps.defaultLevel.empty())
+            cfg["default_level"] = ps.defaultLevel;
+        std::ofstream cf(stagingDir / "game.config");
+        if (cf.is_open()) cf << cfg.dump(4);
+    }
+
+    kPackageWriter::Compression comp = kPackageWriter::Compression::Default;
+    if (plat.compression == "None") comp = kPackageWriter::Compression::None;
+    else if (plat.compression == "Fast") comp = kPackageWriter::Compression::Fast;
+    else if (plat.compression == "Best") comp = kPackageWriter::Compression::Best;
+
+    fs::path pakPath = outDir / (plat.gameName + ".kpak");
+    {
+        kPackageWriter writer;
+        if (!writer.create(pakPath.string(), stagingDir.string(), comp))
+        {
+            std::cerr << "Publish: failed to create package. Falling back to loose files.\n";
+            fs::path dataDir = outDir / "data";
+            fs::create_directories(dataDir, ec);
+            for (const auto &entry : fs::directory_iterator(stagingDir, ec))
+                fs::copy(entry.path(), dataDir / entry.path().filename(),
+                         fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
+        }
+    }
+
+    fs::remove_all(stagingDir, ec);
+
+    if (win && !plat.iconPath.empty() && fs::exists(plat.iconPath))
+    {
+        std::string cmd = "rcedit \"" + gameExe.string() + "\" --set-icon \"" + plat.iconPath + "\"";
+        std::system(cmd.c_str());
+    }
+
+    std::cout << "Publish complete: " << outDir << "\n";
+    return true;
+}
+
+void Manager::loadPublishSettings()
+{
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    if (!fs::exists(cfgPath)) return;
+    std::ifstream f(cfgPath);
+    if (!f.is_open()) return;
+    json cfg;
+    try { cfg = json::parse(f); } catch (...) { return; }
+    f.close();
+
+    PublishSettings &ps = publishSettings;
+    if (cfg.contains("publish_settings") && cfg["publish_settings"].is_object())
+    {
+        const json &pjs = cfg["publish_settings"];
+        const char *keys[] = {"windows", "macos", "linux"};
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!pjs.contains(keys[i])) continue;
+            const json &pj = pjs[keys[i]];
+            ps.platforms[i].enabled     = pj.value("enabled", true);
+            ps.platforms[i].gameName    = pj.value("game_name", "Game");
+            ps.platforms[i].title       = pj.value("title", "My Game");
+            ps.platforms[i].width       = pj.value("width", 1280);
+            ps.platforms[i].height      = pj.value("height", 720);
+            ps.platforms[i].fullscreen  = pj.value("fullscreen", false);
+            ps.platforms[i].outputDir   = pj.value("output_dir", "");
+            ps.platforms[i].templateDir = pj.value("template_dir", "");
+            ps.platforms[i].iconPath    = pj.value("icon_path", "");
+            ps.platforms[i].compression = pj.value("compression", "Default");
+        }
+    }
+    if (cfg.contains("publish_worlds") && cfg["publish_worlds"].is_array())
+    {
+        ps.includeWorlds.clear();
+        for (const auto &w : cfg["publish_worlds"])
+            if (w.is_string())
+                ps.includeWorlds.push_back(w.get<std::string>());
+    }
+    ps.defaultLevel = cfg.value("default_level", "");
+    ps.templateDir = cfg.value("template_dir", "");
+}
+
+void Manager::savePublishSettings()
+{
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    json cfg;
+    if (fs::exists(cfgPath))
+    {
+        std::ifstream f(cfgPath);
+        if (f.is_open()) { try { cfg = json::parse(f); } catch (...) { cfg = json::object(); } f.close(); }
+    }
+
+    PublishSettings &ps = publishSettings;
+    json pjs = json::object();
+    const char *keys[] = {"windows", "macos", "linux"};
+    for (int i = 0; i < 3; ++i)
+    {
+        json pj;
+        pj["enabled"]      = ps.platforms[i].enabled;
+        pj["game_name"]    = ps.platforms[i].gameName;
+        pj["title"]        = ps.platforms[i].title;
+        pj["width"]        = ps.platforms[i].width;
+        pj["height"]       = ps.platforms[i].height;
+        pj["fullscreen"]   = ps.platforms[i].fullscreen;
+        pj["output_dir"]   = ps.platforms[i].outputDir;
+        pj["template_dir"] = ps.platforms[i].templateDir;
+        pj["icon_path"]    = ps.platforms[i].iconPath;
+        pj["compression"]  = ps.platforms[i].compression;
+        pjs[keys[i]] = pj;
+    }
+    cfg["publish_settings"] = pjs;
+
+    json worldsJson = json::array();
+    for (const auto &w : ps.includeWorlds)
+        worldsJson.push_back(w);
+    cfg["publish_worlds"] = worldsJson;
+    cfg["default_level"] = ps.defaultLevel;
+    cfg["template_dir"]  = ps.templateDir;
+
+    std::ofstream f(cfgPath);
+    if (f.is_open()) f << cfg.dump(4);
 }
 
 // ---------------------------------------------------------------------------
@@ -2641,6 +2966,38 @@ void Manager::createNewAnimation()
     if (!f.is_open())
     {
         std::cerr << "Failed to create animation file: " << filePath << "\n";
+        return;
+    }
+    f << j.dump(4);
+    f.close();
+
+    checkAssetChange();
+    selectProjectAssetByPath(filePath);
+}
+
+void Manager::createNewParticle()
+{
+    if (!projectOpened)
+        return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Particle System";
+    fs::path filePath = dir / (baseName + ".particle");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".particle");
+
+    nlohmann::json j;
+    j["uuid"]     = generateUuid();
+    j["name"]     = filePath.stem().string();
+    j["duration"] = 5.0f;
+    j["looping"]  = true;
+    j["emitters"] = nlohmann::json::array();
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create particle file: " << filePath << "\n";
         return;
     }
     f << j.dump(4);

@@ -24,3 +24,22 @@ runs their lifecycle functions. Use **Run → Build Scripts** to compile manuall
 
 See the SDK's [Scripting guide](https://github.com/leezhieng/kemena3d/blob/main/Documentation/Scripting.md)
 for the host API and node-graph reference.
+
+## Game Export & Asset Packaging
+
+Kemena3D Studio can export your project as a standalone distributable game.
+The export process:
+
+1. Compiles all scripts to bytecode
+2. Saves the current world as `scene.world`
+3. Stages all assets (`Library/ImportedAssets`, `Library/Shaders`, `Library/Scripts`)
+4. **Packages everything into a single `<GameName>.kpak` file** with per-file LZNT1 compression
+5. Copies the runtime executable and renames it to match your game name
+6. Writes a `game.config` with window settings (title, resolution, fullscreen)
+
+The `.kpak` format provides:
+- **Single-file distribution** — no loose asset files
+- **O(1) random access** — assets are streamed on demand without full-archive decompression
+- **Automatic detection** — the runtime auto-finds the `.kpak` next to the executable
+
+If packaging fails for any reason, the editor falls back to copying loose files into a `data/` folder (compatible with the runtime's `data/` folder detection).

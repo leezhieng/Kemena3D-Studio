@@ -46,13 +46,304 @@ void SDLCALL MainMenu::loadWorkspaceCallback(void *userdata, const char *const *
 	{
 		const char *path = filelist[0];
 		SDL_Log("Loading layout from: %s", path);
-		// ImGui::LoadIniSettingsFromDisk(path);
 
 		isReloadLayout = true;
 		layoutFileName = path;
 	}
 }
 
+// Helper: text input with a char buffer
+static void inputStr(const char *label, std::string &str, float w = 340.0f)
+{
+	char buf[1024];
+	strncpy_s(buf, sizeof(buf), str.c_str(), _TRUNCATE);
+	buf[sizeof(buf) - 1] = '\0';
+	ImGui::SetNextItemWidth(w);
+	if (ImGui::InputText(label, buf, sizeof(buf)))
+		str = buf;
+}
+
+// Helper: browse-for-folder button
+static bool browseFolder(const char *label, std::string &path)
+{
+	inputStr(label, path);
+	ImGui::SameLine();
+	if (ImGui::SmallButton("..."))
+	{
+		auto sel = pfd::select_folder("Choose folder").result();
+		if (!sel.empty()) { path = sel; return true; }
+	}
+	return false;
+}
+
+// Helper: browse-for-file button
+static bool browseFile(const char *label, std::string &path, const std::string &filter)
+{
+	inputStr(label, path);
+	ImGui::SameLine();
+	if (ImGui::SmallButton("..."))
+	{
+		auto sel = pfd::open_file("Choose file", "", {filter}).result();
+		if (!sel.empty()) { path = sel[0]; return true; }
+	}
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Publish Dialog
+// ---------------------------------------------------------------------------
+static void drawPublishDialog(Manager *manager)
+{
+	if (!manager->showPublishDialog) return;
+
+	Manager::PublishSettings &ps = manager->publishSettings;
+
+	ImGui::OpenPopup("Publish Game");
+	ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+	ImGui::SetNextWindowSize(ImVec2(620, 520), ImGuiCond_FirstUseEver);
+
+	if (!ImGui::BeginPopupModal("Publish Game", &manager->showPublishDialog))
+		return;
+
+	static int activeTab = 0;
+	const char *tabNames[] = {"Windows", "macOS", "Linux"};
+
+	// ---- Platform tabs -------------------------------------------------
+	if (ImGui::BeginTabBar("PublishTabs"))
+	{
+		for (int i = 0; i < 3; ++i)
+		{
+			if (!ImGui::BeginTabItem(tabNames[i])) continue;
+			activeTab = i;
+
+			Manager::PlatformPublishSettings &plat = ps.platforms[i];
+
+			ImGui::Checkbox("Build for this platform", &plat.enabled);
+			ImGui::Separator();
+
+			inputStr("Game Name", plat.gameName);
+			inputStr("Window Title", plat.title);
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::InputInt("Width", &plat.width);
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::InputInt("Height", &plat.height);
+			ImGui::Checkbox("Fullscreen", &plat.fullscreen);
+
+			ImGui::Separator();
+			browseFolder("Output Folder", plat.outputDir);
+
+			inputStr("Template Folder", plat.templateDir);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("...##tpl"))
+			{
+				auto sel = pfd::select_folder("Choose runtime template folder").result();
+				if (!sel.empty()) plat.templateDir = sel;
+			}
+
+			// Windows-specific: icon
+			if (i == 0)
+				browseFile("Icon (.ico)", plat.iconPath, "Icon (*.ico)");
+
+			// Compression
+			ImGui::Separator();
+			const char *compLevels[] = {"None", "Fast", "Default", "Best"};
+			int compIdx = 0;
+			if (plat.compression == "Fast") compIdx = 1;
+			else if (plat.compression == "Default") compIdx = 2;
+			else if (plat.compression == "Best") compIdx = 3;
+			ImGui::SetNextItemWidth(200.0f);
+			if (ImGui::Combo("Compression", &compIdx, compLevels, IM_ARRAYSIZE(compLevels)))
+				plat.compression = compLevels[compIdx];
+
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+	}
+
+	ImGui::Separator();
+
+	// ---- World selection -----------------------------------------------
+	ImGui::TextUnformatted("Worlds to include:");
+	ImGui::BeginChild("WorldList", ImVec2(0, 120), true);
+
+	// Gather all .world files in the project Assets directory
+	std::vector<fs::path> worldFiles;
+	if (manager->projectOpened)
+	{
+		std::error_code ec;
+		fs::path assetsDir = manager->projectPath / "Assets";
+		if (fs::exists(assetsDir, ec))
+		{
+			for (const auto &entry : fs::recursive_directory_iterator(assetsDir, ec))
+			{
+				if (entry.is_regular_file() && entry.path().extension() == ".world")
+					worldFiles.push_back(entry.path());
+			}
+		}
+	}
+
+	for (const auto &wf : worldFiles)
+	{
+		std::string relPath = fs::relative(wf, manager->projectPath / "Assets").generic_string();
+		bool checked = false;
+		for (const auto &iw : ps.includeWorlds)
+			if (iw == relPath) { checked = true; break; }
+
+		if (ImGui::Checkbox(relPath.c_str(), &checked))
+		{
+			if (checked)
+				ps.includeWorlds.push_back(relPath);
+			else
+				ps.includeWorlds.erase(
+					std::remove(ps.includeWorlds.begin(), ps.includeWorlds.end(), relPath),
+					ps.includeWorlds.end());
+		}
+	}
+
+	if (worldFiles.empty())
+		ImGui::TextDisabled("  No .world files found in Assets/");
+
+	ImGui::EndChild();
+
+	// ---- Default level -------------------------------------------------
+	ImGui::Spacing();
+	ImGui::SetNextItemWidth(400.0f);
+	if (ImGui::BeginCombo("Default Level", ps.defaultLevel.empty() ? "(none)" : ps.defaultLevel.c_str()))
+	{
+		for (const auto &iw : ps.includeWorlds)
+		{
+			bool isSelected = (ps.defaultLevel == iw);
+			if (ImGui::Selectable(iw.c_str(), isSelected))
+				ps.defaultLevel = iw;
+			if (isSelected)
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::TextDisabled("  First world loaded when the game starts.");
+
+	ImGui::Separator();
+
+	// ---- Action buttons ------------------------------------------------
+	if (ImGui::Button("Publish", ImVec2(120, 0)))
+	{
+		// Publish for the currently active tab
+		if (manager->publishGame(activeTab))
+		{
+			manager->savePublishSettings();
+			ImGui::CloseCurrentPopup();
+			manager->showPublishDialog = false;
+		}
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Publish All", ImVec2(120, 0)))
+	{
+		bool any = false;
+		for (int i = 0; i < 3; ++i)
+		{
+			if (ps.platforms[i].enabled)
+			{
+				if (manager->publishGame(i)) any = true;
+			}
+		}
+		if (any)
+		{
+			manager->savePublishSettings();
+			ImGui::CloseCurrentPopup();
+			manager->showPublishDialog = false;
+		}
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	{
+		ImGui::CloseCurrentPopup();
+		manager->showPublishDialog = false;
+	}
+
+	ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
+// Project Settings Dialog
+// ---------------------------------------------------------------------------
+static void drawProjectSettingsDialog(Manager *manager)
+{
+	if (!manager->showProjectSettings) return;
+
+	ImGui::OpenPopup("Project Settings");
+	ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+	ImGui::SetNextWindowSize(ImVec2(450, 300), ImGuiCond_FirstUseEver);
+
+	if (!ImGui::BeginPopupModal("Project Settings", &manager->showProjectSettings))
+		return;
+
+	Manager::PublishSettings &ps = manager->publishSettings;
+
+	inputStr("Default Game Name", ps.platforms[0].gameName);
+	// Sync to other platforms
+	for (int i = 1; i < 3; ++i)
+		ps.platforms[i].gameName = ps.platforms[0].gameName;
+
+	ImGui::Separator();
+
+	// Default level
+	ImGui::SetNextItemWidth(400.0f);
+	std::vector<fs::path> worldFiles;
+	if (manager->projectOpened)
+	{
+		std::error_code ec;
+		fs::path assetsDir = manager->projectPath / "Assets";
+		if (fs::exists(assetsDir, ec))
+		{
+			for (const auto &entry : fs::recursive_directory_iterator(assetsDir, ec))
+				if (entry.is_regular_file() && entry.path().extension() == ".world")
+					worldFiles.push_back(entry.path());
+		}
+	}
+
+	if (ImGui::BeginCombo("Default Level", ps.defaultLevel.empty() ? "(none)" : ps.defaultLevel.c_str()))
+	{
+		for (const auto &wf : worldFiles)
+		{
+			std::string relPath = fs::relative(wf, manager->projectPath / "Assets").generic_string();
+			bool isSelected = (ps.defaultLevel == relPath);
+			if (ImGui::Selectable(relPath.c_str(), isSelected))
+				ps.defaultLevel = relPath;
+			if (isSelected)
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+
+	ImGui::Separator();
+
+	browseFolder("Runtime Template Folder", ps.templateDir);
+	ImGui::TextDisabled("  Folder with the built kemena3d-runtime + its libs.");
+
+	ImGui::Separator();
+
+	if (ImGui::Button("Save", ImVec2(120, 0)))
+	{
+		manager->savePublishSettings();
+		ImGui::CloseCurrentPopup();
+		manager->showProjectSettings = false;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	{
+		ImGui::CloseCurrentPopup();
+		manager->showProjectSettings = false;
+	}
+
+	ImGui::EndPopup();
+}
+
+// ===========================================================================
+// Main draw
+// ===========================================================================
 void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 {
 	if (gui->menuBar())
@@ -61,9 +352,7 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 		if (gui->menu("File"))
 		{
 			if (gui->menuItem("New World", "", false, manager->projectOpened))
-			{
 				manager->newWorld();
-			}
 			if (gui->menuItem("Open World", "", false, manager->projectOpened))
 			{
 				auto files = pfd::open_file("Open World", manager->projectPath.string(),
@@ -82,27 +371,21 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 				manager->saveWorldAs();
 			gui->separator();
 			if (gui->menuItem("New Project", ""))
-			{
 				manager->newProject();
-			}
 			if (gui->menuItem("Open Project", ""))
-			{
 				manager->openProject();
-			}
 			if (gui->menuItem("Save Project", "", false, manager->projectOpened))
 			{
 			}
 			gui->separator();
-			if (gui->menuItem("Build Settings", "", false, manager->projectOpened))
-				manager->showExportDialog = true;
-			if (gui->menuItem("Build And Run", "", false, manager->projectOpened))
+			if (gui->menuItem("Publish...", "", false, manager->projectOpened))
 			{
+				manager->loadPublishSettings();
+				manager->showPublishDialog = true;
 			}
 			gui->separator();
 			if (gui->menuItem("Exit"))
-			{
 				manager->closeEditor();
-			}
 
 			gui->menuEnd();
 		}
@@ -167,9 +450,7 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					manager->panelGame->pressStop();
 			}
 			if (gui->menuItem("Build Scripts", "", false, manager->projectOpened))
-			{
 				manager->buildScripts();
-			}
 			gui->separator();
 			if (gui->menuItem("Sign In", ""))
 			{
@@ -180,6 +461,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			gui->separator();
 			if (gui->menuItem("Project Settings", "", false, manager->projectOpened))
 			{
+				manager->loadPublishSettings();
+				manager->showProjectSettings = true;
 			}
 			if (gui->menuItem("Preferences", ""))
 			{
@@ -261,7 +544,6 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			if (gui->menuItem("Create Empty", "", false, manager->projectOpened))
 				manager->createEmpty();
 
-			// 3D Object submenu
 			if (gui->menu("3D Object"))
 			{
 				if (gui->menuItem("Empty", "", false, manager->projectOpened))
@@ -285,7 +567,6 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			{
 			}
 
-			// Light submenu
 			if (gui->menu("Light"))
 			{
 				if (gui->menuItem("Sun", "", false, manager->projectOpened))
@@ -344,45 +625,24 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			{
 				if (gui->menuItem("Inspector", "", showPanel.inspector))
 					showPanel.inspector = !showPanel.inspector;
-
 				if (gui->menuItem("Hierarchy", "", showPanel.hierarchy))
 					showPanel.hierarchy = !showPanel.hierarchy;
-
 				if (gui->menuItem("Project", "", showPanel.project))
 					showPanel.project = !showPanel.project;
-
 				if (gui->menuItem("Console", "", showPanel.console))
 					showPanel.console = !showPanel.console;
-
 				if (gui->menuItem("Shader Editor", "", showPanel.shaderEditor))
 					showPanel.shaderEditor = !showPanel.shaderEditor;
-
 				if (gui->menuItem("Script Editor", "", showPanel.scriptEditor))
 					showPanel.scriptEditor = !showPanel.scriptEditor;
-
 				if (gui->menuItem("Game", "", showPanel.game))
 					showPanel.game = !showPanel.game;
-
 				if (gui->menuItem("Animator Editor", "", showPanel.animatorEditor))
 					showPanel.animatorEditor = !showPanel.animatorEditor;
-
 				if (gui->menuItem("Animation Editor", "", showPanel.animationEditor))
 					showPanel.animationEditor = !showPanel.animationEditor;
-
 				ImGui::EndMenu();
 			}
-
-			// if (gui->menuItem("Rendering", "", showRendering))
-			// showRendering = !showRendering;
-
-			// if (gui->menuItem("Animation", "", showAnimation))
-			// showAnimation = !showAnimation;
-
-			// if (gui->menuItem("Audio", "", showAudio))
-			// showAudio = !showAudio;
-
-			// if (gui->menuItem("Sequencing", "", showSequencing))
-			// showSequencing = !showSequencing;
 
 			gui->separator();
 
@@ -395,13 +655,10 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 							{"Ini files", "ini"},
 							{"All files", "*"}};
 					SDL_ShowSaveFileDialog(
-						saveWorkspaceCallback,
-						nullptr, // userdata
+						saveWorkspaceCallback, nullptr,
 						window->getSdlWindow(),
-						filters,
-						SDL_arraysize(filters),
-						"layout.ini" // default filename
-					);
+						filters, SDL_arraysize(filters),
+						"layout.ini");
 				}
 				if (gui->menuItem("Load", ""))
 				{
@@ -410,13 +667,10 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 							{"Ini files", "ini"},
 							{"All files", "*"}};
 					SDL_ShowOpenFileDialog(
-						loadWorkspaceCallback,
-						nullptr, // userdata
+						loadWorkspaceCallback, nullptr,
 						window->getSdlWindow(),
-						filters,
-						SDL_arraysize(filters),
-						"layout.ini", // default start manager/dir
-						false);
+						filters, SDL_arraysize(filters),
+						"layout.ini", false);
 				}
 				gui->separator();
 				if (gui->menuItem("Reset", ""))
@@ -424,10 +678,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					isReloadLayout = true;
 					layoutFileName = "layout.ini";
 				}
-
 				ImGui::EndMenu();
 			}
-
 			gui->menuEnd();
 		}
 
@@ -435,18 +687,12 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 		if (gui->menu("Help"))
 		{
 			if (gui->menuItem("About", ""))
-			{
 				showAbout = true;
-			}
 			if (gui->menuItem("Splash Screen", ""))
-			{
 				showSplashScreen = true;
-			}
 			gui->separator();
 			if (gui->menuItem("Manual", ""))
-			{
 				SDL_OpenURL("https://kemena3d.com/manual");
-			}
 			if (gui->menuItem("Scripting Reference", ""))
 			{
 			}
@@ -467,7 +713,13 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 		gui->menuBarEnd();
 	}
 
-	// ---- Build Settings / Export dialog ------------------------------------
+	// ---- Publish Dialog -----------------------------------------------------
+	drawPublishDialog(manager);
+
+	// ---- Project Settings Dialog --------------------------------------------
+	drawProjectSettingsDialog(manager);
+
+	// ---- Legacy Build Settings dialog (kept for backward compat) ------------
 	if (manager->showExportDialog)
 	{
 		ImGui::OpenPopup("Build Settings");
@@ -478,16 +730,6 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 	if (ImGui::BeginPopupModal("Build Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
 		Manager::ExportSettings &es = manager->exportSettings;
-
-		auto inputStr = [](const char *label, std::string &str, float w = 340.0f)
-		{
-			char buf[1024];
-			strncpy_s(buf, sizeof(buf), str.c_str(), _TRUNCATE);
-			buf[sizeof(buf) - 1] = '\0';
-			ImGui::SetNextItemWidth(w);
-			if (ImGui::InputText(label, buf, sizeof(buf)))
-				str = buf;
-		};
 
 		const char *platforms[] = {"Windows", "Linux", "macOS"};
 		ImGui::SetNextItemWidth(340.0f);
@@ -503,43 +745,34 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 
 		ImGui::Separator();
 
-		inputStr("Output Folder", es.outputDir);
-		ImGui::SameLine();
-		if (ImGui::SmallButton("...##exportOut"))
-		{
-			auto sel = pfd::select_folder("Choose output folder").result();
-			if (!sel.empty())
-				es.outputDir = sel;
-		}
+		browseFolder("Output Folder", es.outputDir);
 
-		inputStr("Runtime Template Folder", es.templateDir);
+		inputStr("Template Folder", es.templateDir);
 		ImGui::SameLine();
 		if (ImGui::SmallButton("...##exportTpl"))
 		{
 			auto sel = pfd::select_folder("Choose runtime template folder").result();
-			if (!sel.empty())
-				es.templateDir = sel;
+			if (!sel.empty()) es.templateDir = sel;
 		}
 		ImGui::TextDisabled("  Folder with the built kemena3d-runtime + its libs.");
 
 		if (es.platform == 0)
-		{
-			inputStr("Icon (.ico)", es.iconPath);
-			ImGui::SameLine();
-			if (ImGui::SmallButton("...##exportIco"))
-			{
-				auto sel = pfd::open_file("Choose icon", "",
-										  {"Icon (*.ico)", "*.ico"})
-							   .result();
-				if (!sel.empty())
-					es.iconPath = sel[0];
-			}
-		}
+			browseFile("Icon (.ico)", es.iconPath, "Icon (*.ico)");
 
 		ImGui::Separator();
 		if (ImGui::Button("Export", ImVec2(120, 0)))
 		{
-			if (manager->exportGame(es))
+			// Route to new publish system
+			Manager::PublishSettings &ps = manager->publishSettings;
+			ps.platforms[es.platform].gameName = es.gameName;
+			ps.platforms[es.platform].title = es.title;
+			ps.platforms[es.platform].width = es.width;
+			ps.platforms[es.platform].height = es.height;
+			ps.platforms[es.platform].fullscreen = es.fullscreen;
+			ps.platforms[es.platform].outputDir = es.outputDir;
+			ps.platforms[es.platform].templateDir = es.templateDir;
+			ps.platforms[es.platform].iconPath = es.iconPath;
+			if (manager->publishGame(es.platform))
 				ImGui::CloseCurrentPopup();
 		}
 		ImGui::SameLine();
@@ -552,10 +785,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 
 void MainMenu::drawAbout()
 {
-	if (!showAbout)
-		return;
+	if (!showAbout) return;
 
-	// Lazy-load the logo texture once
 	if (texAboutLogo == nullptr)
 	{
 		kAssetManager *am = manager->getAssetManager();
@@ -569,7 +800,6 @@ void MainMenu::drawAbout()
 	}
 
 	ImGui::OpenPopup("About Kemena3D");
-
 	ImGuiIO &io = ImGui::GetIO();
 	ImVec2 center(floorf(io.DisplaySize.x * 0.5f), floorf(io.DisplaySize.y * 0.5f));
 	ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -586,7 +816,6 @@ void MainMenu::drawAbout()
 	{
 		float winW = ImGui::GetContentRegionAvail().x;
 
-		// Logo
 		if (texAboutLogo != nullptr)
 		{
 			constexpr float LOGO_W = 200.0f;
@@ -599,7 +828,6 @@ void MainMenu::drawAbout()
 		ImGui::Separator();
 		ImGui::Spacing();
 
-		// Link buttons — three equal-width columns
 		constexpr float BTN_H = 28.0f;
 		constexpr float GAP = 6.0f;
 		float btnW = (winW - GAP * 2.0f) / 3.0f;
@@ -623,7 +851,6 @@ void MainMenu::drawAbout()
 		ImGui::Separator();
 		ImGui::Spacing();
 
-		// "Created by" line
 		const char *credit = "Created by Lee Zhi Eng";
 		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (winW - ImGui::CalcTextSize(credit).x) * 0.5f);
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.60f, 0.62f, 0.68f, 1.0f));
@@ -631,19 +858,15 @@ void MainMenu::drawAbout()
 		ImGui::PopStyleColor();
 
 		ImGui::Spacing();
-
 		ImGui::EndPopup();
 	}
 
 	ImGui::PopStyleVar(3);
-
-	if (!stillOpen)
-		showAbout = false;
+	if (!stillOpen) showAbout = false;
 }
 
 void *MainMenu::readOpen(ImGuiContext *, ImGuiSettingsHandler *, const char *name)
 {
-	// We only care about our custom section
 	if (strcmp(name, "Panels") == 0)
 		return (void *)1;
 	return nullptr;
@@ -684,7 +907,6 @@ void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer 
 	out_buf->appendf("GameOpened=%d\n", showPanel.game ? 1 : 0);
 	out_buf->appendf("AnimatorEditorOpened=%d\n", showPanel.animatorEditor ? 1 : 0);
 	out_buf->appendf("AnimationEditorOpened=%d\n", showPanel.animationEditor ? 1 : 0);
-
 	out_buf->append("\n");
 }
 
