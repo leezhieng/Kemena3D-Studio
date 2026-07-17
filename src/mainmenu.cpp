@@ -499,6 +499,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					manager->createNewAnimator();
 				if (ImGui::MenuItem("Animation Clip"))
 					manager->createNewAnimation();
+				if (ImGui::MenuItem("Particle"))
+					manager->createNewParticle();
 				ImGui::EndMenu();
 			}
 			if (gui->menuItem("Show In Explorer", "", false, manager->projectOpened))
@@ -563,8 +565,11 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 				gui->menuEnd();
 			}
 
-			if (gui->menuItem("Effects", "", false, manager->projectOpened))
+			if (gui->menu("Effects"))
 			{
+				if (gui->menuItem("Particle", "", false, manager->projectOpened))
+					manager->createParticle();
+				gui->menuEnd();
 			}
 
 			if (gui->menu("Light"))

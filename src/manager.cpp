@@ -2069,6 +2069,38 @@ void Manager::createAudio()
             if (panelHierarchy) panelHierarchy->refreshList(); });
 }
 
+void Manager::createParticle()
+{
+    if (!scene)
+        return;
+
+    kObject *obj = new kObject();
+    obj->setName("Particle System");
+    scene->addObject(obj);
+    kString uuid = obj->getUuid();
+
+    // Attach a default particle descriptor
+    kParticle p;
+    p.uuid = generateUuid();
+    p.name = "Particle System";
+    p.isActive = true;
+    p.looping = true;
+    obj->addParticle(p);
+
+    finishCreate(this, obj, scene, [this, obj, uuid]()
+                 {
+            scene->removeObject(obj);
+            selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
+                                  selectedObjects.end());
+            if (selectedObject == obj) selectedObject = nullptr;
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, obj, uuid]()
+                 {
+            scene->addObject(obj, uuid);
+            selectedObject = obj;
+            selectObject(uuid, true);
+            if (panelHierarchy) panelHierarchy->refreshList(); });
+}
+
 void Manager::startAudioPreview(kAudioSource &src)
 {
     if (!audioPreviewManager)

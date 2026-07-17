@@ -167,6 +167,7 @@ public:
     void createTerrain();
     void createNavMesh();
     void createAudio();
+    void createParticle();
 
     // --- Publish ------------------------------------------------------------
 
