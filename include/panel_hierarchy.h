@@ -31,18 +31,18 @@ public:
 	bool focused = false; ///< True while the hierarchy window owns ImGui focus.
 
 private:
-	GLuint iconAdd = 0; ///< Texture handle for the "add object" toolbar button.
-	GLuint iconMag = 0; ///< Texture handle for the search-bar magnifier icon.
+	uint32_t iconAdd = 0; ///< Texture handle for the "add object" toolbar button.
+	uint32_t iconMag = 0; ///< Texture handle for the search-bar magnifier icon.
 
-	GLuint iconWorld = 0;	///< Icon for the world root node.
-	GLuint iconScene = 0;	///< Icon for scene nodes.
-	GLuint iconMesh = 0;	///< Icon for mesh objects.
-	GLuint iconEmpty = 0;	///< Icon for empty/generic objects.
-	GLuint iconLight = 0;	///< Icon for light objects.
-	GLuint iconCamera = 0;	///< Icon for camera objects.
-	GLuint iconAudio = 0;	///< Icon for audio emitter objects.
-	GLuint iconPrefab = 0;	///< Icon for prefab-instance root nodes.
-	GLuint iconTerrain = 0; ///< Icon for terrain tile objects.
+	uint32_t iconWorld = 0;	///< Icon for the world root node.
+	uint32_t iconScene = 0;	///< Icon for scene nodes.
+	uint32_t iconMesh = 0;	///< Icon for mesh objects.
+	uint32_t iconEmpty = 0;	///< Icon for empty/generic objects.
+	uint32_t iconLight = 0;	///< Icon for light objects.
+	uint32_t iconCamera = 0;	///< Icon for camera objects.
+	uint32_t iconAudio = 0;	///< Icon for audio emitter objects.
+	uint32_t iconPrefab = 0;	///< Icon for prefab-instance root nodes.
+	uint32_t iconTerrain = 0; ///< Icon for terrain tile objects.
 
 	kString searchBuffer; ///< Current text in the hierarchy search box.
 
@@ -62,7 +62,7 @@ private:
 		std::vector<std::unique_ptr<Node>> children; ///< Child rows, owned by this node.
 
 		kString uuid;	   ///< UUID of the represented object/scene (used as ImGui ID and selection key).
-		GLuint icon = 0;   ///< Texture handle drawn beside the name.
+		uint32_t icon = 0;   ///< Texture handle drawn beside the name.
 		kString type = ""; ///< Node category: world, scene, mesh, etc.
 
 		// True for nodes that live underneath a prefab instance root.
@@ -78,7 +78,7 @@ private:
 		 * @param i Icon texture handle (0 for none).
 		 * @param t Node type string (world, scene, mesh, ...).
 		 */
-		Node(const kString &n, const kString &g, GLuint i = 0, const kString &t = "")
+		Node(const kString &n, const kString &g, uint32_t i = 0, const kString &t = "")
 			: name(n), uuid(g), icon(i), type(t) {}
 	};
 

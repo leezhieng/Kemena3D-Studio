@@ -97,7 +97,7 @@ ImTextureRef PanelProject::getThumbnailIcon(const kString& uuid, ImTextureRef de
 			thumbPath.string(), thumbKey, kTextureFormat::TEX_FORMAT_RGBA, false);
 		if (tex && tex->getTextureID() != 0)
 		{
-			GLuint glId = (GLuint)tex->getTextureID();
+			uint32_t glId = tex->getTextureID();
 			ImTextureRef ref = (ImTextureRef)(intptr_t)glId;
 			thumbnailCache[uuid] = { glId, ref };
 			return ref;

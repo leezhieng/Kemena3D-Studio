@@ -394,7 +394,7 @@ void PanelHierarchy::refreshList()
 	manager->objectMap.clear();
 	root.children.clear();
 
-	auto pickIcon = [&](kObject *obj, kString &outType) -> GLuint
+	auto pickIcon = [&](kObject *obj, kString &outType) -> uint32_t
 	{
 		// Prefab-instance roots use the prefab icon regardless of the
 		// underlying object type, so they're visually distinct in the tree.
@@ -454,7 +454,7 @@ void PanelHierarchy::refreshList()
 		[&](Node *parent, kObject *obj, bool insidePrefab)
 	{
 		kString type;
-		GLuint icon = pickIcon(obj, type);
+		uint32_t icon = pickIcon(obj, type);
 
 		auto childNode = std::make_unique<Node>(obj->getName(), obj->getUuid(), icon, type);
 		childNode->isPrefabDescendant = insidePrefab;

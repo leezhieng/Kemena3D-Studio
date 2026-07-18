@@ -98,7 +98,7 @@ class PanelProject
 		char     renameBuffer[256] = "";  ///< Backing buffer for the rename text field.
 
 		kAssetManager* assetManager = nullptr; ///< Asset manager used to resolve and generate thumbnails.
-		std::unordered_map<kString, std::pair<GLuint, ImTextureRef>> thumbnailCache; ///< Cache of generated thumbnails keyed by asset UUID (GL texture + ImGui ref).
+		std::unordered_map<kString, std::pair<uint32_t, ImTextureRef>> thumbnailCache; ///< Cache of generated thumbnails keyed by asset UUID (texture handle + ImGui ref).
 
 	public:
 		/**
