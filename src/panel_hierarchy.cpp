@@ -209,6 +209,10 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	// Item clicked
 	if (gui->isItemClicked() && !node.isPrefabDescendant)
 	{
+		// Clicking a scene object in preview mode returns to GameWorld.
+		if (manager->activeMode != Manager::EditorMode::GameWorld)
+			manager->setEditorMode(Manager::EditorMode::GameWorld);
+
 		// Disable terrain sculpt mode when selecting any object from the hierarchy
 		if (manager->panelTerrain)
 			manager->panelTerrain->sculpt.active = false;
@@ -283,6 +287,26 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 				manager,
 				selBefore, selObjBefore,
 				selAfter, selObjAfter));
+		}
+	}
+
+	// Right-click context menu for object rows
+	if (isObjectRow && !node.isPrefabDescendant)
+	{
+		if (ImGui::BeginPopupContextItem("##HierarchyCtx"))
+		{
+			// "Unpack Prefab" — only for prefab instance roots
+			kObject *ctxObj = nullptr;
+			if (manager->objectMap.count(node.uuid))
+				ctxObj = manager->objectMap[node.uuid].object;
+
+			if (ctxObj && !ctxObj->getPrefabRef().empty())
+			{
+				if (ImGui::MenuItem("Unpack Prefab"))
+					manager->unpackPrefabInstance(ctxObj);
+			}
+
+			ImGui::EndPopup();
 		}
 	}
 

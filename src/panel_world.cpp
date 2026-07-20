@@ -156,6 +156,25 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
     gui->separator();
 
+    // Preview mode indicator
+    if (manager->activeMode != Manager::EditorMode::GameWorld)
+    {
+        const char *modeLabel = "Preview";
+        switch (manager->activeMode)
+        {
+        case Manager::EditorMode::PrefabPreview:  modeLabel = "Prefab Editor"; break;
+        case Manager::EditorMode::ParticlePreview: modeLabel = "Particle Preview"; break;
+        case Manager::EditorMode::AnimatorPreview: modeLabel = "Animator Preview"; break;
+        default: break;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        ImGui::TextUnformatted(modeLabel);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::TextDisabled("— click a scene object to return to game world");
+        gui->separator();
+    }
+
     kVec2 availSize = gui->getContentRegionAvail();
     width = (int)availSize.x;
     height = (int)availSize.y;
@@ -275,11 +294,61 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     hovered = gui->isWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
+    // --- Preview camera orbit (LMB drag in preview mode) ---
+    if (manager->activeMode != Manager::EditorMode::GameWorld &&
+        manager->previewCamera && hovered)
+    {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+            !ImGuizmo::IsUsing() && !ImGuizmo::IsOver())
+        {
+            if (!manager->previewCamDragging)
+            {
+                manager->previewCamDragging = true;
+            }
+            ImVec2 delta = ImGui::GetIO().MouseDelta;
+            manager->previewCamYaw -= delta.x * 0.3f;
+            manager->previewCamPitch += delta.y * 0.3f;
+            manager->previewCamPitch = std::clamp(manager->previewCamPitch, -89.0f, 89.0f);
+
+            // Apply orbit
+            float pr = glm::radians(manager->previewCamPitch);
+            float yr = glm::radians(manager->previewCamYaw);
+            kVec3 camDir(std::cos(pr) * std::sin(yr),
+                         std::sin(pr),
+                         std::cos(pr) * std::cos(yr));
+            manager->previewCamera->setPosition(
+                manager->previewCamPivot + camDir * manager->previewCamDist);
+            manager->previewCamera->setLookAt(manager->previewCamPivot);
+        }
+        else
+        {
+            manager->previewCamDragging = false;
+        }
+
+        // Scroll wheel zoom
+        float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f && hovered)
+        {
+            manager->previewCamDist -= wheel * 0.5f;
+            manager->previewCamDist = std::max(0.5f, std::min(manager->previewCamDist, 500.0f));
+
+            float pr = glm::radians(manager->previewCamPitch);
+            float yr = glm::radians(manager->previewCamYaw);
+            kVec3 camDir(std::cos(pr) * std::sin(yr),
+                         std::sin(pr),
+                         std::cos(pr) * std::cos(yr));
+            manager->previewCamera->setPosition(
+                manager->previewCamPivot + camDir * manager->previewCamDist);
+            manager->previewCamera->setLookAt(manager->previewCamPivot);
+        }
+    }
+
     // Track whether the cursor is over terrain for any active tool mode
     bool cursorOverTerrain = false;
 
-    // --- Terrain sculpt / paint ---
-    if (manager->panelTerrain)
+    // --- Terrain sculpt / paint (GameWorld only) ---
+    bool isPreviewMode = (manager->activeMode != Manager::EditorMode::GameWorld);
+    if (manager->panelTerrain && !isPreviewMode)
     {
         bool isSculpting = manager->panelTerrain->sculpt.active;
         bool isPainting = manager->panelTerrain->paint.active;

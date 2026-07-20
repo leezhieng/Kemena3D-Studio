@@ -151,6 +151,8 @@ public:
     kWindow *getWindow() { return window; }
     kWorld *getWorld() { return world; }
     kAssetManager *getAssetManager() { return world ? world->getAssetManager() : nullptr; }
+    kWorld *getActiveWorld() { return (activeMode == EditorMode::GameWorld) ? world : previewWorld; }
+    kScene *getActiveScene() { return (activeMode == EditorMode::GameWorld) ? scene : (previewWorld ? previewWorld->getScenes().empty() ? nullptr : previewWorld->getScenes()[0] : nullptr); }
 
     // --- Edit actions -------------------------------------------------------
     void selectAll();
@@ -326,6 +328,7 @@ public:
     void reorderBefore(const kString &uuid, const kString &siblingUuid);
     kObject *findPrefabInstanceRoot(kObject *obj);
     bool createPrefabFromSelection();
+    bool createPrefabFromObject(const kString& objectUuid, const fs::path& targetDir);
     bool applyPrefabInstance(kObject *instanceRoot);
     void refreshAllPrefabInstances(const kString &prefabUuid);
     void unpackPrefabInstance(kObject *instanceRoot);
@@ -377,6 +380,16 @@ public:
     fs::path exePath;
     fs::path baseDir;
 
+    // Editor mode — controls what the World panel renders
+    enum class EditorMode
+    {
+        GameWorld,        ///< Normal scene editing
+        PrefabPreview,    ///< Previewing/editing a .prefab asset
+        ParticlePreview,  ///< Previewing a .particle asset
+        AnimatorPreview   ///< Previewing an .animator asset
+    };
+    EditorMode activeMode = EditorMode::GameWorld;
+
     // Project info
     kString projectName;
     bool projectOpened = false;
@@ -408,6 +421,26 @@ public:
     kVec3 editorCamOrbitPivot = kVec3(0.0f, 3.5f, 0.0f);
     float editorCamOrbitDistance = 14.0f;
     bool editorCamLoadPending = false;
+
+    // --- Preview world (for prefab / particle / animator preview) ---
+    kWorld *previewWorld = nullptr;    ///< Standalone world for asset preview, separate from the game world.
+    kCamera *previewCamera = nullptr;  ///< Camera for the preview world (orbit-style).
+    kString previewAssetPath;          ///< Current asset file being previewed.
+    kString previewAssetType;          ///< Extension of the previewed asset (".prefab", ".particle", ".animator").
+
+    // Preview-camera orbit state (reset every time a new asset is opened)
+    float previewCamPitch = 24.09f;  ///< Orbit pitch (degrees), matches model viewer default.
+    float previewCamYaw   = 26.57f;  ///< Orbit yaw (degrees), matches model viewer default.
+    kVec3 previewCamPivot = kVec3(0.0f, 0.0f, 0.0f);  ///< Orbit pivot (AABB centre of previewed asset).
+    float previewCamDist  = 5.0f;    ///< Orbit distance, computed via framePreviewCamera().
+    bool  previewCamDragging = false; ///< True while the user is dragging to orbit.
+
+    void setEditorMode(EditorMode mode, const kString &assetPath = "", const kString &assetType = "");
+    kWorld *getActiveWorld();
+    kScene *getActiveScene();
+    void initPreviewWorld();
+    void destroyPreviewWorld();
+    void framePreviewCamera();
 
     std::vector<ImportTask> importQueue;
     std::future<void> importFuture;

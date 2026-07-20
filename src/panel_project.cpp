@@ -295,6 +295,31 @@ void PanelProject::acceptAssetDropInto(const fs::path& targetDir)
 			needRefreshList = true;
 		}
 	}
+	else if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT"))
+	{
+		kString objectUuid(static_cast<const char*>(payload->Data));
+		if (!objectUuid.empty())
+		{
+			// Look up the object to check if it's already a prefab instance.
+			kObject *obj = nullptr;
+			if (manager->objectMap.count(objectUuid))
+				obj = manager->objectMap[objectUuid].object;
+
+			bool isPrefabInstance = (obj && !obj->getPrefabRef().empty());
+
+			if (isPrefabInstance)
+			{
+				// Store pending state and open the confirmation popup.
+				pendingPrefabObjUuid = objectUuid;
+				pendingPrefabTargetDir = targetDir;
+				ImGui::OpenPopup("CreatePrefabFromInstance?");
+			}
+			else
+			{
+				manager->createPrefabFromObject(objectUuid, targetDir);
+			}
+		}
+	}
 	ImGui::EndDragDropTarget();
 }
 
@@ -426,6 +451,43 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 		}
 
 		drawRenameModal();
+
+		// Confirmation popup when dragging a prefab instance from the hierarchy
+		// to the project panel to create a new, independent prefab.
+		if (ImGui::BeginPopupModal("CreatePrefabFromInstance?", nullptr,
+		                           ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::TextWrapped(
+				"This object is already a prefab instance.");
+			ImGui::Spacing();
+			ImGui::TextWrapped(
+				"Creating a new prefab from it will break the link to "
+				"the existing prefab. The object will become an instance "
+				"of the new prefab instead.");
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			if (ImGui::Button("Create New Prefab", ImVec2(160, 0)))
+			{
+				if (!pendingPrefabObjUuid.empty())
+				{
+					manager->createPrefabFromObject(
+						pendingPrefabObjUuid, pendingPrefabTargetDir);
+				}
+				pendingPrefabObjUuid.clear();
+				pendingPrefabTargetDir.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			{
+				pendingPrefabObjUuid.clear();
+				pendingPrefabTargetDir.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 	gui->windowEnd();
 

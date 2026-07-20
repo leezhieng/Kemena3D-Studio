@@ -2202,6 +2202,199 @@ namespace
 } // namespace
 
 // ---------------------------------------------------------------------------
+// Particle section (shown between Transform and Components)
+// ---------------------------------------------------------------------------
+static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr)
+{
+	auto &particles = obj->getParticles();
+	if (particles.empty())
+		return;
+
+	for (size_t pi = 0; pi < particles.size(); ++pi)
+	{
+		auto &p = particles[pi];
+
+		char headerLabel[128];
+		snprintf(headerLabel, sizeof(headerLabel), "%s##PartSec%d",
+		         p.name.c_str(), (int)pi);
+
+		if (!gui->collapsingHeader(headerLabel, ImGuiTreeNodeFlags_DefaultOpen))
+			continue;
+
+		if (!beginPropTable(gui, ("PartTable" + std::to_string(pi)).c_str()))
+			continue;
+
+		// --- Name ---
+		{
+			char nameBuf[128];
+			strncpy_s(nameBuf, sizeof(nameBuf), p.name.c_str(), _TRUNCATE);
+			propLabel(gui, "Name");
+			if (ImGui::InputText("##PartName", nameBuf, sizeof(nameBuf)))
+			{
+				p.name = nameBuf;
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+
+		// --- Active / Looping ---
+		{
+			propLabel(gui, "Active");
+			if (ImGui::Checkbox("##PartActive", &p.isActive))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+		{
+			propLabel(gui, "Looping");
+			if (ImGui::Checkbox("##PartLoop", &p.looping))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+
+		// --- Emission ---
+		{
+			float maxP = (float)p.maxParticles;
+			propLabel(gui, "Max Particles");
+			if (ImGui::DragFloat("##PartMaxP", &maxP, 1.0f, 1.0f, 100000.0f, "%.0f"))
+			{
+				p.maxParticles = (int)std::max(1.0f, maxP);
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			propLabel(gui, "Emission Rate");
+			if (ImGui::DragFloat("##PartRate", &p.emissionRate, 0.5f, 0.0f, 10000.0f, "%.1f"))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			propLabel(gui, "Lifetime");
+			if (ImGui::DragFloat("##PartLife", &p.lifetime, 0.05f, 0.01f, 300.0f, "%.2f"))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			propLabel(gui, "Gravity Scale");
+			if (ImGui::DragFloat("##PartGravity", &p.gravityScale, 0.01f, -10.0f, 10.0f, "%.2f"))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+
+		// --- Velocity ---
+		{
+			float vel[3] = {p.startVelocity.x, p.startVelocity.y, p.startVelocity.z};
+			propLabel(gui, "Start Velocity");
+			if (ImGui::DragFloat3("##PartVel", vel, 0.01f))
+			{
+				p.startVelocity = kVec3(vel[0], vel[1], vel[2]);
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			propLabel(gui, "Start Speed");
+			if (ImGui::DragFloat("##PartSpeed", &p.startSpeed, 0.05f, 0.0f, 1000.0f, "%.2f"))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			float var[3] = {p.velocityVariance.x, p.velocityVariance.y, p.velocityVariance.z};
+			propLabel(gui, "Vel. Variance");
+			if (ImGui::DragFloat3("##PartVar", var, 0.01f))
+			{
+				p.velocityVariance = kVec3(var[0], var[1], var[2]);
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+
+		// --- Visual ---
+		{
+			float cs[4] = {p.colorStart.r, p.colorStart.g, p.colorStart.b, p.colorStart.a};
+			propLabel(gui, "Start Color");
+			if (ImGui::ColorEdit4("##PartCStart", cs))
+			{
+				p.colorStart = kVec4(cs[0], cs[1], cs[2], cs[3]);
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			float ce[4] = {p.colorEnd.r, p.colorEnd.g, p.colorEnd.b, p.colorEnd.a};
+			propLabel(gui, "End Color");
+			if (ImGui::ColorEdit4("##PartCEnd", ce))
+			{
+				p.colorEnd = kVec4(ce[0], ce[1], ce[2], ce[3]);
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			propLabel(gui, "Start Size");
+			if (ImGui::DragFloat("##PartSzStart", &p.sizeStart, 0.01f, 0.0f, 100.0f, "%.2f"))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			propLabel(gui, "End Size");
+			if (ImGui::DragFloat("##PartSzEnd", &p.sizeEnd, 0.01f, 0.0f, 100.0f, "%.2f"))
+			{
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+
+		// --- Emission Shape ---
+		{
+			const char *shapeNames[] = {"Point", "Sphere", "Cone", "Box"};
+			int curShape = (int)p.emissionShape;
+			propLabel(gui, "Shape");
+			if (ImGui::Combo("##PartEmitShape", &curShape, shapeNames, 4))
+			{
+				p.emissionShape = (kParticle::EmissionShape)curShape;
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+
+			float sz[3] = {p.shapeSize.x, p.shapeSize.y, p.shapeSize.z};
+			propLabel(gui, "Shape Size");
+			if (ImGui::DragFloat3("##PartShapeSz", sz, 0.01f, 0.01f, 1000.0f))
+			{
+				p.shapeSize = kVec3(sz[0], sz[1], sz[2]);
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+
+		// --- Texture ---
+		{
+			char texBuf[512];
+			strncpy_s(texBuf, sizeof(texBuf), p.texturePath.c_str(), _TRUNCATE);
+			propLabel(gui, "Texture Path");
+			if (ImGui::InputText("##PartTex", texBuf, sizeof(texBuf)))
+			{
+				p.texturePath = texBuf;
+				mgr->projectSaved = false;
+				mgr->refreshWindowTitle();
+			}
+		}
+
+		gui->tableEnd();
+
+		gui->spacing();
+		gui->separator();
+		gui->spacing();
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Components section (Physics / Scripts / Particles / Audio Sources / Listener)
 // ---------------------------------------------------------------------------
 static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manager)
@@ -4491,15 +4684,6 @@ void PanelInspector::draw(bool &opened)
             gui->setCursorPosX(gui->getCursorPosX() + (gui->getContentRegionAvail().x - tw) * 0.5f);
             gui->textDisabled(text);
 
-            gui->spacing();
-            gui->separator();
-            gui->spacing();
-
-            // Multi-select Create Prefab: wraps the selection in a new empty
-            // object positioned at the last-selected, parents everything under
-            // it, and saves the empty as a prefab template + instance.
-            if (gui->button("Create Prefab", kIvec2(-1, 0)))
-                manager->createPrefabFromSelection();
         }
         else
         {
@@ -4630,97 +4814,10 @@ void PanelInspector::draw(bool &opened)
                 else if (type == NODE_TYPE_AUDIO)
                     drawAudioSection(gui, obj, manager);
 
+                drawParticleSection(gui, obj, manager);
+
                 drawComponentsSection(gui, obj, manager);
 
-                // Prefab actions: "Save as Prefab" works for any selection;
-                // "Edit Prefab" only appears when the selection is a prefab
-                // instance root (i.e. has a non-empty prefab_ref).
-                gui->spacing();
-                gui->separator();
-                gui->spacing();
-
-                if (gui->collapsingHeader("Prefab", ImGuiTreeNodeFlags_DefaultOpen))
-                {
-                    if (!obj->getPrefabRef().empty())
-                    {
-                        // Prefab instance root — show linkage + lifecycle actions.
-                        gui->text(kString("Linked: ") + obj->getPrefabRef());
-
-                        if (gui->button("Edit Prefab", kIvec2(-1, 0)))
-                        {
-                            // Resolve the .prefab file by scanning Assets for
-                            // a matching prefab UUID.
-                            const kString &refUuid = obj->getPrefabRef();
-                            fs::path found;
-                            for (const auto &p : fs::recursive_directory_iterator(
-                                     manager->projectPath / "Assets"))
-                            {
-                                if (!p.is_regular_file())
-                                    continue;
-                                if (p.path().extension() != ".prefab")
-                                    continue;
-                                kPrefab tmp;
-                                if (tmp.loadFromFile(p.path().string()) &&
-                                    tmp.getUuid() == refUuid)
-                                {
-                                    found = p.path();
-                                    break;
-                                }
-                            }
-                            if (!found.empty())
-                                manager->editPrefab(found);
-                            else
-                                std::cerr << "Edit Prefab: source .prefab not found for "
-                                          << refUuid << "\n";
-                        }
-
-                        // Apply pushes per-instance edits/additions back into
-                        // the .prefab template AND replaces every other live
-                        // instance of this prefab with the new template.
-                        // This is destructive — gate it behind a modal.
-                        if (gui->button("Apply to Prefab", kIvec2(-1, 0)))
-                            ImGui::OpenPopup("Apply to Prefab?");
-
-                        if (ImGui::BeginPopupModal("Apply to Prefab?", nullptr,
-                                                   ImGuiWindowFlags_AlwaysAutoResize))
-                        {
-                            ImGui::TextWrapped(
-                                "This rewrites the prefab template with this "
-                                "instance's current state, then refreshes every "
-                                "instance of this prefab in the world.");
-                            ImGui::Spacing();
-                            ImGui::TextWrapped(
-                                "Per-instance changes on OTHER instances will "
-                                "be discarded. This action cannot be undone.");
-                            ImGui::Spacing();
-                            ImGui::Separator();
-                            ImGui::Spacing();
-
-                            kString prefabUuid = obj->getPrefabRef();
-                            if (ImGui::Button("Apply", ImVec2(120, 0)))
-                            {
-                                manager->applyPrefabInstance(obj);
-                                manager->refreshAllPrefabInstances(prefabUuid);
-                                ImGui::CloseCurrentPopup();
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Button("Cancel", ImVec2(120, 0)))
-                                ImGui::CloseCurrentPopup();
-                            ImGui::EndPopup();
-                        }
-
-                        // Unpack severs the prefab link, leaving plain scene
-                        // objects behind. Undoable via UnpackPrefabCommand.
-                        if (gui->button("Unpack Prefab", kIvec2(-1, 0)))
-                            manager->unpackPrefabInstance(obj);
-                    }
-                    else
-                    {
-                        // Not a prefab instance — offer to create one.
-                        if (gui->button("Create Prefab", kIvec2(-1, 0)))
-                            manager->createPrefabFromSelection();
-                    }
-                }
             }
         }
 

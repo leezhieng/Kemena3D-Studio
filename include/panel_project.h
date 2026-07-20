@@ -97,6 +97,10 @@ class PanelProject
 		fs::path renameTargetPath;        ///< Filesystem path of the asset being renamed.
 		char     renameBuffer[256] = "";  ///< Backing buffer for the rename text field.
 
+		// Prefab-from-instance confirmation popup state.
+		kString  pendingPrefabObjUuid;     ///< UUID of the prefab instance being dragged for new prefab creation.
+		fs::path pendingPrefabTargetDir;   ///< Target directory where the new prefab should be saved.
+
 		kAssetManager* assetManager = nullptr; ///< Asset manager used to resolve and generate thumbnails.
 		std::unordered_map<kString, std::pair<uint32_t, ImTextureRef>> thumbnailCache; ///< Cache of generated thumbnails keyed by asset UUID (texture handle + ImGui ref).
 

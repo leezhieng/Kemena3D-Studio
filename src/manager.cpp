@@ -5310,6 +5310,283 @@ bool Manager::createPrefabFromSelection()
     return true;
 }
 
+bool Manager::createPrefabFromObject(const kString& objectUuid, const fs::path& targetDir)
+{
+    if (!projectOpened || !scene || objectUuid.empty())
+        return false;
+
+    kObject *obj = findInTree(scene->getRootNode(), objectUuid);
+    if (!obj)
+        return false;
+
+    kString prefabName = obj->getName().empty() ? kString("New Prefab") : obj->getName();
+
+    // Build the template JSON from the in-scene subtree.
+    json templateJson = obj->serialize();
+
+    std::unordered_map<kString, kString> sceneToTemplate;
+    std::function<void(json &)> assignTemplateUuids = [&](json &node)
+    {
+        kString sceneUuid = node.value("uuid", kString(""));
+        kString tplUuid = generateUuid();
+        node["uuid"] = tplUuid;
+        // Strip prefab linkage from the template — only instances carry it.
+        node.erase("prefab_ref");
+        node.erase("template_uuid");
+        if (!sceneUuid.empty())
+            sceneToTemplate[sceneUuid] = tplUuid;
+        if (node.contains("children") && node["children"].is_array())
+            for (auto &c : node["children"])
+                assignTemplateUuids(c);
+    };
+    assignTemplateUuids(templateJson);
+
+    // Write the .prefab into the target directory.
+    fs::path filePath = targetDir / (prefabName + ".prefab");
+    int counter = 1;
+    while (fs::exists(filePath))
+    {
+        filePath = targetDir / (prefabName + " " + std::to_string(counter) + ".prefab");
+        counter++;
+    }
+
+    kPrefab prefab;
+    prefab.setUuid(generateUuid());
+    prefab.setName(prefabName);
+    prefab.setRootJson(templateJson);
+    if (!prefab.saveToFile(filePath.string()))
+        return false;
+
+    // Stamp every in-scene node with template_uuid and set prefab_ref on root.
+    std::function<void(kObject *)> stampInstance = [&](kObject *node)
+    {
+        auto it = sceneToTemplate.find(node->getUuid());
+        if (it != sceneToTemplate.end())
+            node->setTemplateUuid(it->second);
+        for (kObject *c : node->getChildren())
+            stampInstance(c);
+    };
+    stampInstance(obj);
+
+    obj->setPrefabRef(prefab.getUuid());
+
+    selectedObject = obj;
+    selectObject(obj->getUuid(), true);
+
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
+    checkAssetChange();
+    if (panelProject)
+    {
+        panelProject->triggerRefresh();
+        panelProject->pendingSelectUuid = prefab.getUuid();
+    }
+    projectSaved = false;
+    refreshWindowTitle();
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Preview world management
+// ---------------------------------------------------------------------------
+
+void Manager::setEditorMode(EditorMode mode, const kString &assetPath, const kString &assetType)
+{
+    // Switching to GameWorld — no preview world needed.
+    if (mode == EditorMode::GameWorld)
+    {
+        activeMode = EditorMode::GameWorld;
+        previewAssetPath.clear();
+        previewAssetType.clear();
+        return;
+    }
+
+    // Switching to a preview mode — ensure the preview world exists.
+    if (!previewWorld)
+        initPreviewWorld();
+    if (!previewWorld || !previewCamera)
+        return;
+
+    kScene *previewScene = previewWorld->getScenes().empty()
+                               ? nullptr
+                               : previewWorld->getScenes()[0];
+    if (!previewScene)
+        return;
+
+    // Clear previous preview contents.
+    {
+        auto objs = previewScene->getObjects(); // copy — removeObject mutates
+        for (kObject *o : objs)
+            previewScene->removeObject(o);
+    }
+
+    activeMode = mode;
+    previewAssetPath = assetPath;
+    previewAssetType = assetType;
+
+    // Reset camera to default 3/4 angle — framePreviewCamera() will reposition.
+    previewCamPitch = 24.09f;
+    previewCamYaw = 26.57f;
+    previewCamDist = 5.0f;
+    previewCamPivot = kVec3(0.0f);
+    previewCamDragging = false;
+
+    // Load the asset into the preview scene based on type.
+    if (assetType == ".prefab" && !assetPath.empty())
+    {
+        kPrefab prefab;
+        if (prefab.loadFromFile(assetPath))
+        {
+            // Spawn the prefab's root hierarchy into the preview scene.
+            std::function<kObject *(const json &, kObject *)> spawnNode =
+                [&](const json &j, kObject *parent) -> kObject *
+            {
+                if (!j.is_object())
+                    return nullptr;
+                kObject *obj = new kObject();
+                obj->setName(j.value("name", kString("Object")));
+                kVec3 pos(j.value("px", 0.0f), j.value("py", 0.0f), j.value("pz", 0.0f));
+                obj->setPosition(pos);
+                // Apply a default material so the preview renders visibly.
+                if (parent)
+                    parent->addChild(obj);
+                else
+                    previewScene->addObject(obj);
+                if (j.contains("children") && j["children"].is_array())
+                    for (auto &c : j["children"])
+                        spawnNode(c, obj);
+                return obj;
+            };
+            spawnNode(prefab.getRootJson(), nullptr);
+        }
+    }
+    else if (assetType == ".particle" && !assetPath.empty())
+    {
+        // For particles, create a placeholder object — the particle panel
+        // handles the actual preview. We just show an empty object at origin
+        // with a descriptive name so the user sees something in the viewport.
+        kObject *placeholder = new kObject();
+        placeholder->setName(fs::path(assetPath).stem().string());
+        previewScene->addObject(placeholder);
+    }
+    else if (assetType == ".animator" && !assetPath.empty())
+    {
+        // Placeholder for animator preview.
+        kObject *placeholder = new kObject();
+        placeholder->setName(fs::path(assetPath).stem().string());
+        previewScene->addObject(placeholder);
+    }
+
+    // Frame the camera to the loaded content.
+    framePreviewCamera();
+}
+
+void Manager::initPreviewWorld()
+{
+    if (previewWorld)
+        return;
+
+    previewWorld = createWorld(createAssetManager());
+    kScene *previewScene = previewWorld->createScene("Preview");
+
+    // Skybox
+    kAssetManager *am = previewWorld->getAssetManager();
+    if (am)
+    {
+        kTextureCube *skybox = am->loadCubemapFromFolder(
+            (baseDir / "res/textures/skybox").string());
+        if (skybox)
+            previewScene->setSkybox(skybox);
+    }
+
+    // Grid — add a flat grid object (simple quad or use the same grid as editor).
+    // For simplicity, we rely on the renderer's built-in editor grid; the
+    // preview world just needs a basic ground reference. A large flat plane
+    // mesh centered at origin serves this purpose.
+    kMesh *grid = kMeshGenerator::generatePlane(50.0f);
+    grid->setName("Grid");
+    previewScene->addMesh(grid);
+
+    // Default sun light
+    kLight *sun = previewScene->addSunLight(
+        kVec3(0.0f, 5.0f, 0.0f),
+        kVec3(-0.5f, -1.0f, -0.5f),
+        kVec3(1.0f, 1.0f, 1.0f),
+        kVec3(1.0f, 1.0f, 1.0f));
+    sun->setPower(1.5f);
+
+    previewScene->setAmbientLightColor(kVec3(0.15f, 0.15f, 0.15f));
+    previewScene->setShadowsEnabled(true);
+
+    // Preview camera — orbit-style, positioned by framePreviewCamera().
+    previewCamera = new kCamera(nullptr, kCameraType::CAMERA_TYPE_LOCKED);
+    previewCamera->setFOV(45.0f);
+    previewCamera->setNearClip(0.1f);
+    previewCamera->setFarClip(1000.0f);
+}
+
+void Manager::destroyPreviewWorld()
+{
+    delete previewCamera;
+    previewCamera = nullptr;
+    delete previewWorld;
+    previewWorld = nullptr;
+    previewAssetPath.clear();
+    previewAssetType.clear();
+}
+
+void Manager::framePreviewCamera()
+{
+    if (!previewWorld || !previewCamera)
+        return;
+
+    kScene *previewScene = previewWorld->getScenes().empty()
+                               ? nullptr
+                               : previewWorld->getScenes()[0];
+    if (!previewScene)
+        return;
+
+    // Compute combined AABB of all objects in the preview scene.
+    kAABB combined;
+    const auto &objects = previewScene->getObjects();
+    for (kObject *obj : objects)
+    {
+        kAABB b = obj->getWorldAABB();
+        if (b.isValid())
+        {
+            combined.expandBy(b.min);
+            combined.expandBy(b.max);
+        }
+    }
+
+    if (combined.isValid())
+    {
+        previewCamPivot = combined.center();
+        kVec3 he = combined.halfExtents();
+        float radius = glm::length(he);
+        if (radius < 0.001f)
+            radius = 1.0f;
+        previewCamDist = (radius / glm::tan(glm::radians(45.0f * 0.5f))) * 1.3f;
+        if (previewCamDist < 1.0f)
+            previewCamDist = 1.0f;
+    }
+    else
+    {
+        previewCamPivot = kVec3(0.0f);
+        previewCamDist = 5.0f;
+    }
+
+    // Apply the orbit position.
+    float pr = glm::radians(previewCamPitch);
+    float yr = glm::radians(previewCamYaw);
+    kVec3 camDir(std::cos(pr) * std::sin(yr),
+                 std::sin(pr),
+                 std::cos(pr) * std::cos(yr));
+    previewCamera->setPosition(previewCamPivot + camDir * previewCamDist);
+    previewCamera->setLookAt(previewCamPivot);
+}
+
 bool Manager::applyPrefabInstance(kObject *instanceRoot)
 {
     if (!instanceRoot || instanceRoot->getPrefabRef().empty())

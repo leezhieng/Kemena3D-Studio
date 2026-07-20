@@ -106,6 +106,8 @@ int main()
 		}
 		else if (path.size() >= 7 && path.substr(path.size() - 7) == ".prefab")
 		{
+			showPanel.prefab = true;
+			manager->setEditorMode(Manager::EditorMode::PrefabPreview, path, ".prefab");
 			manager->editPrefab(path);
 			showPanel.prefab = manager->prefabEditing;
 		}
@@ -113,6 +115,7 @@ int main()
 		{
 			showPanel.animatorEditor = true;
 			panelAnimator->openFile(path);
+			manager->setEditorMode(Manager::EditorMode::AnimatorPreview, path, ".animator");
 		}
 		else if (path.size() >= 10 && path.substr(path.size() - 10) == ".animation")
 		{
@@ -123,6 +126,7 @@ int main()
 		{
 			showPanel.particleEditor = true;
 			panelParticle->openFile(path);
+			manager->setEditorMode(Manager::EditorMode::ParticlePreview, path, ".particle");
 		}
 	};
 
@@ -683,6 +687,24 @@ int main()
 					if (scene->getSkyboxMaterial() == nullptr)
 						manager->applyDefaultSkybox(scene);
 					renderer->setEnableShadow(scene->getShadowsEnabled());
+		
+				// In preview mode, swap the render target to the preview world.
+				bool isPreviewMode = (manager->activeMode != Manager::EditorMode::GameWorld);
+				if (isPreviewMode && manager->previewWorld)
+				{
+					world = manager->previewWorld;
+					scene = manager->getActiveScene();
+					// Use preview camera for the editor camera during preview.
+					if (manager->previewCamera)
+						cameraEditor = manager->previewCamera;
+				}
+				else if (!isPreviewMode)
+				{
+					// Restore game world pointers.
+					world = manager->getWorld();
+					scene = manager->getScene();
+					cameraEditor = manager->editorCamera;
+				}
 					renderer->setShadowBias(scene->getShadowBias());
 					renderer->setShadowNormalBias(scene->getShadowNormalBias());
 					renderer->setShadowSoftness(scene->getShadowSoftness());
@@ -709,41 +731,49 @@ int main()
 			// Pass 0 as deltaTime when paused so physics/animations freeze
 			float gameDt = panelGame->getEffectiveDeltaTime(deltaTime);
 
-			// Physics only ticks while Playing (not Paused, not Stopped, never
-			// during prefab editing). gameDt is already 0 when Paused, but we
-			// also gate on play state so a Stopped editor session never builds
-			// momentum or does collision callbacks.
-			if (panelGame->getPlayState() == GamePlayState::Playing &&
-				!manager->prefabEditing && gameDt > 0.0f)
+			// Game-specific logic — only in GameWorld mode.
+			if (!isPreviewMode)
 			{
-				manager->stepPhysics(gameDt);
-				// Dispatch FixedUpdate() then Update()/LateUpdate() to scripts.
-				world->fixedUpdateScripts(gameDt);
-				world->updateScripts(gameDt);
+				// Physics only ticks while Playing (not Paused, not Stopped, never
+				// during prefab editing). gameDt is already 0 when Paused, but we
+				// also gate on play state so a Stopped editor session never builds
+				// momentum or does collision callbacks.
+				if (panelGame->getPlayState() == GamePlayState::Playing &&
+					!manager->prefabEditing && gameDt > 0.0f)
+				{
+					manager->stepPhysics(gameDt);
+					// Dispatch FixedUpdate() then Update()/LateUpdate() to scripts.
+					world->fixedUpdateScripts(gameDt);
+					world->updateScripts(gameDt);
+				}
+
+				// While stopped, watch script source files and recompile on save.
+				if (panelGame->getPlayState() == GamePlayState::Stopped)
+					manager->pollScriptChanges(deltaTime);
+
+				// Mirror the active scene's shadow toggle into the renderer.
+				// setEnableShadow is lazy/idempotent in the SDK so this is cheap.
+				renderer->setEnableShadow(scene ? scene->getShadowsEnabled() : true);
+				if (scene)
+				{
+					renderer->setShadowBias(scene->getShadowBias());
+					renderer->setShadowNormalBias(scene->getShadowNormalBias());
+					renderer->setShadowSoftness(scene->getShadowSoftness());
+					if (renderer->getShadowResolution() != scene->getShadowMapResolution())
+						renderer->setShadowResolution(scene->getShadowMapResolution());
+				}
 			}
-
-			// While stopped, watch script source files and recompile on save.
-			if (panelGame->getPlayState() == GamePlayState::Stopped)
-				manager->pollScriptChanges(deltaTime);
-
-			// Mirror the active scene's shadow toggle into the renderer.
-			// setEnableShadow is lazy/idempotent in the SDK so this is cheap.
-			renderer->setEnableShadow(scene ? scene->getShadowsEnabled() : true);
-			if (scene)
+			else
 			{
-				renderer->setShadowBias(scene->getShadowBias());
-				renderer->setShadowNormalBias(scene->getShadowNormalBias());
-				renderer->setShadowSoftness(scene->getShadowSoftness());
-				// Push resolution every frame so inspector edits take effect
-				// immediately. setShadowResolution early-outs when unchanged,
-				// so it only reallocates the shadow texture on a real change.
-				if (renderer->getShadowResolution() != scene->getShadowMapResolution())
-					renderer->setShadowResolution(scene->getShadowMapResolution());
+				// Preview mode: enable shadows on the preview scene.
+				if (scene)
+					renderer->setEnableShadow(scene->getShadowsEnabled());
 			}
 
 			renderer->render(world, scene, 0, 0, viewportW * 2, viewportH * 2, gameDt, false);
 
-			// Editor scene (grid) always renders in Full mode — debug modes don't apply to it.
+			// Editor scene (grid) only in GameWorld mode.
+			if (!isPreviewMode)
 			{
 				kRenderMode savedMode = renderer->getRenderMode();
 				renderer->setRenderMode(kRenderMode::RENDER_MODE_FULL);
@@ -751,31 +781,34 @@ int main()
 				renderer->setRenderMode(savedMode);
 			}
 
-			// Always render picking pass so click selection and outline are always fresh.
-			renderer->renderPickingPass(world, scene, viewportW * 2, viewportH * 2);
+			// Picking pass — only in GameWorld mode.
+			if (!isPreviewMode)
+				renderer->renderPickingPass(world, scene, viewportW * 2, viewportH * 2);
 
-			// Outline selected objects (orange)
-			if (manager->projectOpened && !manager->selectedObjects.empty())
-				renderer->renderOutline(world, scene, manager->selectedObjects,
-										kVec4(1.0f, 0.55f, 0.0f, 1.0f), 3.0f);
-
-			// Drag-hover outline (yellow) — applied on top of any selection
-			// outline so the user sees which object is under the cursor while
-			// they're holding a project asset over the viewport.
-			if (manager->projectOpened && !manager->dragHoverObjectUuid.empty())
+			// Outline / debug shapes — only in GameWorld mode.
+			if (!isPreviewMode)
 			{
-				std::vector<kString> hoverList = {manager->dragHoverObjectUuid};
-				renderer->renderOutline(world, scene, hoverList,
-										kVec4(1.0f, 0.85f, 0.0f, 0.85f), 3.0f);
+				// Outline selected objects (orange)
+				if (manager->projectOpened && !manager->selectedObjects.empty())
+					renderer->renderOutline(world, scene, manager->selectedObjects,
+											kVec4(1.0f, 0.55f, 0.0f, 1.0f), 3.0f);
+
+				// Drag-hover outline (yellow)
+				if (manager->projectOpened && !manager->dragHoverObjectUuid.empty())
+				{
+					std::vector<kString> hoverList = {manager->dragHoverObjectUuid};
+					renderer->renderOutline(world, scene, hoverList,
+											kVec4(1.0f, 0.85f, 0.0f, 0.85f), 3.0f);
+				}
+
+				// Debug shapes for selected lights and cameras
+				if (manager->projectOpened && !manager->selectedObjects.empty())
+					renderer->renderDebugShapes(world, scene, manager->selectedObjects);
+
+				// Octree debug visualization
+				if (manager->projectOpened)
+					renderer->renderOctreeDebug(world, scene);
 			}
-
-			// Debug shapes for selected lights and cameras
-			if (manager->projectOpened && !manager->selectedObjects.empty())
-				renderer->renderDebugShapes(world, scene, manager->selectedObjects);
-
-			// Octree debug visualization
-			if (manager->projectOpened)
-				renderer->renderOctreeDebug(world, scene);
 
 			// Nav-mesh wireframe (blue) for a selected, baked navigation object.
 			if (manager->projectOpened && manager->selectedObject &&
