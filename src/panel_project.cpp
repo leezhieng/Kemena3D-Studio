@@ -69,6 +69,12 @@ PanelProject::PanelProject(kGuiManager* setGuiManager, Manager* setManager, kAss
 	kTexture2D* tex_shader = assetManager->loadTexture2DFromResource("ICON_SHADER_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconShader = (ImTextureRef)(intptr_t)tex_shader->getTextureID();
 
+	kTexture2D* tex_shader_script = assetManager->loadTexture2DFromResource("ICON_SHADER_SCRIPT_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconShaderScript = (ImTextureRef)(intptr_t)tex_shader_script->getTextureID();
+
+	kTexture2D* tex_particle = assetManager->loadTexture2DFromResource("ICON_PARTICLE_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconParticle = (ImTextureRef)(intptr_t)tex_particle->getTextureID();
+
 	kTexture2D* tex_gui = assetManager->loadTexture2DFromResource("ICON_GUI_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconGui = (ImTextureRef)(intptr_t)tex_gui->getTextureID();
 
@@ -712,13 +718,15 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 			else if (ext == ".prefab" || ext == ".pfb")
 				icon = iconPrefab;
 			else if (ext == ".particle")
-				icon = iconOther; // No dedicated particle icon yet — fallback.
+				icon = iconParticle;
 			else if (ext == ".world")
 				icon = iconWorld;
 			else if (ext == ".mat")
 				icon = iconMaterial;
 			else if (ext == ".logic")
 				icon = iconLogic;
+			else if (ext == ".glsl" || ext == ".hlsl")
+				icon = iconShaderScript;
 			else if (ext == ".shader")
 				icon = iconShader;
 			else if (ext == ".gui")

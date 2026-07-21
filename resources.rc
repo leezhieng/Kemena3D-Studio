@@ -61,6 +61,8 @@ ICON_PREFAB_FILE RCDATA "res/icons/file/prefab.png"
 ICON_WORLD_FILE RCDATA "res/icons/file/world.png"
 ICON_MATERIAL_FILE RCDATA "res/icons/file/material.png"
 ICON_SHADER_FILE RCDATA "res/icons/file/shader.png"
+ICON_SHADER_SCRIPT_FILE RCDATA "res/icons/file/shader_script.png"
+ICON_PARTICLE_FILE RCDATA "res/icons/file/particle.png"
 ICON_GUI_FILE RCDATA "res/icons/file/gui.png"
 ICON_OTHER_FILE RCDATA "res/icons/file/file.png"
 

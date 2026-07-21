@@ -601,28 +601,6 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			ImGui::EndMenu();
 		}
 
-		// Component Menu
-		if (gui->menu("Component"))
-		{
-			if (gui->menuItem("Audio", "", false, manager->projectOpened))
-			{
-			}
-			if (gui->menuItem("Effect", "", false, manager->projectOpened))
-			{
-			}
-			if (gui->menuItem("Mesh", "", false, manager->projectOpened))
-			{
-			}
-			if (gui->menuItem("Physics", "", false, manager->projectOpened))
-			{
-			}
-			if (gui->menuItem("Scripts", "", false, manager->projectOpened))
-			{
-			}
-
-			gui->menuEnd();
-		}
-
 		// Window menu
 		if (gui->menu("Window"))
 		{

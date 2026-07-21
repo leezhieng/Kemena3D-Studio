@@ -48,6 +48,10 @@ private:
 
 	kVec4 addTint = kVec4(1, 1, 1, 1); ///< Tint applied to the add button (dims while pressed).
 
+	// Inline rename state
+	kString renameNodeUuid;      ///< UUID of the node currently being renamed (empty if none).
+	char    renameBuffer[256] = ""; ///< Backing buffer for the rename text field.
+
 	/**
 	 * @brief A single row in the hierarchy tree.
 	 *

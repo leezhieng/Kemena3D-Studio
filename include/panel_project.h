@@ -46,10 +46,12 @@ class PanelProject
 		ImTextureRef iconPrefab;   ///< Icon for prefab assets.
 		ImTextureRef iconWorld;    ///< Icon for world/scene assets.
 		ImTextureRef iconMaterial; ///< Icon for material assets.
-		ImTextureRef iconLogic;    ///< Icon for logic/node-graph assets.
-		ImTextureRef iconShader;   ///< Icon for shader assets.
-		ImTextureRef iconGui;      ///< Icon for GUI/UI assets.
-		ImTextureRef iconOther;    ///< Fallback icon for unrecognised asset types.
+		ImTextureRef iconLogic;         ///< Icon for logic/node-graph assets.
+		ImTextureRef iconShader;        ///< Icon for shader assets (.shader).
+		ImTextureRef iconShaderScript;  ///< Icon for shader source files (.glsl, .hlsl).
+		ImTextureRef iconParticle;      ///< Icon for particle system assets (.particle).
+		ImTextureRef iconGui;           ///< Icon for GUI/UI assets.
+		ImTextureRef iconOther;         ///< Fallback icon for unrecognised asset types.
 
 		char searchBuffer[128] = ""; ///< Backing buffer for the search/filter text field.
 

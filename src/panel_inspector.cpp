@@ -2202,7 +2202,7 @@ namespace
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Particle section (shown between Transform and Components)
+// Particle section (shown between Transform and Scripts)
 // ---------------------------------------------------------------------------
 static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr)
 {
@@ -2395,18 +2395,17 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr)
 }
 
 // ---------------------------------------------------------------------------
-// Components section (Physics / Scripts / Particles / Audio Sources / Listener)
+// Scripts section (Physics / Scripts / Audio Sources / Listener)
 // ---------------------------------------------------------------------------
-static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manager)
+static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager)
 {
     gui->spacing();
-    gui->separatorText("Components");
+    gui->separatorText("Scripts");
     gui->spacing();
 
-    // Each component section renders only when its data is present. To add a
-    // component, right-click the hint strip at the bottom — that opens a
-    // popup with every available component type (singletons disabled when
-    // already present).
+    // Each section renders only when its data is present. To add a
+    // script, click the button at the bottom — that opens a popup with
+    // every available script type.
 
     // ── Physics ─────────────────────────────────────────────────────────────
     if (obj->getHasPhysicsDesc())
@@ -2874,111 +2873,33 @@ static void drawComponentsSection(kGuiManager *gui, kObject *obj, Manager *manag
         gui->spacing();
     }
 
-    // ── "Add Component" button ──────────────────────────────────────────────
+    // ── "Add Script" button ──────────────────────────────────────────────────
     {
         gui->spacing();
-        if (ImGui::Button("Add Component", ImVec2(-1, 0)))
-            ImGui::OpenPopup("AddComponentPopup");
+        if (ImGui::Button("Add Script", ImVec2(-1, 0)))
+            ImGui::OpenPopup("AddScriptPopup");
 
-        if (ImGui::BeginPopup("AddComponentPopup"))
+        if (ImGui::BeginPopup("AddScriptPopup"))
         {
-            if (ImGui::BeginMenu("Physics", !obj->getHasPhysicsDesc()))
+            auto entries = collectProjectScripts(manager);
+            if (entries.empty())
             {
-                auto addBody = [&](kPhysicsShapeType s, kPhysicsObjectType t)
-                {
-                    kPhysicsObjectDesc &d = obj->getPhysicsDesc();
-                    d.shape.type = s;
-                    d.type = t;
-                    obj->setHasPhysicsDesc(true);
-                    manager->projectSaved = false;
-                };
-                const bool hasMesh = (obj->getType() == NODE_TYPE_MESH);
-
-                if (ImGui::MenuItem("Box Collider"))
-                    addBody(kPhysicsShapeType::Box, kPhysicsObjectType::Dynamic);
-                if (ImGui::MenuItem("Sphere Collider"))
-                    addBody(kPhysicsShapeType::Sphere, kPhysicsObjectType::Dynamic);
-                if (ImGui::MenuItem("Capsule Collider"))
-                    addBody(kPhysicsShapeType::Capsule, kPhysicsObjectType::Dynamic);
-                if (ImGui::MenuItem("Cylinder Collider"))
-                    addBody(kPhysicsShapeType::Cylinder, kPhysicsObjectType::Dynamic);
-                if (ImGui::MenuItem("Plane Collider"))
-                    addBody(kPhysicsShapeType::Plane, kPhysicsObjectType::Static);
-                // Mesh-derived shapes need an actual kMesh to read from.
-                if (ImGui::MenuItem("Convex Hull Collider", nullptr, false, hasMesh))
-                    addBody(kPhysicsShapeType::ConvexHull, kPhysicsObjectType::Dynamic);
-                if (ImGui::MenuItem("Mesh Collider", nullptr, false, hasMesh))
-                    addBody(kPhysicsShapeType::Mesh, kPhysicsObjectType::Static);
-                ImGui::EndMenu();
+                ImGui::TextDisabled("No .as or .logic in Assets/");
             }
-
-            if (ImGui::MenuItem("Character Controller", nullptr, false, !obj->getHasCharacterDesc()))
+            else
             {
-                obj->setHasCharacterDesc(true);
-                manager->projectSaved = false;
-            }
-
-            if (ImGui::MenuItem("Navigation", nullptr, false, !obj->getHasNavMeshDesc()))
-            {
-                obj->setHasNavMeshDesc(true);
-                manager->projectSaved = false;
-            }
-
-            if (ImGui::BeginMenu("Script"))
-            {
-                auto entries = collectProjectScripts(manager);
-                if (entries.empty())
+                for (const auto &e : entries)
                 {
-                    ImGui::TextDisabled("No .as or .logic in Assets/");
-                }
-                else
-                {
-                    for (const auto &e : entries)
+                    if (ImGui::MenuItem(e.displayName.c_str()))
                     {
-                        if (ImGui::MenuItem(e.displayName.c_str()))
-                        {
-                            kScript s;
-                            s.uuid = generateUuid();
-                            s.fileName = e.asPath.string();
-                            s.isActive = true;
-                            obj->addScript(s);
-                            manager->projectSaved = false;
-                        }
+                        kScript s;
+                        s.uuid = generateUuid();
+                        s.fileName = e.asPath.string();
+                        s.isActive = true;
+                        obj->addScript(s);
+                        manager->projectSaved = false;
                     }
                 }
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::MenuItem("Particle System"))
-            {
-                kParticle p;
-                p.uuid = generateUuid();
-                obj->addParticle(p);
-                manager->projectSaved = false;
-            }
-
-            if (ImGui::MenuItem("Audio Source"))
-            {
-                auto result = pfd::open_file("Select Audio File", "",
-                                             {"Audio Files", "*.wav *.mp3 *.ogg *.flac", "All Files", "*"})
-                                  .result();
-                if (!result.empty())
-                {
-                    kAudioSource src;
-                    src.uuid = generateUuid();
-                    src.audioFile = result[0];
-                    src.name = fs::path(result[0]).filename().string();
-                    obj->addAudioSource(src);
-                    manager->projectSaved = false;
-                }
-            }
-
-            if (ImGui::MenuItem("Audio Listener", nullptr, false, obj->getAudioListeners().empty()))
-            {
-                kAudioListener l;
-                l.uuid = generateUuid();
-                obj->addAudioListener(l);
-                manager->projectSaved = false;
             }
 
             ImGui::EndPopup();
@@ -4816,7 +4737,7 @@ void PanelInspector::draw(bool &opened)
 
                 drawParticleSection(gui, obj, manager);
 
-                drawComponentsSection(gui, obj, manager);
+                drawScriptsSection(gui, obj, manager);
 
             }
         }

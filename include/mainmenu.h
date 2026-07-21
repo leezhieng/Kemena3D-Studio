@@ -48,7 +48,7 @@ inline bool showAbout        = false;             ///< When true, the About dial
  * @brief The editor's top main menu bar and its associated dialogs.
  *
  * MainMenu renders the application menu bar (File, Edit, Assets, Object,
- * Component, Window, Help) using the GUI manager, dispatching the chosen
+ * Window, Help) using the GUI manager, dispatching the chosen
  * actions to the editor Manager. It also owns the Build Settings/export popup
  * and the About dialog, and provides the ImGui settings handler that persists
  * panel visibility state to the layout .ini file.

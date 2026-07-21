@@ -436,8 +436,6 @@ public:
     bool  previewCamDragging = false; ///< True while the user is dragging to orbit.
 
     void setEditorMode(EditorMode mode, const kString &assetPath = "", const kString &assetType = "");
-    kWorld *getActiveWorld();
-    kScene *getActiveScene();
     void initPreviewWorld();
     void destroyPreviewWorld();
     void framePreviewCamera();

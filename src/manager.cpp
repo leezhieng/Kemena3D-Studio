@@ -4124,6 +4124,57 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             }
         }
 
+        // Particle systems — restore each attached particle descriptor.
+        if (obj.contains("particle") && obj["particle"].is_array())
+        {
+            for (const auto &pj : obj["particle"])
+            {
+                kParticle p;
+                p.uuid           = pj.value("uuid", generateUuid());
+                p.name           = pj.value("name", std::string("Particle System"));
+                p.isActive       = pj.value("active", true);
+                p.looping        = pj.value("looping", true);
+                p.maxParticles   = pj.value("max_particles", 100);
+                p.emissionRate   = pj.value("emission_rate", 10.0f);
+                p.lifetime       = pj.value("lifetime", 2.0f);
+                p.gravityScale   = pj.value("gravity_scale", 1.0f);
+                p.startSpeed     = pj.value("start_speed", 1.0f);
+                p.sizeStart      = pj.value("size_start", 0.1f);
+                p.sizeEnd        = pj.value("size_end", 0.0f);
+                p.emissionShape  = (kParticle::EmissionShape)pj.value("emission_shape", 0);
+                p.texturePath    = pj.value("texture_path", std::string(""));
+
+                // Nested vec3/vec4 objects
+                if (pj.contains("start_velocity") && pj["start_velocity"].is_object())
+                {
+                    const auto &sv = pj["start_velocity"];
+                    p.startVelocity = kVec3(sv.value("x", 0.0f), sv.value("y", 1.0f), sv.value("z", 0.0f));
+                }
+                if (pj.contains("velocity_variance") && pj["velocity_variance"].is_object())
+                {
+                    const auto &vv = pj["velocity_variance"];
+                    p.velocityVariance = kVec3(vv.value("x", 0.1f), vv.value("y", 0.1f), vv.value("z", 0.1f));
+                }
+                if (pj.contains("color_start") && pj["color_start"].is_object())
+                {
+                    const auto &cs = pj["color_start"];
+                    p.colorStart = kVec4(cs.value("r", 1.0f), cs.value("g", 1.0f), cs.value("b", 1.0f), cs.value("a", 1.0f));
+                }
+                if (pj.contains("color_end") && pj["color_end"].is_object())
+                {
+                    const auto &ce = pj["color_end"];
+                    p.colorEnd = kVec4(ce.value("r", 1.0f), ce.value("g", 1.0f), ce.value("b", 1.0f), ce.value("a", 0.0f));
+                }
+                if (pj.contains("shape_size") && pj["shape_size"].is_object())
+                {
+                    const auto &ss = pj["shape_size"];
+                    p.shapeSize = kVec3(ss.value("x", 0.5f), ss.value("y", 0.5f), ss.value("z", 0.5f));
+                }
+
+                result->addParticle(p);
+            }
+        }
+
         // Recursively load children, parented to this node.
         if (obj.contains("children") && obj["children"].is_array())
         {
@@ -5312,10 +5363,17 @@ bool Manager::createPrefabFromSelection()
 
 bool Manager::createPrefabFromObject(const kString& objectUuid, const fs::path& targetDir)
 {
-    if (!projectOpened || !scene || objectUuid.empty())
+    if (!projectOpened || !world || objectUuid.empty())
         return false;
 
-    kObject *obj = findInTree(scene->getRootNode(), objectUuid);
+    // Search ALL scenes for the object — it may be in scene[1+].
+    kObject *obj = nullptr;
+    for (kScene *s : world->getScenes())
+    {
+        obj = findInTree(s->getRootNode(), objectUuid);
+        if (obj)
+            break;
+    }
     if (!obj)
         return false;
 
@@ -5450,7 +5508,7 @@ void Manager::setEditorMode(EditorMode mode, const kString &assetPath, const kSt
                 obj->setPosition(pos);
                 // Apply a default material so the preview renders visibly.
                 if (parent)
-                    parent->addChild(obj);
+                    obj->setParent(parent);
                 else
                     previewScene->addObject(obj);
                 if (j.contains("children") && j["children"].is_array())
@@ -5490,15 +5548,8 @@ void Manager::initPreviewWorld()
     previewWorld = createWorld(createAssetManager());
     kScene *previewScene = previewWorld->createScene("Preview");
 
-    // Skybox
-    kAssetManager *am = previewWorld->getAssetManager();
-    if (am)
-    {
-        kTextureCube *skybox = am->loadCubemapFromFolder(
-            (baseDir / "res/textures/skybox").string());
-        if (skybox)
-            previewScene->setSkybox(skybox);
-    }
+    // Skybox — reuse the same default skybox as the editor scene.
+    applyDefaultSkybox(previewScene);
 
     // Grid — add a flat grid object (simple quad or use the same grid as editor).
     // For simplicity, we rely on the renderer's built-in editor grid; the
@@ -5552,11 +5603,21 @@ void Manager::framePreviewCamera()
     const auto &objects = previewScene->getObjects();
     for (kObject *obj : objects)
     {
-        kAABB b = obj->getWorldAABB();
-        if (b.isValid())
+        kMesh *mesh = dynamic_cast<kMesh *>(obj);
+        if (mesh)
         {
-            combined.expandBy(b.min);
-            combined.expandBy(b.max);
+            kAABB b = mesh->getWorldAABB();
+            if (b.isValid())
+            {
+                combined.expandBy(b.min);
+                combined.expandBy(b.max);
+            }
+        }
+        else
+        {
+            // For non-mesh objects, expand around their world position.
+            kVec3 p = obj->getGlobalPosition();
+            combined.expandBy(p);
         }
     }
 

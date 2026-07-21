@@ -295,15 +295,40 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	{
 		if (ImGui::BeginPopupContextItem("##HierarchyCtx"))
 		{
-			// "Unpack Prefab" — only for prefab instance roots
 			kObject *ctxObj = nullptr;
 			if (manager->objectMap.count(node.uuid))
 				ctxObj = manager->objectMap[node.uuid].object;
 
-			if (ctxObj && !ctxObj->getPrefabRef().empty())
+			bool isPrefabRoot = (ctxObj && !ctxObj->getPrefabRef().empty());
+
+			if (isPrefabRoot)
 			{
+				// Prefab instance root — only show Unpack Prefab.
 				if (ImGui::MenuItem("Unpack Prefab"))
 					manager->unpackPrefabInstance(ctxObj);
+			}
+			else
+			{
+				// Regular object — show Rename, Duplicate, Delete.
+				if (ImGui::MenuItem("Rename"))
+				{
+					strncpy(renameBuffer, node.name.c_str(), sizeof(renameBuffer) - 1);
+					renameBuffer[sizeof(renameBuffer) - 1] = '\0';
+					renameNodeUuid = node.uuid;
+					manager->selectObject(node.uuid, true);
+				}
+
+				if (ImGui::MenuItem("Duplicate"))
+				{
+					manager->selectObject(node.uuid, true);
+					manager->duplicateSelectedObjects();
+				}
+
+				if (ImGui::MenuItem("Delete"))
+				{
+					manager->selectObject(node.uuid, true);
+					manager->deleteSelectedObjects();
+				}
 			}
 
 			ImGui::EndPopup();
@@ -401,6 +426,51 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 			}
 			gui->childEnd();
 		}
+
+		// Inline rename popup — opened from the right-click context menu.
+		if (!renameNodeUuid.empty())
+		{
+			ImGui::OpenPopup("##RenameObject");
+			ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+			ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+			if (ImGui::BeginPopup("##RenameObject"))
+			{
+				ImGui::Text("Rename object:");
+				ImGui::SetNextItemWidth(250.0f);
+				if (ImGui::InputText("##RenameInput", renameBuffer, sizeof(renameBuffer),
+									 ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					// Apply rename
+					if (manager->objectMap.count(renameNodeUuid))
+					{
+						kObject *obj = manager->objectMap[renameNodeUuid].object;
+						if (obj && renameBuffer[0] != '\0')
+							obj->setName(kString(renameBuffer));
+					}
+					renameNodeUuid.clear();
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("OK"))
+				{
+					if (manager->objectMap.count(renameNodeUuid))
+					{
+						kObject *obj = manager->objectMap[renameNodeUuid].object;
+						if (obj && renameBuffer[0] != '\0')
+							obj->setName(kString(renameBuffer));
+					}
+					renameNodeUuid.clear();
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Cancel"))
+				{
+					renameNodeUuid.clear();
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::EndPopup();
+			}
+		}
 	}
 	gui->windowEnd();
 
@@ -494,6 +564,23 @@ void PanelHierarchy::refreshList()
 			addObject(raw, c, nextInside);
 	};
 
+	// Always show scene[0] (the primary scene) first.
+	if (!world->getScenes().empty())
+	{
+		kScene *scene0 = world->getScenes().at(0);
+
+		auto &sceneNode = root.children.emplace_back(
+			std::make_unique<Node>(scene0->getName(), scene0->getUuid(), iconScene, "scene"));
+
+		kObject *rootNode = scene0->getRootNode();
+		if (rootNode != nullptr)
+		{
+			for (kObject *child : rootNode->getChildren())
+				addObject(sceneNode.get(), child, /*insidePrefab*/ false);
+		}
+	}
+
+	// Show additional scenes (scene[1+]) if any.
 	if (world->getScenes().size() > 1)
 	{
 		for (size_t i = 1; i < world->getScenes().size(); ++i)

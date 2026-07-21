@@ -670,6 +670,8 @@ int main()
 
 		renderer->clear();
 
+		bool isPreviewMode = (manager->activeMode != Manager::EditorMode::GameWorld);
+
 		// Re-sync the local scene pointer from the manager. Manager::loadWorld
 		// destroys the original game scene and creates new ones, so the local
 		// here could otherwise dangle after a project open — which silently
@@ -689,7 +691,6 @@ int main()
 					renderer->setEnableShadow(scene->getShadowsEnabled());
 		
 				// In preview mode, swap the render target to the preview world.
-				bool isPreviewMode = (manager->activeMode != Manager::EditorMode::GameWorld);
 				if (isPreviewMode && manager->previewWorld)
 				{
 					world = manager->previewWorld;
