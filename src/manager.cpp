@@ -5377,6 +5377,9 @@ bool Manager::createPrefabFromObject(const kString& objectUuid, const fs::path& 
     if (!obj)
         return false;
 
+    auto cmd = std::make_unique<CreatePrefabCommand>();
+    cmd->manager = this;
+
     kString prefabName = obj->getName().empty() ? kString("New Prefab") : obj->getName();
 
     // Build the template JSON from the in-scene subtree.
@@ -5416,17 +5419,39 @@ bool Manager::createPrefabFromObject(const kString& objectUuid, const fs::path& 
         return false;
 
     // Stamp every in-scene node with template_uuid and set prefab_ref on root.
+    // Record old values first so the undo command can restore them.
     std::function<void(kObject *)> stampInstance = [&](kObject *node)
     {
         auto it = sceneToTemplate.find(node->getUuid());
         if (it != sceneToTemplate.end())
+        {
+            CreatePrefabCommand::StampChange s;
+            s.objUuid = node->getUuid();
+            s.oldPrefabRef = node->getPrefabRef();
+            s.oldTemplateUuid = node->getTemplateUuid();
+            s.newPrefabRef = ""; // only root gets prefab_ref below
+            s.newTemplateUuid = it->second;
+            cmd->stamps.push_back(s);
+
             node->setTemplateUuid(it->second);
+        }
         for (kObject *c : node->getChildren())
             stampInstance(c);
     };
     stampInstance(obj);
 
-    obj->setPrefabRef(prefab.getUuid());
+    // The prefab_ref belongs only on the root. Patch the corresponding stamp
+    // entry so the command reproduces this on redo.
+    {
+        CreatePrefabCommand::StampChange s;
+        s.objUuid = obj->getUuid();
+        s.oldPrefabRef = obj->getPrefabRef();
+        s.oldTemplateUuid = obj->getTemplateUuid(); // already set above
+        s.newPrefabRef = prefab.getUuid();
+        s.newTemplateUuid = obj->getTemplateUuid();
+        cmd->stamps.push_back(s);
+        obj->setPrefabRef(prefab.getUuid());
+    }
 
     selectedObject = obj;
     selectObject(obj->getUuid(), true);
@@ -5442,6 +5467,7 @@ bool Manager::createPrefabFromObject(const kString& objectUuid, const fs::path& 
     projectSaved = false;
     refreshWindowTitle();
 
+    undoRedo.push(std::move(cmd));
     return true;
 }
 

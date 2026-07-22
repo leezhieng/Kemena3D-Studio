@@ -2742,42 +2742,6 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager)
         gui->spacing();
     }
 
-    // ── Particles ───────────────────────────────────────────────────────────
-    if (!obj->getParticles().empty())
-    {
-        if (ImGui::CollapsingHeader("Particles", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            auto &particles = obj->getParticles();
-            kString toRemove;
-            for (auto &p : particles)
-            {
-                ImGui::PushID(p.uuid.c_str());
-                if (ImGui::Checkbox("##PartActive", &p.isActive))
-                    manager->projectSaved = false;
-                ImGui::SameLine();
-                char nameBuf[64];
-                strncpy_s(nameBuf, sizeof(nameBuf), p.name.c_str(), _TRUNCATE);
-                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 28.0f);
-                if (ImGui::InputText("##PartName", nameBuf, sizeof(nameBuf),
-                                     ImGuiInputTextFlags_EnterReturnsTrue))
-                {
-                    p.name = nameBuf;
-                    manager->projectSaved = false;
-                }
-                ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
-                if (ImGui::SmallButton("x##RemPart"))
-                    toRemove = p.uuid;
-                ImGui::PopID();
-            }
-            if (!toRemove.empty())
-            {
-                obj->removeParticle(toRemove);
-                manager->projectSaved = false;
-            }
-        }
-        gui->spacing();
-    }
-
     // ── Audio Sources ────────────────────────────────────────────────────────
     if (!obj->getAudioSources().empty())
     {

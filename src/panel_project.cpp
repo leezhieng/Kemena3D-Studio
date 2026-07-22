@@ -446,6 +446,26 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 			gui->childEnd();
 		}
 
+		// Fallback drop target at window level. If a SCENE_OBJECT payload
+		// wasn't consumed by a folder target (drop on file / empty space),
+		// accept it here and create a prefab in the current browsed directory.
+		{
+			fs::path curDir = manager->getCurrentDirPath();
+			if (!curDir.empty() && ImGui::BeginDragDropTarget())
+			{
+				const ImGuiPayload *pPayload =
+					ImGui::AcceptDragDropPayload("SCENE_OBJECT");
+				if (pPayload && pPayload->IsDelivery())
+				{
+					kString objectUuid(
+						static_cast<const char *>(pPayload->Data));
+					if (!objectUuid.empty())
+						manager->createPrefabFromObject(objectUuid, curDir);
+				}
+				ImGui::EndDragDropTarget();
+			}
+		}
+
 		gui->spacing();
 
 		// Delete key shortcut
@@ -637,9 +657,49 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 		ImGui::EndDragDropSource();
 	}
 
-	// Drop target — dropping asset(s) onto a folder moves them into it.
+	// Drop target — folders accept PROJECT_ASSET (move) and SCENE_OBJECT (prefab).
 	if (node.type == 0)
 		acceptAssetDropInto(node.fullPath);
+
+	// "Drop between" indicator for SCENE_OBJECT — shows a horizontal line
+	// at the top of the row so the user can drop between items to create
+	// a prefab in the directory containing those items.
+	{
+		// Determine the target directory for this row:
+		//   folder → its own path
+		//   file   → parent directory
+		fs::path targetDir;
+		if (node.type == 0)
+			targetDir = node.fullPath;
+		else if (node.type == 1 && !node.fullPath.empty())
+			targetDir = node.fullPath.parent_path();
+
+		if (!targetDir.empty() && ImGui::BeginDragDropTarget())
+		{
+			ImVec2 rmin = ImGui::GetItemRectMin();
+			ImVec2 rmax = ImGui::GetItemRectMax();
+
+			const ImGuiPayload *pPayload =
+				ImGui::AcceptDragDropPayload("SCENE_OBJECT",
+					ImGuiDragDropFlags_AcceptBeforeDelivery |
+					ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+			if (pPayload)
+			{
+				ImU32 col = ImGui::GetColorU32(ImGuiCol_DragDropTarget);
+				ImGui::GetForegroundDrawList()->AddLine(
+					ImVec2(rmin.x, rmin.y), ImVec2(rmax.x, rmin.y), col, 2.0f);
+
+				if (pPayload->IsDelivery())
+				{
+					kString objectUuid(
+						static_cast<const char *>(pPayload->Data));
+					if (!objectUuid.empty() && !targetDir.empty())
+						manager->createPrefabFromObject(objectUuid, targetDir);
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
+	}
 
 	if (ImGui::BeginPopupContextItem("##TreeCtx"))
 	{
@@ -855,7 +915,7 @@ void PanelProject::refreshThumbnailList()
 								icon = iconVideo;
 							else if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".dae" || ext == ".stl")
 								icon = iconModel;
-							else if (ext == ".pfb")
+							else if (ext == ".prefab" || ext == ".pfb")
 								icon = iconPrefab;
 							else if (ext == ".world")
 								icon = iconWorld;
@@ -863,6 +923,10 @@ void PanelProject::refreshThumbnailList()
 								icon = iconMaterial;
 							else if (ext == ".logic")
 								icon = iconLogic;
+							else if (ext == ".particle")
+								icon = iconParticle;
+							else if (ext == ".glsl" || ext == ".hlsl")
+								icon = iconShaderScript;
 							else if (ext == ".shader")
 								icon = iconShader;
 							else if (ext == ".gui")
