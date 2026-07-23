@@ -61,10 +61,10 @@ void PanelHierarchy::deselectAll(Node &root)
 
 void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 {
-	// Sync selection state from manager so viewport picks are reflected here.
-	node.isSelected = std::find(manager->selectedObjects.begin(),
-								manager->selectedObjects.end(),
-								node.uuid) != manager->selectedObjects.end();
+	// Sync selection state from the active panel's selection.
+	auto &activeSel = manager->getActiveSelectedObjects();
+	node.isSelected = std::find(activeSel.begin(), activeSel.end(),
+	                             node.uuid) != activeSel.end();
 
 	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
 	if (node.isSelected)
@@ -93,7 +93,10 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	if (node.isPrefabDescendant)
 		ImGui::PopStyleColor();
 
-	bool isObjectRow = (level >= 2); // 0 = world, 1 = scene, 2+ = objects
+	// In prefab mode the hierarchy is flattened (no World/Scene wrapper),
+	// so objects start at level 1 instead of level 2.
+	int  objectStartLevel = manager->hierarchyShowsPrefab ? 1 : 2;
+	bool isObjectRow = (level >= objectStartLevel);
 
 	// Drag source: only for real scene objects, never prefab descendants.
 	if (isObjectRow && !node.isPrefabDescendant &&
@@ -209,8 +212,11 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	// Item clicked
 	if (gui->isItemClicked() && !node.isPrefabDescendant)
 	{
-		// Clicking a scene object in preview mode returns to GameWorld.
-		if (manager->activeMode != Manager::EditorMode::GameWorld)
+		// Clicking a scene object in particle/animator preview mode returns to GameWorld.
+		// PrefabPreview is NOT switched here — the hierarchy shows the prefab scene
+		// graph when editing a prefab, and clicking objects there is intentional.
+		if (manager->activeMode != Manager::EditorMode::GameWorld &&
+		    manager->activeMode != Manager::EditorMode::PrefabPreview)
 			manager->setEditorMode(Manager::EditorMode::GameWorld);
 
 		// Disable terrain sculpt mode when selecting any object from the hierarchy
@@ -218,8 +224,8 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 			manager->panelTerrain->sculpt.active = false;
 
 		// Snapshot selection before change (for undo)
-		auto selBefore = manager->selectedObjects;
-		auto selObjBefore = manager->selectedObject;
+		auto selBefore = manager->getActiveSelectedObjects();
+		auto selObjBefore = manager->getActiveSelectedObject();
 
 		if (!gui->isKeyShift())
 		{
@@ -230,34 +236,57 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		if (manager->panelProject != nullptr)
 			manager->panelProject->clearSelection();
 
+		auto &activeSel = manager->getActiveSelectedObjects();
 		if (gui->isKeyShift())
-			manager->selectObject(node.uuid, false);
+		{
+			auto it = std::find(activeSel.begin(), activeSel.end(), node.uuid);
+			if (it == activeSel.end())
+				activeSel.push_back(node.uuid);
+		}
 		else
-			manager->selectObject(node.uuid, true);
+		{
+			activeSel.clear();
+			activeSel.push_back(node.uuid);
+		}
 
 		std::cout << "Object clicked: " << node.uuid.c_str() << " ,Level:" << level << std::endl;
 
-		kObject *newSelObj = manager->selectedObject;
+		kObject *newSelObj = manager->getActiveSelectedObject();
 
 		if (level == 0)
 		{
-			// World
-			manager->worldSelected = true;
-			manager->selectedObject = nullptr;
-			manager->selectedScene = nullptr;
+			// Root node.
+			if (manager->hierarchyShowsPrefab)
+			{
+				// In prefab mode, the root IS the first prefab object — select it.
+				manager->worldSelected = false;
+				manager->selectedScene = nullptr;
+				if (manager->objectMap.count(node.uuid))
+					manager->getActiveSelectedObject() = manager->objectMap[node.uuid].object;
+			}
+			else
+			{
+				manager->worldSelected = true;
+				manager->selectedObject = nullptr;
+				manager->selectedScene = nullptr;
+			}
 		}
-		else if (level == 1)
+		else if (level == 1 && !manager->hierarchyShowsPrefab)
 		{
-			// Scene — find and expose it for the inspector
+			// Scene node clicked (game world only — prefab mode has no scene level).
 			manager->worldSelected = false;
 			manager->selectedObject = nullptr;
 			manager->selectedScene = nullptr;
-			for (kScene *s : world->getScenes())
+			kWorld *hWorld = manager->getHierarchyWorld();
+			if (hWorld)
 			{
-				if (s->getUuid() == node.uuid)
+				for (kScene *s : hWorld->getScenes())
 				{
-					manager->selectedScene = s;
-					break;
+					if (s->getUuid() == node.uuid)
+					{
+						manager->selectedScene = s;
+						break;
+					}
 				}
 			}
 		}
@@ -269,8 +298,8 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 			if (manager->objectMap[node.uuid.c_str()].object != nullptr)
 			{
 				std::cout << "FOUND: " << node.uuid.c_str() << std::endl;
-				manager->selectedObject = manager->objectMap[node.uuid.c_str()].object;
-				newSelObj = manager->selectedObject;
+				manager->getActiveSelectedObject() = manager->objectMap[node.uuid.c_str()].object;
+				newSelObj = manager->getActiveSelectedObject();
 			}
 			else
 			{
@@ -279,7 +308,7 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		}
 
 		// Push selection undo command
-		auto selAfter = manager->selectedObjects;
+		auto selAfter = manager->getActiveSelectedObjects();
 		auto selObjAfter = newSelObj;
 		if (selBefore != selAfter || selObjBefore != selObjAfter)
 		{
@@ -547,10 +576,15 @@ void PanelHierarchy::refreshList()
 	std::function<void(Node *, kObject *, bool)> addObject =
 		[&](Node *parent, kObject *obj, bool insidePrefab)
 	{
+		// Skip internal objects whose names start with '_' (e.g. _SunLight_).
+		const kString &objName = obj->getName();
+		if (!objName.empty() && objName[0] == '_')
+			return;
+
 		kString type;
 		uint32_t icon = pickIcon(obj, type);
 
-		auto childNode = std::make_unique<Node>(obj->getName(), obj->getUuid(), icon, type);
+		auto childNode = std::make_unique<Node>(objName, obj->getUuid(), icon, type);
 		childNode->isPrefabDescendant = insidePrefab;
 		Node *raw = childNode.get();
 		parent->children.emplace_back(std::move(childNode));
@@ -564,28 +598,68 @@ void PanelHierarchy::refreshList()
 			addObject(raw, c, nextInside);
 	};
 
-	// Always show scene[0] (the primary scene) first.
-	if (!world->getScenes().empty())
+	// Use the manager's active hierarchy world — this switches between the
+	// game world and the prefab world depending on which panel is focused.
+	kWorld *hWorld = manager->getHierarchyWorld();
+	if (!hWorld) return;
+
+	// Filter out internal/editor-overlay scenes (names starting with "_").
+	const auto &scenes = hWorld->getScenes();
+	std::vector<kScene *> visibleScenes;
+	for (kScene *s : scenes)
 	{
-		kScene *scene0 = world->getScenes().at(0);
-
-		auto &sceneNode = root.children.emplace_back(
-			std::make_unique<Node>(scene0->getName(), scene0->getUuid(), iconScene, "scene"));
-
-		kObject *rootNode = scene0->getRootNode();
-		if (rootNode != nullptr)
-		{
-			for (kObject *child : rootNode->getChildren())
-				addObject(sceneNode.get(), child, /*insidePrefab*/ false);
-		}
+		if (s && !s->getName().empty() && s->getName()[0] == '_')
+			continue;
+		visibleScenes.push_back(s);
 	}
 
-	// Show additional scenes (scene[1+]) if any.
-	if (world->getScenes().size() > 1)
+	bool isPrefab = manager->hierarchyShowsPrefab;
+
+	if (isPrefab && !visibleScenes.empty())
 	{
-		for (size_t i = 1; i < world->getScenes().size(); ++i)
+		// Prefab mode: the first top-level prefab object becomes the hierarchy
+		// root (replacing "World"), and its children appear recursively beneath.
+		kScene *scene0 = visibleScenes[0];
+		kObject *sceneRoot = scene0->getRootNode();
+		if (sceneRoot && !sceneRoot->getChildren().empty())
 		{
-			kScene *scene = world->getScenes().at(i);
+			kObject *firstObj = sceneRoot->getChildren()[0];
+			kString type;
+			uint32_t icon = pickIcon(firstObj, type);
+			root.name = firstObj->getName();
+			root.uuid = firstObj->getUuid();
+			root.icon = icon;
+			root.type = type;
+			manager->objectMap[firstObj->getUuid()] = ObjectInfo{firstObj};
+
+			// Children of the first object go under the root.
+			for (kObject *child : firstObj->getChildren())
+				addObject(&root, child, /*insidePrefab*/ false);
+		}
+	}
+	else
+	{
+		// Game world mode: standard World → Scene → Objects tree.
+		root.name = "World";
+
+		if (!visibleScenes.empty())
+		{
+			kScene *scene0 = visibleScenes[0];
+
+			auto &sceneNode = root.children.emplace_back(
+				std::make_unique<Node>(scene0->getName(), scene0->getUuid(), iconScene, "scene"));
+
+			kObject *rootNode = scene0->getRootNode();
+			if (rootNode != nullptr)
+			{
+				for (kObject *child : rootNode->getChildren())
+					addObject(sceneNode.get(), child, /*insidePrefab*/ false);
+			}
+		}
+
+		for (size_t i = 1; i < visibleScenes.size(); ++i)
+		{
+			kScene *scene = visibleScenes[i];
 
 			auto &sceneNode = root.children.emplace_back(
 				std::make_unique<Node>(scene->getName(), scene->getUuid(), iconScene, "scene"));

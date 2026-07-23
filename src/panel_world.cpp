@@ -39,7 +39,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         return;
 
     gui->beginDisabled(!enabled);
-    gui->windowStart("World");
+    gui->windowStart("World", &isOpened);
 
     gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 2));
 
@@ -156,13 +156,13 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
     gui->separator();
 
-    // Preview mode indicator
-    if (manager->activeMode != Manager::EditorMode::GameWorld)
+    // Preview mode indicator (particle / animator only — prefab has its own panel)
+    if (manager->activeMode != Manager::EditorMode::GameWorld &&
+        manager->activeMode != Manager::EditorMode::PrefabPreview)
     {
         const char *modeLabel = "Preview";
         switch (manager->activeMode)
         {
-        case Manager::EditorMode::PrefabPreview:  modeLabel = "Prefab Editor"; break;
         case Manager::EditorMode::ParticlePreview: modeLabel = "Particle Preview"; break;
         case Manager::EditorMode::AnimatorPreview: modeLabel = "Animator Preview"; break;
         default: break;
@@ -294,8 +294,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     hovered = gui->isWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    // --- Preview camera orbit (LMB drag in preview mode) ---
+    // --- Preview camera orbit (LMB drag in preview mode, excl. PrefabPreview) ---
     if (manager->activeMode != Manager::EditorMode::GameWorld &&
+        manager->activeMode != Manager::EditorMode::PrefabPreview &&
         manager->previewCamera && hovered)
     {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left) &&

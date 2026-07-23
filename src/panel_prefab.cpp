@@ -22,44 +22,22 @@ void PanelPrefab::draw(bool &isOpened)
         return;
 
     gui->beginDisabled(!enabled);
-    gui->windowStart("Prefab");
+    gui->windowStart("Prefab", &isOpened);
 
-    // Toolbar — Save & Close, Discard.
-    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(6, 2));
-
-    if (gui->button("Save & Close", kIvec2(110, 22)))
+    // If the close button was clicked, save & exit the prefab editor.
+    if (!isOpened)
     {
         manager->closePrefabEditor(/*saveChanges*/ true);
-        gui->popStyleVar();
         gui->windowEnd();
         gui->endDisabled();
         return;
     }
-    if (gui->isItemHovered()) gui->setItemTooltip("Save changes back to the .prefab file and exit the prefab editor");
-
-    gui->sameLine();
-
-    if (gui->button("Discard", kIvec2(80, 22)))
-    {
-        manager->closePrefabEditor(/*saveChanges*/ false);
-        gui->popStyleVar();
-        gui->windowEnd();
-        gui->endDisabled();
-        return;
-    }
-    if (gui->isItemHovered()) gui->setItemTooltip("Exit without saving changes");
-
-    gui->sameLine();
-    gui->dummy(kVec2(8, 0));
-    gui->sameLine();
 
     gui->text(kString("Editing: ") + manager->editingPrefab.getName());
-
-    gui->popStyleVar();
     gui->separator();
 
-    // Viewport — the prefab editor has its OWN offscreen renderer (driven from
-    // main.cpp), so it never touches the World panel's render target.
+    // Viewport — the prefab editor uses its OWN kRenderer (separate from the
+    // World panel's renderer), so it never touches the World panel's FBO.
     kVec2 availSize  = gui->getContentRegionAvail();
     width       = (int)availSize.x;
     height      = (int)availSize.y;
@@ -68,15 +46,18 @@ void PanelPrefab::draw(bool &isOpened)
     panelPos        = gui->getCursorScreenPos();
     kVec2 panelSize = availSize;
 
-    ImTextureRef tex_ref((ImTextureID)(uintptr_t)manager->prefabRenderer.getTexture());
-    gui->setNextItemAllowOverlap();
-    ImGui::Image(tex_ref, ImVec2(availSize.x, availSize.y), ImVec2(0, 1), ImVec2(1, 0));
+    if (manager->prefabRenderer)
+    {
+        ImTextureRef tex_ref((ImTextureID)(uintptr_t)manager->prefabRenderer->getFboTexture());
+        gui->setNextItemAllowOverlap();
+        ImGui::Image(tex_ref, ImVec2(availSize.x, availSize.y), ImVec2(0, 1), ImVec2(1, 0));
+    }
 
     hovered = gui->isWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    // Single-object gizmo on the prefab root (or whatever's selected).
-    kObject *target = manager->selectedObject;
+    // Single-object gizmo on the prefab root (or whatever's selected in prefab panel).
+    kObject *target = manager->prefabSelectedObject;
     if (target && target->getActive())
     {
         glm::mat4 view = manager->prefabCamera->getViewMatrix();
@@ -91,7 +72,7 @@ void PanelPrefab::draw(bool &isOpened)
 
         ImGuizmo::Manipulate(
             glm::value_ptr(view), glm::value_ptr(proj),
-            manager->manipulatorType, manager->manipulatorMode,
+            manager->prefabManipulatorType, manager->prefabManipulatorMode,
             glm::value_ptr(mCopy));
 
         bool isUsingNow = ImGuizmo::IsUsing();

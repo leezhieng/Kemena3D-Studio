@@ -178,7 +178,7 @@ void PanelGame::draw(bool &isOpened)
     bool isPaused = (playState == GamePlayState::Paused);
 
     gui->beginDisabled(!enabled);
-    gui->windowStart("Game");
+    gui->windowStart("Game", &isOpened);
 
     gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(4, 2));
 

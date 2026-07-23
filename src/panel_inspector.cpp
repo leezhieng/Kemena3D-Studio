@@ -4413,7 +4413,7 @@ void PanelInspector::draw(bool &opened)
     gui->windowStart("Inspector", &opened);
 
     // Project panel selection takes priority when scene selection is empty
-    if (manager->panelProject != nullptr && manager->selectedObjects.empty() && manager->selectedScene == nullptr)
+    if (manager->panelProject != nullptr && manager->getActiveSelectedObjects().empty() && manager->selectedScene == nullptr)
     {
         auto asset = manager->panelProject->getProjectSelection();
         if (asset.count > 1)
@@ -4469,7 +4469,7 @@ void PanelInspector::draw(bool &opened)
         }
     }
 
-    if (manager->worldSelected)
+    if (manager->worldSelected && !manager->hierarchyShowsPrefab)
     {
         drawInlineIcon(iconObjScene, "World");
         gui->sameLine(0, 4.0f);
@@ -4551,7 +4551,7 @@ void PanelInspector::draw(bool &opened)
     else
     {
 
-        size_t selCount = manager->selectedObjects.size();
+        size_t selCount = manager->getActiveSelectedObjects().size();
 
         if (selCount == 0)
         {
@@ -4572,7 +4572,7 @@ void PanelInspector::draw(bool &opened)
         }
         else
         {
-            kObject *obj = manager->selectedObject;
+            kObject *obj = manager->getActiveSelectedObject();
 
             if (obj == nullptr)
             {

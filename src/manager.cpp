@@ -1430,28 +1430,42 @@ kObject *Manager::findObjectByUuid(const kString &uuid)
     if (it != objectMap.end() && it->second.object)
         return it->second.object;
 
-    // Fallback: traverse the scene graph directly (recursively, so nested
-    // sub-meshes resolve even when objectMap hasn't been rebuilt yet).
-    if (!scene || !scene->getRootNode())
-        return nullptr;
-    std::function<kObject *(kObject *)> find = [&](kObject *node) -> kObject *
+    // Search helper: recursively find a kObject by UUID in a scene graph.
+    auto findInScene = [](kScene *s, const kString &uuid) -> kObject *
     {
-        for (kObject *child : node->getChildren())
+        if (!s || !s->getRootNode())
+            return nullptr;
+        std::function<kObject *(kObject *)> find = [&](kObject *node) -> kObject *
         {
-            if (child->getUuid() == uuid)
-                return child;
-            if (kObject *hit = find(child))
-                return hit;
-        }
-        return nullptr;
+            for (kObject *child : node->getChildren())
+            {
+                if (child->getUuid() == uuid)
+                    return child;
+                if (kObject *hit = find(child))
+                    return hit;
+            }
+            return nullptr;
+        };
+        return find(s->getRootNode());
     };
-    return find(scene->getRootNode());
+
+    // Fallback: traverse the game scene graph.
+    if (kObject *found = findInScene(scene, uuid))
+        return found;
+
+    // Also search the prefab scene when prefab editing is active (objects
+    // in the prefab world are separate from the game world's scene graph).
+    if (prefabEditing && prefabScene)
+        return findInScene(prefabScene, uuid);
+
+    return nullptr;
 }
 
 std::vector<TransformState> Manager::captureSelectedTransforms()
 {
     std::vector<TransformState> states;
-    for (const auto &uuid : selectedObjects)
+    const auto &sel = getActiveSelectedObjects();
+    for (const auto &uuid : sel)
     {
         kObject *obj = findObjectByUuid(uuid);
         if (!obj)
@@ -1499,10 +1513,12 @@ static void regenerateUuidsRecursive(nlohmann::json &j)
 
 void Manager::duplicateSelectedObjects()
 {
-    if (!scene || selectedObjects.empty())
+    kScene *s = getCreationScene();
+    if (!s || selectedObjects.empty())
         return;
 
     kAssetManager *am = getAssetManager();
+    kWorld *w = getCreationWorld();
 
     // Snapshot the current selection — loadObjectFromJson + pushInstantiateCommand
     // will rewrite selectedObjects below, so we can't iterate the live vector.
@@ -1519,7 +1535,7 @@ void Manager::duplicateSelectedObjects()
         nlohmann::json j = src->serialize();
         regenerateUuidsRecursive(j);
 
-        kObject *clone = loadObjectFromJson(j, scene, world, am,
+        kObject *clone = loadObjectFromJson(j, s, w, am,
                                             projectPath, editorCamera, nullptr);
         if (clone)
         {
@@ -1554,7 +1570,8 @@ void Manager::duplicateSelectedObjects()
 
 void Manager::deleteSelectedObjects()
 {
-    if (!scene || selectedObjects.empty())
+    kScene *s = getCreationScene();
+    if (!s || selectedObjects.empty())
         return;
 
     std::vector<DeletedObjectInfo> deleted;
@@ -1568,11 +1585,11 @@ void Manager::deleteSelectedObjects()
         kNodeType type = obj->getType();
 
         if (type == NODE_TYPE_LIGHT)
-            scene->removeLight(static_cast<kLight *>(obj));
+            s->removeLight(static_cast<kLight *>(obj));
         else
-            scene->removeMesh(static_cast<kMesh *>(obj));
+            s->removeMesh(static_cast<kMesh *>(obj));
 
-        deleted.push_back({obj, type, scene});
+        deleted.push_back({obj, type, s});
     }
 
     if (deleted.empty())
@@ -1737,13 +1754,14 @@ static void finishCreate(Manager *mgr, kObject *obj, kScene *scene,
 
 void Manager::createSceneObject()
 {
-    kScene *newScene = world->createScene("New Scene");
+    kWorld *w = getCreationWorld();
+    kScene *newScene = w->createScene("New Scene");
 
     undoRedo.push(std::make_unique<PropertyCommand>(
-        [this, newScene]()
-        { world->removeScene(newScene); },
-        [this, newScene]()
-        { world->addScene(newScene); }));
+        [this, w, newScene]()
+        { w->removeScene(newScene); },
+        [this, w, newScene]()
+        { w->addScene(newScene); }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1752,23 +1770,24 @@ void Manager::createSceneObject()
 
 void Manager::createEmpty()
 {
-    if (!scene)
+    kScene *s = getCreationScene();
+    if (!s)
         return;
 
     kObject *obj = new kObject();
     obj->setName("Empty");
-    scene->addObject(obj);
+    s->addObject(obj);
     kString uuid = obj->getUuid();
 
-    finishCreate(this, obj, scene, [this, obj, uuid]()
+    finishCreate(this, obj, s, [this, s, obj, uuid]()
                  {
-            scene->removeObject(obj);
+            s->removeObject(obj);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == obj) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, obj, uuid]()
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, s, obj, uuid]()
                  {
-            scene->addObject(obj, uuid);
+            s->addObject(obj, uuid);
             selectedObject = obj;
             selectObject(uuid, true);
             if (panelHierarchy) panelHierarchy->refreshList(); });
@@ -1780,7 +1799,8 @@ void Manager::createEmpty()
 
 void Manager::createMeshPrimitive(kMesh *mesh, const kString &name)
 {
-    if (!scene)
+    kScene *s = getCreationScene();
+    if (!s)
         return;
 
     kAssetManager *am = getAssetManager();
@@ -1788,18 +1808,18 @@ void Manager::createMeshPrimitive(kMesh *mesh, const kString &name)
         applyDefaultMaterial(mesh, am);
 
     mesh->setName(name);
-    scene->addMesh(mesh);
+    s->addMesh(mesh);
     kString uuid = mesh->getUuid();
 
-    finishCreate(this, mesh, scene, [this, mesh, uuid]()
+    finishCreate(this, mesh, s, [this, s, mesh, uuid]()
                  {
-            scene->removeMesh(mesh);
+            s->removeMesh(mesh);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == mesh) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, mesh, uuid]()
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, s, mesh, uuid]()
                  {
-            scene->addMesh(mesh, uuid);
+            s->addMesh(mesh, uuid);
             selectedObject = mesh;
             selectObject(uuid, true);
             if (panelHierarchy) panelHierarchy->refreshList(); });
@@ -1811,7 +1831,8 @@ void Manager::createMeshPrimitive(kMesh *mesh, const kString &name)
 
 void Manager::createMeshFromFile()
 {
-    if (!scene)
+    kScene *s = getCreationScene();
+    if (!s)
         return;
 
     auto result = pfd::open_file("Open Mesh", "",
@@ -1865,7 +1886,8 @@ void Manager::createMeshFromFile()
 
 void Manager::createLight(kLightType type)
 {
-    if (!scene)
+    kScene *s = getCreationScene();
+    if (!s)
         return;
 
     kAssetManager *am = getAssetManager();
@@ -1875,25 +1897,25 @@ void Manager::createLight(kLightType type)
 
     if (type == LIGHT_TYPE_SUN)
     {
-        light = scene->addSunLight(kVec3(0, 3, 0), kVec3(0, -1, 0),
-                                   kVec3(1.0f, 1.0f, 1.0f),
-                                   kVec3(1.0f, 1.0f, 1.0f));
+        light = s->addSunLight(kVec3(0, 3, 0), kVec3(0, -1, 0),
+                               kVec3(1.0f, 1.0f, 1.0f),
+                               kVec3(1.0f, 1.0f, 1.0f));
         light->setName("Sun Light");
         gizmoRes = "GIZMO_SUN_LIGHT";
     }
     else if (type == LIGHT_TYPE_POINT)
     {
-        light = scene->addPointLight(kVec3(0, 2, 0),
-                                     kVec3(1.0f, 1.0f, 1.0f),
-                                     kVec3(1.0f, 1.0f, 1.0f));
+        light = s->addPointLight(kVec3(0, 2, 0),
+                                 kVec3(1.0f, 1.0f, 1.0f),
+                                 kVec3(1.0f, 1.0f, 1.0f));
         light->setName("Point Light");
         gizmoRes = "GIZMO_POINT_LIGHT";
     }
     else if (type == LIGHT_TYPE_SPOT)
     {
-        light = scene->addSpotLight(kVec3(0, 3, 0),
-                                    kVec3(1.0f, 1.0f, 1.0f),
-                                    kVec3(1.0f, 1.0f, 1.0f));
+        light = s->addSpotLight(kVec3(0, 3, 0),
+                                kVec3(1.0f, 1.0f, 1.0f),
+                                kVec3(1.0f, 1.0f, 1.0f));
         light->setName("Spot Light");
         gizmoRes = "GIZMO_SPOT_LIGHT";
     }
@@ -1906,15 +1928,15 @@ void Manager::createLight(kLightType type)
 
     kString uuid = light->getUuid();
 
-    finishCreate(this, light, scene, [this, light, uuid]()
+    finishCreate(this, light, s, [this, s, light, uuid]()
                  {
-            scene->removeLight(light);
+            s->removeLight(light);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == light) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, light, uuid]()
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, s, light, uuid]()
                  {
-            scene->addLight(light);
+            s->addLight(light);
             selectedObject = light;
             selectObject(uuid, true);
             if (panelHierarchy) panelHierarchy->refreshList(); });
@@ -1926,7 +1948,9 @@ void Manager::createLight(kLightType type)
 
 void Manager::createCamera()
 {
-    if (!scene)
+    kScene *s = getCreationScene();
+    kWorld *w = getCreationWorld();
+    if (!s)
         return;
 
     kCamera *cam = new kCamera();
@@ -1935,23 +1959,23 @@ void Manager::createCamera()
     cam->setLookAt(kVec3(0.0f, 0.0f, 0.0f));
     cam->setFOV(60.0f);
 
-    scene->addObject(cam);
-    world->addCamera(cam, cam->getUuid()); // also register in world camera list
+    s->addObject(cam);
+    w->addCamera(cam, cam->getUuid()); // also register in world camera list
     if (kAssetManager *am = getAssetManager())
         applyCameraIcon(cam, am);
     kString uuid = cam->getUuid();
 
-    finishCreate(this, cam, scene, [this, cam, uuid]()
+    finishCreate(this, cam, s, [this, s, w, cam, uuid]()
                  {
-            scene->removeObject(cam);
-            world->removeCamera(cam);
+            s->removeObject(cam);
+            w->removeCamera(cam);
             selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
                                   selectedObjects.end());
             if (selectedObject == cam) selectedObject = nullptr;
-            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, cam, uuid]()
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, s, w, cam, uuid]()
                  {
-            scene->addObject(cam, uuid);
-            world->addCamera(cam, uuid);
+            s->addObject(cam, uuid);
+            w->addCamera(cam, uuid);
             selectedObject = cam;
             selectObject(uuid, true);
             if (panelHierarchy) panelHierarchy->refreshList(); });
@@ -4536,7 +4560,7 @@ kObject *Manager::instantiatePrefabInScene(const fs::path &prefabPath)
 
 void Manager::editPrefab(const fs::path &prefabPath)
 {
-    if (!projectOpened || !world)
+    if (!projectOpened)
         return;
 
     // If we're already editing a different prefab, save & close it first.
@@ -4551,31 +4575,94 @@ void Manager::editPrefab(const fs::path &prefabPath)
 
     editingPrefabPath = prefabPath;
 
-    // Build an isolated scene + camera for the prefab editor. The prefab is
-    // loaded with its template UUIDs preserved (no instantiateJson) so saving
-    // round-trips cleanly back to the same node identities.
-    prefabScene = world->createScene("__PrefabEdit__");
+    // --- Create the prefab's own isolated world with its own asset manager ---
+    // The prefab editor uses a completely separate rendering pipeline — its own
+    // kWorld, kScene, kCamera, and kRenderer — so it never touches the game
+    // world's scene graph or FBO.
+    if (!prefabAssetManager)
+    {
+        prefabAssetManager = createAssetManager();
+    }
+    if (!prefabWorld)
+    {
+        prefabWorld = createWorld(prefabAssetManager);
+    }
+
+    // Build an isolated scene for the prefab editor (visible in hierarchy).
+    prefabScene = prefabWorld->createScene("Prefab");
+
+    // Load the prefab subtree with template UUIDs preserved (no instantiateJson)
+    // so saving round-trips cleanly back to the same node identities.
+    //
+    // IMPORTANT: VAOs are not shared between GL contexts, so we must switch to
+    // the prefab driver before loading any meshes.  The meshes' GPU resources
+    // will then live in the prefab driver's context where they can be rendered.
+    kDriver *savedDriver = kDriver::getCurrent();
+    if (prefabRenderer && prefabRenderer->getDriver())
+    {
+        prefabRenderer->getDriver()->makeCurrent(window);
+        kDriver::setCurrent(prefabRenderer->getDriver());
+    }
 
     kAssetManager *am = getAssetManager();
     prefabRoot = loadObjectFromJson(editingPrefab.getRootJson(),
-                                    prefabScene, world, am,
+                                    prefabScene, prefabWorld, am,
                                     projectPath, editorCamera, nullptr);
 
-    // Position an editor camera so the prefab is framed reasonably. The camera
-    // is registered with the world so the renderer can use it; we tag it with a
-    // sentinel scene_uuid that the game-camera picker should ignore.
-    prefabCamera = world->addCamera(kVec3(-5, 3, 8), kVec3(0, 1, 0),
-                                    kCameraType::CAMERA_TYPE_FREE);
+    // Apply skybox — its cube mesh VAO must also live in the prefab context.
+    applyDefaultSkybox(prefabScene);
+
+    // Add a default sun light to the prefab scene so objects are lit.
+    // Name starts with '_' so the hierarchy panel hides it.
+    {
+        kLight *sun = prefabScene->addSunLight(
+            kVec3(0.0f, 5.0f, 0.0f),
+            kVec3(-0.5f, -1.0f, -0.5f),
+            kVec3(1.0f, 1.0f, 1.0f),
+            kVec3(1.0f, 1.0f, 1.0f));
+        sun->setName("_SunLight_");
+        sun->setPower(1.5f);
+    }
+
+    // Duplicate the editor grid scene for the prefab panel.
+    if (!prefabEditorScene)
+    {
+        prefabEditorScene = prefabWorld->createScene("_EditorScene_");
+        prefabEditorScene->setFrustumCullingEnabled(false);
+
+        kMesh *gridMesh = kMeshGenerator::generatePlane();
+        gridMesh->setPosition(kVec3(0.0f, -0.01f, 0.0f));
+        prefabEditorScene->addMesh(gridMesh);
+
+        kShader *gridShader = am->loadGlslFromResource("SHADER_GRID");
+        kMaterial *gridMat = am->createMaterial(gridShader);
+        gridMat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
+        gridMat->setSingleSided(false);
+        gridMesh->setMaterial(gridMat);
+    }
+
+    // Restore the previously-current driver so the caller (ImGui / main loop)
+    // continues to operate with the correct GL context.
+    if (savedDriver)
+    {
+        savedDriver->makeCurrent(window);
+        kDriver::setCurrent(savedDriver);
+    }
+
+    // Position an editor camera so the prefab is framed reasonably.
+    prefabCamera = new kCamera(nullptr, kCameraType::CAMERA_TYPE_FREE);
+    prefabCamera->setPosition(kVec3(-5, 3, 8));
+    prefabCamera->setLookAt(kVec3(0, 1, 0));
     prefabCamera->setFOV(60.0f);
     prefabCamera->setName("__PrefabEditCamera__");
+    prefabWorld->addCamera(prefabCamera, prefabCamera->getUuid());
 
     prefabEditing = true;
+    hierarchyShowsPrefab = true; // hierarchy now shows prefab scene graph
 
-    // Clear the main scene's selection — the prefab editor has its own context.
-    selectedObjects.clear();
-    selectedObject = prefabRoot;
-    if (prefabRoot)
-        selectedObjects.push_back(prefabRoot->getUuid());
+    // No auto-selection — the user can click to select objects as needed.
+    prefabSelectedObjects.clear();
+    prefabSelectedObject = nullptr;
 
     if (panelHierarchy)
         panelHierarchy->refreshList();
@@ -4608,21 +4695,47 @@ void Manager::closePrefabEditor(bool saveChanges)
             for (kObject *child : prefabScene->getRootNode()->getChildren())
                 deleteObjectRecursive(child);
         }
-        if (world)
-            world->removeScene(prefabScene);
+        if (prefabWorld)
+            prefabWorld->removeScene(prefabScene);
         delete prefabScene;
         prefabScene = nullptr;
     }
 
-    if (prefabCamera && world)
+    if (prefabCamera && prefabWorld)
     {
-        world->removeCamera(prefabCamera);
+        prefabWorld->removeCamera(prefabCamera);
         delete prefabCamera;
         prefabCamera = nullptr;
     }
 
+    // Clean up the editor grid scene (duplicated for prefab panel).
+    if (prefabEditorScene && prefabWorld)
+    {
+        prefabWorld->removeScene(prefabEditorScene);
+        delete prefabEditorScene;
+        prefabEditorScene = nullptr;
+    }
+
+    // Destroy the prefab's isolated world and asset manager.
+    if (prefabWorld)
+    {
+        delete prefabWorld;
+        prefabWorld = nullptr;
+    }
+    if (prefabAssetManager)
+    {
+        delete prefabAssetManager;
+        prefabAssetManager = nullptr;
+    }
+
     prefabRoot = nullptr;
     prefabEditing = false;
+    hierarchyShowsPrefab = false; // hierarchy returns to game world scene graph
+
+    // Clear prefab-specific selection so nothing leaks to the world panel.
+    prefabSelectedObjects.clear();
+    prefabSelectedObject = nullptr;
+
     editingPrefabPath.clear();
 
     selectedObjects.clear();

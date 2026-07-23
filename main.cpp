@@ -36,13 +36,37 @@ int main()
 	// produces kemena3d_crash.log (the Release GUI build has no console).
 	installCrashHandler();
 
-	// Create window and renderer
+	// Create window and renderers.
+	// Three separate kRenderer instances are created:
+	//   rendererWorld  — renders the game scene into the World panel viewport
+	//   rendererPrefab — renders the isolated prefab scene into the Prefab panel
+	//   rendererGame   — (future) renders the game view with post-processing
+	// Each owns its own kDriver (OpenGL context) with shared resources so
+	// textures from one context can be used as ImGui images in another.
 	kWindow *window = createWindow(1024, 768, windowTitle, true);
-	kRenderer *renderer = createRenderer(window);
-	renderer->setEnableScreenBuffer(true);
-	renderer->setEnableShadow(true);
-	renderer->setEnableObjectPicking(true);
-	renderer->setClearColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+
+	kRenderer *rendererWorld = createRenderer(window);
+	rendererWorld->setEnableScreenBuffer(true);
+	rendererWorld->setEnableShadow(true);
+	rendererWorld->setEnableObjectPicking(true);
+	rendererWorld->setClearColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+
+	kRenderer *rendererPrefab = createRenderer(window);
+	rendererPrefab->setEnableScreenBuffer(true);
+	rendererPrefab->setEnableShadow(true);
+	rendererPrefab->setEnableObjectPicking(true);
+	rendererPrefab->setClearColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+
+	// Use rendererWorld as the primary renderer (drives the GUI manager and main loop).
+	kRenderer *renderer = rendererWorld;
+
+	// Ensure the world renderer's driver is the globally "current" one before
+	// any further initialisation.  createRenderer() for the prefab panel left
+	// its own driver as current via kDriver::setCurrent(), but all scene-graph
+	// resources (VAOs, textures, shaders) live in the world driver's GL context.
+	kDriver *worldDriver = rendererWorld->getDriver();
+	worldDriver->makeCurrent(window);
+	kDriver::setCurrent(worldDriver);
 
 	// Setup GUI manager
 	kGuiManager *gui = createGuiManager(renderer);
@@ -55,17 +79,16 @@ int main()
 
 	// Create the world and scene
 	kWorld *world = createWorld(assetManager);
-	kScene *sceneEditor = world->createScene("Editor Scene");
+	kScene *sceneEditor = world->createScene("_EditorScene_");
 	kScene *scene = world->createScene("Scene");
 
 	// Editor manager
-	Manager *manager = new Manager(window, world, renderer);
+	Manager *manager = new Manager(window, world, rendererWorld);
 	manager->setScene(scene);
 
-	// Prefab editor renders into its own offscreen target with a dark-grey
-	// background so it's visually distinct from the World panel.
-	manager->prefabRenderer.setAssetManager(assetManager);
-	manager->prefabRenderer.setBackgroundColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+	// Assign the prefab's dedicated renderer to the manager so it can drive
+	// the isolated prefab viewport rendering.
+	manager->prefabRenderer = rendererPrefab;
 
 	// Thumbnail renderer also loads preview / shadow shaders from resources.
 	manager->thumbnailRenderer.setAssetManager(assetManager);
@@ -200,6 +223,19 @@ int main()
 	kQuat cameraTweenToRot = kQuat(1, 0, 0, 0);
 	kVec3 cameraTweenToPivot = kVec3(0);
 	float cameraTweenToDist = 1.0f;
+
+	// --- Prefab panel camera controls (mirrors world panel) ---
+	bool prefabDragging = false;
+	kVec2 prefabDragStart;
+	kQuat prefabCamRot;
+
+	bool prefabPanning = false;
+	kVec2 prefabPanStart;
+	kVec3 prefabPanStartCamPos;
+	kVec3 prefabPanStartPivot;
+
+	kVec3 prefabOrbitPivot = kVec3(0.0f, 1.0f, 0.0f);
+	float prefabOrbitDistance = 9.0f;
 
 	bool altPressed = false;
 	bool ctrlPressed = false;
@@ -395,6 +431,80 @@ int main()
 				{
 					dragging = false;
 				}
+
+				// --- Prefab panel click-to-select (picking, uses OWN selection) ---
+				if (panelPrefab->enabled && panelPrefab->hovered &&
+				    manager->prefabRenderer && manager->prefabWorld && manager->prefabScene)
+				{
+					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT &&
+					    !altPressed && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing())
+					{
+						auto selBefore = manager->prefabSelectedObjects;
+						auto selObjBefore = manager->prefabSelectedObject;
+
+						kVec2 imMouse = gui->getMousePos();
+						int vpMouseX = (int)((imMouse.x - panelPrefab->panelPos.x) * 2.0f);
+						int vpMouseY = (int)((imMouse.y - panelPrefab->panelPos.y) * 2.0f);
+
+						kObject *picked = manager->prefabRenderer->pickObject(
+							manager->prefabWorld, manager->prefabScene,
+							vpMouseX, vpMouseY,
+							panelPrefab->width * 2, panelPrefab->height * 2);
+
+						if (picked && manager->prefabScene->getRootNode())
+						{
+							kObject *sceneRoot = manager->prefabScene->getRootNode();
+							while (picked->getParent() && picked->getParent() != sceneRoot)
+								picked = picked->getParent();
+						}
+
+						if (picked)
+						{
+							manager->prefabSelectedObject = picked;
+							if (!shiftPressed)
+								manager->prefabSelectedObjects.clear();
+							manager->prefabSelectedObjects.push_back(picked->getUuid());
+						}
+						else if (!shiftPressed)
+						{
+							manager->prefabSelectedObject = nullptr;
+							manager->prefabSelectedObjects.clear();
+						}
+
+						auto selAfter = manager->prefabSelectedObjects;
+						auto selObjAfter = manager->prefabSelectedObject;
+						if (selBefore != selAfter || selObjBefore != selObjAfter)
+						{
+							manager->undoRedo.push(std::make_unique<SelectCommand>(
+								manager, selBefore, selObjBefore,
+								selAfter, selObjAfter));
+						}
+					}
+				}
+
+				// --- Prefab panel mouse-down events (camera) ---
+				if (panelPrefab->enabled && panelPrefab->hovered)
+				{
+					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && altPressed && panelPrefab->focused)
+					{
+						prefabDragging = true;
+						prefabDragStart.x = event.getMouseX();
+						prefabDragStart.y = event.getMouseY();
+						if (manager->prefabCamera)
+							prefabCamRot = manager->prefabCamera->getRotation();
+					}
+					else if (event.getMouseButton() == K_MOUSEBUTTON_MIDDLE && panelPrefab->focused)
+					{
+						prefabPanning = true;
+						prefabPanStart.x = event.getMouseX();
+						prefabPanStart.y = event.getMouseY();
+						if (manager->prefabCamera)
+						{
+							prefabPanStartCamPos = manager->prefabCamera->getPosition();
+							prefabPanStartPivot = prefabOrbitPivot;
+						}
+					}
+				}
 			}
 			else if (eventType == K_EVENT_MOUSEBUTTONUP)
 			{
@@ -411,22 +521,25 @@ int main()
 						camRot = cameraEditor->getRotation();
 					}
 				}
+
+				// --- Prefab panel mouse-up events ---
+				if (prefabDragging && event.getMouseButton() == K_MOUSEBUTTON_LEFT)
+					prefabDragging = false;
+				if (prefabPanning && event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
+					prefabPanning = false;
 			}
 			else if (eventType == K_EVENT_MOUSEMOTION)
 			{
+				// --- World panel camera motion ---
 				if (panelWorld->enabled && panelWorld->hovered)
 				{
 					if (dragging)
 					{
-						float deltaX = dragStart.x - event.getMouseX(); // horizontal mouse movement
-						float deltaY = dragStart.y - event.getMouseY(); // vertical mouse movement
+						float deltaX = dragStart.x - event.getMouseX();
+						float deltaY = dragStart.y - event.getMouseY();
 
 						if (cameraEditor->getCameraType() == kCameraType::CAMERA_TYPE_FREE)
 						{
-							// Orient the camera, then re-anchor it so it stays
-							// orbitDistance from cameraOrbitPivot — turns
-							// rotate-in-place into orbit-around-pivot.
-							// User is steering — cancel any in-flight F tween.
 							cameraTweenActive = false;
 							cameraEditor->rotateByMouse(camRot, -deltaX, -deltaY);
 							kVec3 fwd = cameraEditor->calculateForward();
@@ -435,10 +548,6 @@ int main()
 					}
 					else if (panning)
 					{
-						// Pan slides both the camera and its orbit pivot in the
-						// view plane. Speed scales with orbit distance so the
-						// world tracks the cursor at a consistent rate
-						// regardless of zoom level.
 						float deltaX = event.getMouseX() - panStart.x;
 						float deltaY = event.getMouseY() - panStart.y;
 
@@ -451,19 +560,54 @@ int main()
 						cameraOrbitPivot = panStartPivot + offset;
 					}
 				}
+
+				// --- Prefab panel camera motion ---
+				if (panelPrefab->enabled && panelPrefab->hovered && manager->prefabCamera)
+				{
+					kCamera *pcam = manager->prefabCamera;
+					if (prefabDragging)
+					{
+						float deltaX = prefabDragStart.x - event.getMouseX();
+						float deltaY = prefabDragStart.y - event.getMouseY();
+
+						pcam->rotateByMouse(prefabCamRot, -deltaX, -deltaY);
+						kVec3 fwd = pcam->calculateForward();
+						pcam->setPosition(prefabOrbitPivot - fwd * prefabOrbitDistance);
+					}
+					else if (prefabPanning)
+					{
+						float deltaX = event.getMouseX() - prefabPanStart.x;
+						float deltaY = event.getMouseY() - prefabPanStart.y;
+
+						float panScale = prefabOrbitDistance * 0.0025f;
+						kVec3 right = pcam->calculateRight();
+						kVec3 up = pcam->calculateUp();
+						kVec3 offset = (right * deltaX + up * deltaY) * panScale;
+
+						pcam->setPosition(prefabPanStartCamPos + offset);
+						prefabOrbitPivot = prefabPanStartPivot + offset;
+					}
+				}
 			}
 			else if (eventType == K_EVENT_MOUSEWHEEL)
 			{
+				// --- World panel zoom ---
 				if (panelWorld->enabled && panelWorld->hovered)
 				{
-					// User is zooming — cancel any in-flight F tween.
 					cameraTweenActive = false;
-					// Wheel zooms by shrinking / growing the orbit distance.
-					// Floor avoids collapsing the camera onto the pivot.
 					float wheel = event.getMouseWheelY();
 					cameraOrbitDistance = std::max(0.1f, cameraOrbitDistance - wheel * 2.0f);
 					kVec3 fwd = cameraEditor->calculateForward();
 					cameraEditor->setPosition(cameraOrbitPivot - fwd * cameraOrbitDistance);
+				}
+
+				// --- Prefab panel zoom ---
+				if (panelPrefab->enabled && panelPrefab->hovered && manager->prefabCamera)
+				{
+					float wheel = event.getMouseWheelY();
+					prefabOrbitDistance = std::max(0.1f, prefabOrbitDistance - wheel * 2.0f);
+					kVec3 fwd = manager->prefabCamera->calculateForward();
+					manager->prefabCamera->setPosition(prefabOrbitPivot - fwd * prefabOrbitDistance);
 				}
 			}
 			else if (eventType == K_EVENT_KEYDOWN)
@@ -472,16 +616,22 @@ int main()
 				{
 					if (panelWorld->enabled && panelWorld->hovered)
 						manager->manipulatorType = ImGuizmo::TRANSLATE;
+					else if (panelPrefab->enabled && panelPrefab->hovered)
+						manager->prefabManipulatorType = ImGuizmo::TRANSLATE;
 				}
 				else if (event.getKeyButton() == K_KEY_E)
 				{
 					if (panelWorld->enabled && panelWorld->hovered)
 						manager->manipulatorType = ImGuizmo::ROTATE;
+					else if (panelPrefab->enabled && panelPrefab->hovered)
+						manager->prefabManipulatorType = ImGuizmo::ROTATE;
 				}
 				else if (event.getKeyButton() == K_KEY_R)
 				{
 					if (panelWorld->enabled && panelWorld->hovered)
 						manager->manipulatorType = ImGuizmo::SCALE;
+					else if (panelPrefab->enabled && panelPrefab->hovered)
+						manager->prefabManipulatorType = ImGuizmo::SCALE;
 				}
 				else if (event.getKeyButton() == K_KEY_LALT)
 				{
@@ -668,9 +818,25 @@ int main()
 			}
 		}
 
+		// Safety: ensure world driver is current at the start of each frame.
+		// kMesh::draw() uses kDriver::getCurrent(), which must match the
+		// context that owns the meshes' VAOs.
+		{
+			kDriver *wd = rendererWorld->getDriver();
+			if (wd)
+			{
+				wd->makeCurrent(window);
+				kDriver::setCurrent(wd);
+			}
+		}
+
 		renderer->clear();
 
-		bool isPreviewMode = (manager->activeMode != Manager::EditorMode::GameWorld);
+		// PrefabPreview mode is now handled by its OWN renderer + world
+		// (see the prefab rendering block below).  Only particle/animator
+		// preview modes still swap the main viewport to the preview world.
+		bool isPreviewMode = (manager->activeMode != Manager::EditorMode::GameWorld &&
+		                      manager->activeMode != Manager::EditorMode::PrefabPreview);
 
 		// Re-sync the local scene pointer from the manager. Manager::loadWorld
 		// destroys the original game scene and creates new ones, so the local
@@ -690,7 +856,8 @@ int main()
 						manager->applyDefaultSkybox(scene);
 					renderer->setEnableShadow(scene->getShadowsEnabled());
 		
-				// In preview mode, swap the render target to the preview world.
+				// In preview mode (particle/animator), swap the render target to the preview world.
+				// PrefabPreview no longer uses this path — it renders via its own kRenderer below.
 				if (isPreviewMode && manager->previewWorld)
 				{
 					world = manager->previewWorld;
@@ -834,17 +1001,69 @@ int main()
 			}
 		}
 
-		// Prefab editor renders its isolated scene through its OWN renderer into
-		// a separate texture, so the World panel above is left untouched. Its
-		// background is dark grey (set once after Manager construction).
+		// --- Prefab panel rendering (separate kRenderer, separate kWorld) ---
+		// The prefab editor uses its OWN kRenderer with its OWN kDriver.  We
+		// switch to the prefab driver before rendering and restore the world
+		// driver afterwards so ImGui draws with the correct context.
 		if (manager->prefabEditing && manager->prefabScene && manager->prefabCamera &&
+			manager->prefabWorld && manager->prefabRenderer &&
 			panelPrefab->width > 0 && panelPrefab->height > 0)
 		{
-			manager->prefabRenderer.resize(panelPrefab->width * 2, panelPrefab->height * 2);
-			manager->prefabRenderer.render(world, manager->prefabScene, manager->prefabCamera);
+			// Switch to the prefab renderer's driver and make its GL context current.
+			kDriver *prefabDriver = manager->prefabRenderer->getDriver();
+			kDriver *worldDriver  = rendererWorld->getDriver();
+			if (prefabDriver && worldDriver && prefabDriver != worldDriver)
+			{
+				prefabDriver->makeCurrent(window);
+				kDriver::setCurrent(prefabDriver);
+			}
+
+			int pw = panelPrefab->width * 2;
+			int ph = panelPrefab->height * 2;
+
+			manager->prefabRenderer->clear();
+
+			// Render the isolated prefab scene (game content).
+			manager->prefabWorld->setMainCamera(manager->prefabCamera);
+			manager->prefabRenderer->render(manager->prefabWorld, manager->prefabScene,
+			                                0, 0, pw, ph, deltaTime, false);
+
+			// Render the duplicated editor grid scene on top.
+			if (manager->prefabEditorScene)
+			{
+				kRenderMode savedMode = manager->prefabRenderer->getRenderMode();
+				manager->prefabRenderer->setRenderMode(kRenderMode::RENDER_MODE_FULL);
+				manager->prefabRenderer->render(manager->prefabWorld, manager->prefabEditorScene,
+				                                0, 0, pw, ph, deltaTime, false);
+				manager->prefabRenderer->setRenderMode(savedMode);
+			}
+
+			// Picking pass for the prefab panel (enables click-to-select).
+			manager->prefabRenderer->renderPickingPass(
+				manager->prefabWorld, manager->prefabScene, pw, ph);
+
+			// Restore the world renderer's driver so subsequent ImGui and swap
+			// operations use the correct context.
+			if (prefabDriver && worldDriver && prefabDriver != worldDriver)
+			{
+				worldDriver->makeCurrent(window);
+				kDriver::setCurrent(worldDriver);
+			}
 		}
 
 		// std::cout << panelWorld->width << "," << panelWorld->height << std::endl;
+
+		// Safety: ensure the world renderer's driver is current before any
+		// ImGui panel draws (some panels create/use kOffscreenRenderer which
+		// captures kDriver::getCurrent() at construction time).
+		{
+			kDriver *wd = rendererWorld->getDriver();
+			if (wd)
+			{
+				wd->makeCurrent(window);
+				kDriver::setCurrent(wd);
+			}
+		}
 
 		gui->canvasStart();
 		gui->dockSpaceStart("MainDockSpace");
@@ -876,6 +1095,21 @@ int main()
 		panelAnimation->draw(showPanel.animationEditor);
 		panelParticle->draw(showPanel.particleEditor);
 
+		// Track which panel was last focused to drive the hierarchy panel.
+		// When the world panel is focused, the hierarchy shows the game world's
+		// scene graph.  When the prefab panel is focused, it shows the prefab's
+		// isolated scene graph.
+		{
+			bool oldPrefabFocus = manager->hierarchyShowsPrefab;
+			if (panelPrefab->enabled && panelPrefab->focused)
+				manager->hierarchyShowsPrefab = true;
+			else if (panelWorld->enabled && panelWorld->focused)
+				manager->hierarchyShowsPrefab = false;
+			// If focus changed, rebuild the hierarchy tree.
+			if (manager->hierarchyShowsPrefab != oldPrefabFocus)
+				panelHierarchy->refreshList();
+		}
+
 		// If there's a need to import assets
 		manager->drawImportPopup(panelConsole);
 		if (manager->showImportPopup)
@@ -905,7 +1139,8 @@ int main()
 	delete panelTerrain;
 	delete splashScreen;
 	gui->destroy();
-	renderer->destroy();
+	rendererWorld->destroy();
+	rendererPrefab->destroy();
 	window->destroy();
 	return 0;
 }

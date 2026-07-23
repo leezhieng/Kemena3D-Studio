@@ -154,6 +154,38 @@ public:
     kWorld *getActiveWorld() { return (activeMode == EditorMode::GameWorld) ? world : previewWorld; }
     kScene *getActiveScene() { return (activeMode == EditorMode::GameWorld) ? scene : (previewWorld ? previewWorld->getScenes().empty() ? nullptr : previewWorld->getScenes()[0] : nullptr); }
 
+    /**
+     * @brief Returns the world whose scene graph should be displayed in the hierarchy panel.
+     *
+     * When editing a prefab the hierarchy shows the prefab's isolated world;
+     * otherwise it shows the game world.
+     */
+    kWorld *getHierarchyWorld() { return hierarchyShowsPrefab ? prefabWorld : world; }
+
+    /**
+     * @brief Returns the primary scene whose objects should be displayed in the hierarchy panel.
+     *
+     * When editing a prefab this is the prefab scene; otherwise the active game scene.
+     * Editor overlay scenes (grid, etc.) are excluded.
+     */
+    kScene *getHierarchyScene() { return hierarchyShowsPrefab ? prefabScene : scene; }
+
+    /**
+     * @brief Returns the world where new objects should be created.
+     *
+     * When editing a prefab, new objects are added to the prefab's isolated
+     * world; otherwise they go to the game world.
+     */
+    kWorld *getCreationWorld() { return prefabEditing ? prefabWorld : world; }
+
+    /**
+     * @brief Returns the scene where new objects should be created.
+     *
+     * When editing a prefab, new objects are added to the prefab scene;
+     * otherwise they go to the active game scene.
+     */
+    kScene *getCreationScene() { return prefabEditing ? prefabScene : scene; }
+
     // --- Edit actions -------------------------------------------------------
     void selectAll();
     void deselectAll();
@@ -311,10 +343,18 @@ public:
     bool prefabEditing = false;
     fs::path editingPrefabPath;
     kPrefab editingPrefab;
-    kScene *prefabScene = nullptr;
-    kCamera *prefabCamera = nullptr;
-    kObject *prefabRoot = nullptr;
-    kOffscreenRenderer prefabRenderer{512, 512};
+
+    // --- Prefab's own isolated world, scene, camera, renderer, and asset manager ---
+    // The prefab editor uses a completely separate rendering pipeline from the
+    // game world — its own kWorld, kScene, kCamera, kRenderer, and kAssetManager.
+    // This keeps prefab editing independent from the main scene graph.
+    kWorld        *prefabWorld        = nullptr;  ///< Standalone world for the prefab editor.
+    kScene        *prefabScene        = nullptr;  ///< Scene containing the prefab subtree being edited.
+    kCamera       *prefabCamera       = nullptr;  ///< Camera for the prefab editor viewport.
+    kRenderer     *prefabRenderer     = nullptr;  ///< Dedicated renderer for the prefab panel (own FBO, own driver).
+    kAssetManager *prefabAssetManager = nullptr;  ///< Asset manager for the prefab world (loads shaders/textures).
+    kObject       *prefabRoot         = nullptr;  ///< Root object of the prefab subtree being edited.
+    kScene        *prefabEditorScene  = nullptr;  ///< Editor overlay scene (grid) duplicated for the prefab panel.
 
     // --- Audio preview -------------------------------------------------------
     kAudioManager *audioPreviewManager = nullptr;
@@ -468,8 +508,27 @@ public:
     kScene *selectedScene = nullptr;
     bool worldSelected = false;
 
+    // --- Prefab-panel–specific selection (totally separate from world panel) ---
+    std::vector<kString> prefabSelectedObjects;
+    kObject *prefabSelectedObject = nullptr;
+
+    /** @brief Returns the selection appropriate for the currently-focused panel. */
+    std::vector<kString> &getActiveSelectedObjects()
+        { return hierarchyShowsPrefab ? prefabSelectedObjects : selectedObjects; }
+    kObject *&getActiveSelectedObject()
+        { return hierarchyShowsPrefab ? prefabSelectedObject : selectedObject; }
+
     ImGuizmo::OPERATION manipulatorType = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE manipulatorMode = ImGuizmo::LOCAL;
+
+    // Prefab panel has its own ImGuizmo state so it doesn't interfere with the
+    // world panel's gizmo mode.
+    ImGuizmo::OPERATION prefabManipulatorType = ImGuizmo::TRANSLATE;
+    ImGuizmo::MODE prefabManipulatorMode = ImGuizmo::LOCAL;
+
+    /// Tracks which world the hierarchy panel should display.
+    /// true = prefab world, false = game world.
+    bool hierarchyShowsPrefab = false;
 
     UndoRedoManager undoRedo;
     PivotMode pivotMode = PivotMode::LastSelected;
