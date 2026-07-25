@@ -179,19 +179,22 @@ bool Manager::newProject()
     currentDir.clear();
     currentDir.push_back("Assets");
 
+    // Clear any previously opened world and start fresh.
+    // resetToFreshWorld() safely tears down game scenes and creates a
+    // fresh default scene — it's the same path used by File→New World.
+    resetToFreshWorld();
+
     // TODO: Create project config file
     checkAssetChange();
 
     if (panelProject != nullptr)
     {
+        panelProject->clearSelection();
         panelProject->refreshTreeList();
         panelProject->refreshThumbnailList();
     }
 
-    // WIP: Load scenes of the world
-
-    if (panelHierarchy != nullptr)
-        panelHierarchy->refreshList();
+    // hierarchy already refreshed by resetToFreshWorld()
 
     addRecentProject(projectPath.string());
 
@@ -297,20 +300,19 @@ bool Manager::openProject()
 
     if (panelProject != nullptr)
     {
+        panelProject->clearSelection();
         panelProject->refreshTreeList();
         panelProject->refreshThumbnailList();
     }
 
-    // WIP: Load scenes of the world
-
-    if (panelHierarchy != nullptr)
-        panelHierarchy->refreshList();
-
     // If a previous session recorded a last-opened world, load it now.
+    // Otherwise start with a fresh default world.
     {
         fs::path last = loadLastWorldPath();
         if (!last.empty())
             loadWorld(last.string());
+        else
+            resetToFreshWorld();
     }
 
     addRecentProject(projectPath.string());
@@ -360,18 +362,19 @@ bool Manager::openProjectFromPath(const kString &path)
 
     if (panelProject != nullptr)
     {
+        panelProject->clearSelection();
         panelProject->refreshTreeList();
         panelProject->refreshThumbnailList();
     }
 
-    if (panelHierarchy != nullptr)
-        panelHierarchy->refreshList();
-
     // Auto-load the previously-opened world for this project (if any).
+    // Otherwise start with a fresh default world.
     {
         fs::path last = loadLastWorldPath();
         if (!last.empty())
             loadWorld(last.string());
+        else
+            resetToFreshWorld();
     }
 
     addRecentProject(path);
@@ -906,6 +909,11 @@ bool Manager::newWorld()
 
     clearWorld(true); // force clear, skip second prompt
     resetToFreshWorld();
+
+    // Notify the renderer that the scene graph has been rebuilt.
+    if (renderer)
+        renderer->setOctreeDirty();
+
     return true;
 }
 
@@ -921,6 +929,15 @@ void Manager::resetToFreshWorld()
     else
     {
         editorScene = scenes[0];
+    }
+
+    // Remove non-editor cameras from the world before deleting game scene
+    // objects — otherwise the world's camera list would hold dangling pointers.
+    {
+        auto cams = world->getCameras();
+        for (kCamera *c : cams)
+            if (c != editorCamera)
+                world->removeCamera(c);
     }
 
     // Remove any leftover game scenes
@@ -3634,6 +3651,9 @@ void Manager::saveWorld()
         // Record this as the last-opened world so reopening the project
         // auto-loads it.
         saveProjectConfig();
+        // Refresh the project panel so the .world file appears immediately.
+        if (panelProject)
+            panelProject->triggerRefresh();
         std::cout << "World saved: " << worldPath << "\n";
     }
     catch (const std::exception &e)

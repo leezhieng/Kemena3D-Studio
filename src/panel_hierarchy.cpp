@@ -378,6 +378,12 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 
 void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 {
+	// Apply any refresh that was deferred because refreshList() was called
+	// while drawNode was still iterating the tree (e.g. from a context-menu
+	// action like Duplicate / Delete).
+	if (pendingRefresh)
+		refreshList();
+
 	gui->beginDisabled(!manager->projectOpened);
 
 	gui->windowStart("Hierarchy", opened);
@@ -439,9 +445,11 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 			gui->childStart("HierarchyTree", kVec2(0, availableHeight), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
 			{
 				if (manager->projectOpened)
-				{
-					drawNode(root, root, 0);
-				}
+					{
+						drawingTree = true;
+						drawNode(root, root, 0);
+						drawingTree = false;
+					}
 				else
 				{
 					kString text = "No active world";
@@ -474,7 +482,10 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 					{
 						kObject *obj = manager->objectMap[renameNodeUuid].object;
 						if (obj && renameBuffer[0] != '\0')
+						{
 							obj->setName(kString(renameBuffer));
+							refreshList();
+						}
 					}
 					renameNodeUuid.clear();
 					ImGui::CloseCurrentPopup();
@@ -486,7 +497,10 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 					{
 						kObject *obj = manager->objectMap[renameNodeUuid].object;
 						if (obj && renameBuffer[0] != '\0')
+						{
 							obj->setName(kString(renameBuffer));
+							refreshList();
+						}
 					}
 					renameNodeUuid.clear();
 					ImGui::CloseCurrentPopup();
@@ -514,6 +528,17 @@ void PanelHierarchy::draw(bool &opened)
 
 void PanelHierarchy::refreshList()
 {
+	// If called while the tree is being drawn (e.g. from a right-click
+	// context-menu action like Duplicate or Delete), defer the rebuild
+	// until the next frame.  Destroying the Node tree mid-iteration is a
+	// use-after-free that crashes inside drawNode().
+	if (drawingTree)
+	{
+		pendingRefresh = true;
+		return;
+	}
+	pendingRefresh = false;
+
 	manager->objectMap.clear();
 	root.children.clear();
 

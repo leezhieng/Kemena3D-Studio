@@ -52,6 +52,12 @@ private:
 	kString renameNodeUuid;      ///< UUID of the node currently being renamed (empty if none).
 	char    renameBuffer[256] = ""; ///< Backing buffer for the rename text field.
 
+	// Guard against refreshList() being called while drawNode() is iterating the
+	// tree (e.g. from a right-click context-menu action like Duplicate/Delete).
+	// When set, refreshList() defers the actual rebuild until the next frame.
+	bool drawingTree   = false; ///< True while drawNode is recursing through the tree.
+	bool pendingRefresh = false; ///< True when a refresh was deferred; cleared at the top of drawHierarchyPanel.
+
 	/**
 	 * @brief A single row in the hierarchy tree.
 	 *
