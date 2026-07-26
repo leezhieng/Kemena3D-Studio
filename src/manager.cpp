@@ -121,30 +121,143 @@ bool Manager::newProject()
             return false;
     }
 
-    auto path = pfd::select_folder("Select project folder").result();
+    // Open the New Project dialog instead of the native folder selector.
+    // The dialog captures project name, directory, and create-folder preference.
+    newProjectNameInput = "New Project";
+    newProjectDirInput.clear();
+    newProjectCreateFolder = true;
+    showNewProjectDialog = true;
+    return true; // dialog is now visible; actual creation happens in executeNewProject()
+}
 
-    if (path.empty())
+void Manager::drawNewProjectDialog()
+{
+    if (!showNewProjectDialog)
+        return;
+
+    ImGui::OpenPopup("New Project");
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(500, 220), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::BeginPopupModal("New Project", &showNewProjectDialog,
+                                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    // --- Project Name ---
+    char nameBuf[256];
+    strncpy_s(nameBuf, sizeof(nameBuf), newProjectNameInput.c_str(), _TRUNCATE);
+    nameBuf[sizeof(nameBuf) - 1] = '\0';
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120.0f);
+    ImGui::TextUnformatted("Project Name:");
+    ImGui::SameLine(120.0f);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    if (ImGui::InputText("##projName", nameBuf, sizeof(nameBuf)))
+        newProjectNameInput = nameBuf;
+
+    ImGui::Spacing();
+
+    // --- Directory ---
+    char dirBuf[1024];
+    strncpy_s(dirBuf, sizeof(dirBuf), newProjectDirInput.string().c_str(), _TRUNCATE);
+    dirBuf[sizeof(dirBuf) - 1] = '\0';
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120.0f);
+    ImGui::TextUnformatted("Directory:");
+    ImGui::SameLine(120.0f);
+    float dirInputW = ImGui::GetContentRegionAvail().x - 40.0f;
+    ImGui::SetNextItemWidth(dirInputW);
+    if (ImGui::InputText("##projDir", dirBuf, sizeof(dirBuf)))
+        newProjectDirInput = dirBuf;
+
+    ImGui::SameLine();
+    if (ImGui::SmallButton("...##browseDir"))
     {
+        auto sel = pfd::select_folder("Choose project parent directory").result();
+        if (!sel.empty())
+            newProjectDirInput = sel;
+    }
+
+    ImGui::Spacing();
+
+    // --- Create Project Folder checkbox ---
+    ImGui::Checkbox("Create Project Folder", &newProjectCreateFolder);
+    ImGui::TextDisabled("  When checked, a subfolder matching the project name will be created.");
+    ImGui::TextDisabled("  When unchecked, the selected directory is used directly.");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // --- Preview path ---
+    if (!newProjectNameInput.empty() && !newProjectDirInput.empty())
+    {
+        fs::path previewPath = newProjectDirInput;
+        if (newProjectCreateFolder)
+            previewPath /= newProjectNameInput;
+        ImGui::TextDisabled("  Project will be created at: %s", previewPath.string().c_str());
+    }
+
+    ImGui::Spacing();
+
+    // --- Buttons ---
+    bool canCreate = !newProjectNameInput.empty() && !newProjectDirInput.empty()
+                     && fs::exists(newProjectDirInput) && fs::is_directory(newProjectDirInput);
+
+    if (!canCreate)
+        ImGui::BeginDisabled();
+
+    if (ImGui::Button("Create", ImVec2(120, 0)))
+    {
+        if (executeNewProject(newProjectNameInput, newProjectDirInput, newProjectCreateFolder))
+        {
+            ImGui::CloseCurrentPopup();
+            showNewProjectDialog = false;
+        }
+    }
+
+    if (!canCreate)
+        ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0)))
+    {
+        ImGui::CloseCurrentPopup();
+        showNewProjectDialog = false;
+    }
+
+    ImGui::EndPopup();
+}
+
+bool Manager::executeNewProject(const kString& name, const fs::path& dir, bool createFolder)
+{
+    if (name.empty() || dir.empty())
+        return false;
+
+    if (!fs::exists(dir) || !fs::is_directory(dir))
+    {
+        kString msg = "Directory does not exist:\n" + dir.string();
+        pfd::message("Invalid Directory", msg, pfd::choice::ok, pfd::icon::warning).result();
         return false;
     }
 
-    if (!fs::exists(path) || !fs::is_directory(path))
+    fs::path fullPath;
+    if (createFolder)
     {
-        kString msg = "Directory does not exist:\n" + path;
+        fullPath = dir / name;
 
-        pfd::message(
-            "Invalid Directory", // title
-            msg,                 // message
-            pfd::choice::ok,     // only an OK button
-            pfd::icon::warning   // warning icon
-            )
-            .result();
-
-        return false;
+        // Check if the project folder already exists
+        if (fs::exists(fullPath))
+        {
+            kString msg = "A folder named \"" + name + "\" already exists in:\n"
+                        + dir.string() + "\n\nPlease choose a different project name or directory.";
+            pfd::message("Folder Exists", msg, pfd::choice::ok, pfd::icon::warning).result();
+            return false;
+        }
     }
-
-    // Create project directory
-    fs::path fullPath = fs::path(path);
+    else
+    {
+        fullPath = dir;
+    }
 
     std::error_code ec;
 
@@ -156,18 +269,8 @@ bool Manager::newProject()
     fs::create_directories(fullPath / "Library" / "ImportedAssets", ec);
     fs::create_directories(fullPath / "Config", ec);
 
-    kString msg = "Project created at: " + fullPath.string();
-
-    pfd::message(
-        "Success",         // title
-        msg,               // message
-        pfd::choice::ok,   // only an OK button
-        pfd::icon::warning // warning icon
-        )
-        .result();
-
-    // Extract the folder name
-    projectName = fullPath.filename().string();
+    // Save project name into Config/project.json
+    projectName = name;
     projectOpened = true;
     projectSaved = false;
     refreshWindowTitle();
@@ -175,16 +278,25 @@ bool Manager::newProject()
     if (!renderer->getEnableObjectPicking())
         renderer->setEnableObjectPicking(true);
 
-    projectPath = path;
+    projectPath = fullPath;
     currentDir.clear();
     currentDir.push_back("Assets");
 
+    // Save the project name to config immediately
+    saveProjectConfig();
+
+    // Initialize publish settings with the project name
+    publishSettings = PublishSettings();
+    for (int i = 0; i < 3; ++i)
+    {
+        publishSettings.platforms[i].gameName = name;
+        publishSettings.platforms[i].title = name;
+    }
+    savePublishSettings();
+
     // Clear any previously opened world and start fresh.
-    // resetToFreshWorld() safely tears down game scenes and creates a
-    // fresh default scene — it's the same path used by File→New World.
     resetToFreshWorld();
 
-    // TODO: Create project config file
     checkAssetChange();
 
     if (panelProject != nullptr)
@@ -194,9 +306,10 @@ bool Manager::newProject()
         panelProject->refreshThumbnailList();
     }
 
-    // hierarchy already refreshed by resetToFreshWorld()
-
     addRecentProject(projectPath.string());
+
+    kString msg = "Project created at: " + fullPath.string();
+    pfd::message("Success", msg, pfd::choice::ok, pfd::icon::info).result();
 
     return true;
 }
@@ -264,8 +377,27 @@ bool Manager::openProject()
 
     // Open project successful
 
-    // Extract the folder name
+    // Extract the folder name, but prefer the saved project name if available.
     projectName = fullPath.filename().string();
+    {
+        fs::path cfgFile = fullPath / "Config" / "project.json";
+        if (fs::exists(cfgFile))
+        {
+            try
+            {
+                std::ifstream cf(cfgFile);
+                json cfg;
+                cf >> cfg;
+                if (cfg.contains("project_name") && cfg["project_name"].is_string())
+                {
+                    kString savedName = cfg["project_name"].get<kString>();
+                    if (!savedName.empty())
+                        projectName = savedName;
+                }
+            }
+            catch (...) {}
+        }
+    }
     projectOpened = true;
     projectSaved = false;
     refreshWindowTitle();
@@ -336,6 +468,26 @@ bool Manager::openProjectFromPath(const kString &path)
         return false;
 
     projectName = fullPath.filename().string();
+    // Prefer the saved project name from config if available.
+    {
+        fs::path cfgFile = fullPath / "Config" / "project.json";
+        if (fs::exists(cfgFile))
+        {
+            try
+            {
+                std::ifstream cf(cfgFile);
+                json cfg;
+                cf >> cfg;
+                if (cfg.contains("project_name") && cfg["project_name"].is_string())
+                {
+                    kString savedName = cfg["project_name"].get<kString>();
+                    if (!savedName.empty())
+                        projectName = savedName;
+                }
+            }
+            catch (...) {}
+        }
+    }
     projectOpened = true;
     projectSaved = false;
     refreshWindowTitle();
@@ -3354,6 +3506,9 @@ void Manager::saveProjectConfig()
             {
             }
         }
+        // Persist the project name so it survives across sessions.
+        if (!projectName.empty())
+            j["project_name"] = projectName;
         if (!worldPath.empty() && fs::exists(worldPath))
         {
             std::error_code rel_ec;

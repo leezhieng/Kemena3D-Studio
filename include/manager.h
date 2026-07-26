@@ -311,6 +311,14 @@ public:
     bool newWorld();
     bool openProjectFromPath(const kString &path);
 
+    // --- New Project Dialog --------------------------------------------------
+    bool showNewProjectDialog = false;   ///< When true, the New Project dialog is displayed.
+    kString newProjectNameInput = "New Project"; ///< Project name text field buffer.
+    fs::path newProjectDirInput;         ///< Directory path text field buffer.
+    bool newProjectCreateFolder = true;  ///< Create a subfolder named after the project.
+    void drawNewProjectDialog();         ///< Renders the New Project modal dialog.
+    bool executeNewProject(const kString& name, const fs::path& dir, bool createFolder);
+
     // Recent projects
     std::vector<kString> recentProjects;
     void loadRecentProjects();

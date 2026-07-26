@@ -1127,6 +1127,8 @@ int main()
 
 		mainmenu->drawAbout();
 
+		manager->drawNewProjectDialog();
+
 		gui->canvasEnd();
 
 		window->swap();
