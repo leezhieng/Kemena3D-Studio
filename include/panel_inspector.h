@@ -52,6 +52,7 @@ private:
 	ImTextureRef iconObjAudio = nullptr;   ///< Icon for audio emitter scene objects.
 	ImTextureRef iconObjScene = nullptr;   ///< Icon for scene root objects.
 	ImTextureRef iconObjTerrain = nullptr; ///< Icon for terrain objects.
+	ImTextureRef iconObjPrefab = nullptr;  ///< Icon for prefab-instance roots.
 
 	// File type icons
 	ImTextureRef iconFileModel = nullptr;	 ///< Icon for model/mesh asset files.

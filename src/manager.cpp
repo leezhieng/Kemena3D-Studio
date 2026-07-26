@@ -6282,6 +6282,375 @@ void Manager::unpackPrefabInstance(kObject *instanceRoot)
     undoRedo.push(std::move(cmd));
 }
 
+// ---------------------------------------------------------------------------
+// Prefab dirty checking and revert
+// ---------------------------------------------------------------------------
+
+// Helper: recursively compare two JSON nodes ignoring transform/linkage keys
+// (uuid, position, rotation, scale, prefab_ref, template_uuid) that are
+// expected to differ between a prefab template and a live instance.
+static bool jsonEqualsIgnoreTransform(const nlohmann::json &a, const nlohmann::json &b)
+{
+    if (a.type() != b.type())
+        return false;
+
+    if (a.is_object())
+    {
+        // Collect all keys from both objects
+        std::set<std::string> keys;
+        for (auto it = a.begin(); it != a.end(); ++it)
+        {
+            // Skip identity/transform keys and prefab linkage
+            if (it.key() == "uuid" || it.key() == "position" || it.key() == "rotation" || it.key() == "scale" ||
+                it.key() == "prefab_ref" || it.key() == "template_uuid")
+                continue;
+            keys.insert(it.key());
+        }
+        for (auto it = b.begin(); it != b.end(); ++it)
+        {
+            if (it.key() == "uuid" || it.key() == "position" || it.key() == "rotation" || it.key() == "scale" ||
+                it.key() == "prefab_ref" || it.key() == "template_uuid")
+                continue;
+            keys.insert(it.key());
+        }
+        for (const std::string &k : keys)
+        {
+            if (!a.contains(k) || !b.contains(k))
+                return false;
+            if (!jsonEqualsIgnoreTransform(a[k], b[k]))
+                return false;
+        }
+        return true;
+    }
+    else if (a.is_array())
+    {
+        if (a.size() != b.size())
+            return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (!jsonEqualsIgnoreTransform(a[i], b[i]))
+                return false;
+        return true;
+    }
+    else
+    {
+        return a == b;
+    }
+}
+
+bool Manager::isPrefabDirty(kObject *instanceRoot)
+{
+    if (!instanceRoot || instanceRoot->getPrefabRef().empty())
+        return false;
+
+    kString prefabUuid = instanceRoot->getPrefabRef();
+
+    // Load or retrieve the cached prefab template JSON.
+    nlohmann::json templateRoot;
+    {
+        auto it = prefabTemplateCache.find(prefabUuid);
+        if (it != prefabTemplateCache.end())
+        {
+            templateRoot = it->second;
+        }
+        else
+        {
+            // Locate and load the .prefab file by UUID.
+            fs::path prefabPath;
+            for (const auto &p : fs::recursive_directory_iterator(projectPath / "Assets"))
+            {
+                if (!p.is_regular_file())
+                    continue;
+                if (p.path().extension() != ".prefab")
+                    continue;
+                kPrefab tmp;
+                if (tmp.loadFromFile(p.path().string()) && tmp.getUuid() == prefabUuid)
+                {
+                    prefabPath = p.path();
+                    break;
+                }
+            }
+            if (prefabPath.empty())
+                return false;
+
+            kPrefab prefab;
+            if (!prefab.loadFromFile(prefabPath.string()))
+                return false;
+
+            templateRoot = prefab.getRootJson();
+            prefabTemplateCache[prefabUuid] = templateRoot;
+        }
+    }
+
+    // Serialize the current instance subtree.
+    nlohmann::json instanceJson = instanceRoot->serialize();
+
+    // Compare, ignoring transform keys.
+    return !jsonEqualsIgnoreTransform(templateRoot, instanceJson);
+}
+
+void Manager::revertPrefabInstance(kObject *instanceRoot)
+{
+    if (!instanceRoot || instanceRoot->getPrefabRef().empty())
+        return;
+
+    kString prefabUuid = instanceRoot->getPrefabRef();
+    kString rootUuid   = instanceRoot->getUuid();
+
+    // Locate and load the .prefab file.
+    fs::path prefabPath;
+    for (const auto &p : fs::recursive_directory_iterator(projectPath / "Assets"))
+    {
+        if (!p.is_regular_file())
+            continue;
+        if (p.path().extension() != ".prefab")
+            continue;
+        kPrefab tmp;
+        if (tmp.loadFromFile(p.path().string()) && tmp.getUuid() == prefabUuid)
+        {
+            prefabPath = p.path();
+            break;
+        }
+    }
+    if (prefabPath.empty())
+        return;
+
+    kPrefab prefab;
+    if (!prefab.loadFromFile(prefabPath.string()))
+        return;
+
+    // Find which scene this instance lives in.
+    kScene *instanceScene = nullptr;
+    for (kScene *s : world->getScenes())
+    {
+        if (findInTree(s->getRootNode(), rootUuid))
+        {
+            instanceScene = s;
+            break;
+        }
+    }
+    if (!instanceScene)
+        return;
+
+    // --- Capture the BEFORE state (full serialized JSON snapshot) ---
+    json beforeJson = instanceRoot->serialize();
+
+    // Per-instance properties that survive the revert.
+    kObject *parent      = instanceRoot->getParent();
+    kObject *nextSibling = nextSiblingOf(instanceRoot);
+    kVec3    pos         = instanceRoot->getPosition();
+    kQuat    rot         = instanceRoot->getRotation();
+    kVec3    scl         = instanceRoot->getScale();
+    kString  name        = instanceRoot->getName();
+    bool     active      = instanceRoot->getActive();
+
+    // Selection state before revert.
+    bool    wasSelected = (selectedObject == instanceRoot);
+    bool    wasInList   = std::find(selectedObjects.begin(), selectedObjects.end(),
+                                    rootUuid) != selectedObjects.end();
+    kString selectedDescendantUuid;
+    if (!wasSelected)
+    {
+        std::function<void(kObject *)> findSel = [&](kObject *n)
+        {
+            if (n == selectedObject)
+                selectedDescendantUuid = n->getUuid();
+            for (kObject *c : n->getChildren())
+                findSel(c);
+        };
+        findSel(instanceRoot);
+    }
+
+    // --- Build the new (clean) subtree from the prefab template ---
+    kScene *savedScene = scene;
+    scene = instanceScene;
+
+    instanceRoot->detachFromParent();
+    deleteObjectRecursive(instanceRoot);
+
+    // Build fresh JSON with new UUIDs, then re-stamp preserved scene UUIDs.
+    json rebuiltJson = kPrefab::instantiateJson(prefab.getRootJson());
+
+    // Recursive helper: find a scene UUID in the before-snapshot that matches
+    // a given template_uuid. Uses std::function to allow recursion.
+    std::function<kString(const json &, const kString &)> findSceneUuid;
+    findSceneUuid = [&](const json &haystack, const kString &tplUuid) -> kString
+    {
+        if (!haystack.is_object()) return {};
+        if (haystack.value("template_uuid", kString("")) == tplUuid)
+            return haystack.value("uuid", kString(""));
+        if (haystack.contains("children") && haystack["children"].is_array())
+            for (const auto &c : haystack["children"])
+                if (kString found = findSceneUuid(c, tplUuid); !found.empty())
+                    return found;
+        return {};
+    };
+
+    // Walk the rebuilt JSON and remap UUIDs to match the old scene UUIDs
+    // wherever the template_uuid matches.
+    std::function<void(json &)> remapUuids = [&](json &n)
+    {
+        if (n.contains("template_uuid") && n["template_uuid"].is_string())
+        {
+            kString sceneUuid = findSceneUuid(beforeJson, n["template_uuid"].get<kString>());
+            if (!sceneUuid.empty())
+                n["uuid"] = sceneUuid;
+        }
+        if (n.contains("children") && n["children"].is_array())
+            for (auto &c : n["children"])
+                remapUuids(c);
+    };
+    remapUuids(rebuiltJson);
+    rebuiltJson["uuid"] = rootUuid; // preserve root UUID
+
+    kAssetManager *am = getAssetManager();
+    kObject *newRoot = loadObjectFromJson(rebuiltJson, instanceScene, world,
+                                           am, projectPath, editorCamera, nullptr);
+    scene = savedScene;
+    if (!newRoot)
+        return;
+
+    // Apply per-instance properties that survive the revert.
+    newRoot->setPrefabRef(prefabUuid);
+    if (!name.empty())
+        newRoot->setName(name);
+    newRoot->setActive(active);
+    newRoot->setPosition(pos);
+    newRoot->setRotation(rot);
+    newRoot->setScale(scl);
+
+    // Restore parent + sibling placement.
+    kObject *sceneRoot = instanceScene->getRootNode();
+    if (parent && parent != sceneRoot)
+        insertBefore(parent, newRoot, nextSibling);
+    else if (nextSibling)
+        insertBefore(sceneRoot, newRoot, nextSibling);
+
+    // Restore selection.
+    if (wasSelected)
+        selectedObject = newRoot;
+    else if (!selectedDescendantUuid.empty())
+    {
+        std::function<kObject *(kObject *)> findUuid = [&](kObject *n) -> kObject *
+        {
+            if (!n) return nullptr;
+            if (n->getUuid() == selectedDescendantUuid) return n;
+            for (kObject *c : n->getChildren())
+                if (kObject *f = findUuid(c)) return f;
+            return nullptr;
+        };
+        if (kObject *found = findUuid(newRoot))
+            selectedObject = found;
+    }
+    if (wasInList && std::find(selectedObjects.begin(), selectedObjects.end(),
+                                rootUuid) == selectedObjects.end())
+        selectedObjects.push_back(rootUuid);
+
+    // --- Capture the AFTER state ---
+    json afterJson = newRoot->serialize();
+
+    // --- Push an undoable command ---
+    undoRedo.push(std::make_unique<PropertyCommand>(
+        [this, beforeJson, rootUuid, instanceScene,
+         parent, nextSibling, pos, rot, scl, name, active, prefabUuid,
+         wasSelected, wasInList, selectedDescendantUuid]()
+        {
+            replacePrefabSubtree(rootUuid, beforeJson, instanceScene,
+                                 parent, nextSibling,
+                                 pos, rot, scl, name, active, prefabUuid,
+                                 wasSelected, wasInList, selectedDescendantUuid);
+        },
+        [this, afterJson, rootUuid, instanceScene,
+         parent, nextSibling, pos, rot, scl, name, active, prefabUuid,
+         wasSelected, wasInList, selectedDescendantUuid]()
+        {
+            replacePrefabSubtree(rootUuid, afterJson, instanceScene,
+                                 parent, nextSibling,
+                                 pos, rot, scl, name, active, prefabUuid,
+                                 wasSelected, wasInList, selectedDescendantUuid);
+        }));
+
+    projectSaved = false;
+    refreshWindowTitle();
+}
+
+void Manager::replacePrefabSubtree(const kString &rootUuid,
+                                   const nlohmann::json &stateJson,
+                                   kScene *targetScene,
+                                   kObject *parent, kObject *nextSibling,
+                                   const kVec3 &pos, const kQuat &rot, const kVec3 &scl,
+                                   const kString &name, bool active,
+                                   const kString &prefabUuid,
+                                   bool restoreSelection, bool restoreInList,
+                                   const kString &selectedDescendantUuid)
+{
+    if (!targetScene || rootUuid.empty())
+        return;
+
+    // Find the current instance root in the scene graph.
+    kObject *currentRoot = findInTree(targetScene->getRootNode(), rootUuid);
+    if (!currentRoot)
+        return;
+
+    // Destroy the old subtree.
+    kScene *savedScene = scene;
+    scene = targetScene;
+
+    currentRoot->detachFromParent();
+    deleteObjectRecursive(currentRoot);
+
+    // Rebuild from the JSON snapshot.
+    kAssetManager *am = getAssetManager();
+    kObject *newRoot = loadObjectFromJson(stateJson, targetScene, world,
+                                           am, projectPath, editorCamera, nullptr);
+    scene = savedScene;
+    if (!newRoot)
+        return;
+
+    // Re-apply per-instance properties.
+    newRoot->setPrefabRef(prefabUuid);
+    if (!name.empty())
+        newRoot->setName(name);
+    newRoot->setActive(active);
+    newRoot->setPosition(pos);
+    newRoot->setRotation(rot);
+    newRoot->setScale(scl);
+
+    // Restore parent + sibling placement.
+    kObject *sceneRoot = targetScene->getRootNode();
+    if (parent && parent != sceneRoot)
+        insertBefore(parent, newRoot, nextSibling);
+    else if (nextSibling)
+        insertBefore(sceneRoot, newRoot, nextSibling);
+
+    // Restore selection.
+    if (restoreSelection)
+        selectedObject = newRoot;
+    else if (!selectedDescendantUuid.empty())
+    {
+        std::function<kObject *(kObject *)> findUuid = [&](kObject *n) -> kObject *
+        {
+            if (!n) return nullptr;
+            if (n->getUuid() == selectedDescendantUuid) return n;
+            for (kObject *c : n->getChildren())
+                if (kObject *f = findUuid(c)) return f;
+            return nullptr;
+        };
+        if (kObject *found = findUuid(newRoot))
+            selectedObject = found;
+    }
+    if (restoreInList && std::find(selectedObjects.begin(), selectedObjects.end(),
+                                    rootUuid) == selectedObjects.end())
+        selectedObjects.push_back(rootUuid);
+
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
+}
+
+void Manager::clearPrefabTemplateCache()
+{
+    prefabTemplateCache.clear();
+}
+
 kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString &uniformName)
 {
     if (textureUuid.empty())

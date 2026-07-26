@@ -380,6 +380,31 @@ public:
     bool applyPrefabInstance(kObject *instanceRoot);
     void refreshAllPrefabInstances(const kString &prefabUuid);
     void unpackPrefabInstance(kObject *instanceRoot);
+
+    /** @brief Checks if a prefab instance has modifications (excluding transform). */
+    bool isPrefabDirty(kObject *instanceRoot);
+
+    /** @brief Reverts a prefab instance to match its source prefab file (preserving transform). */
+    void revertPrefabInstance(kObject *instanceRoot);
+
+    /** @brief Clears the cached prefab templates, forcing a re-read on next dirty check. */
+    void clearPrefabTemplateCache();
+
+    /**
+     * @brief Destroys the current subtree rooted at rootUuid and rebuilds it from a serialized JSON snapshot.
+     *
+     * Used by the revert undo/redo lambda to swap between dirty and clean states
+     * while preserving per-instance properties (transform, parent, selection).
+     */
+    void replacePrefabSubtree(const kString &rootUuid,
+                              const nlohmann::json &stateJson,
+                              kScene *targetScene,
+                              kObject *parent, kObject *nextSibling,
+                              const kVec3 &pos, const kQuat &rot, const kVec3 &scl,
+                              const kString &name, bool active,
+                              const kString &prefabUuid,
+                              bool restoreSelection, bool restoreInList,
+                              const kString &selectedDescendantUuid);
     bool applyMaterialToObject(kObject *obj, const fs::path &materialPath,
                                const kString &materialUuid = "");
     kMaterial *buildMaterialFromJson(const nlohmann::json &matJson);
@@ -403,6 +428,9 @@ public:
 
     std::unordered_map<kString, kTexture2D *> textureCache;
     std::unordered_map<kString, kShader *> shaderCache;
+
+    /** @brief Caches prefab root JSON by prefab UUID for efficient dirty checking. */
+    std::unordered_map<kString, nlohmann::json> prefabTemplateCache;
 
     kString dragHoverObjectUuid;
 

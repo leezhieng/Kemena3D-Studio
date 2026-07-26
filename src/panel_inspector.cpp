@@ -40,6 +40,7 @@ PanelInspector::PanelInspector(kGuiManager *setGuiManager, Manager *setManager)
     iconObjAudio = loadIcon("ICON_OBJECT_AUDIO");
     iconObjScene = loadIcon("ICON_OBJECT_SCENE");
     iconObjTerrain = loadIcon("ICON_OBJECT_TERRAIN");
+    iconObjPrefab = loadIcon("ICON_OBJECT_PREFAB");
 
     iconFileModel = loadIcon("ICON_MODEL_FILE");
     iconFileImage = loadIcon("ICON_IMAGE_FILE");
@@ -4582,40 +4583,47 @@ void PanelInspector::draw(bool &opened)
             {
                 kNodeType type = obj->getType();
 
-                ImTextureRef typeIcon = iconObjMesh;
-                const char *typeLabel = "Mesh";
+                // Prefab instance roots use the prefab icon regardless of
+                // underlying object type, consistent with the hierarchy panel.
+                bool isPrefabRoot = !obj->getPrefabRef().empty();
 
-                // For kMesh objects flagged as terrain (via setSerializeType),
-                // show the terrain icon/label so the hierarchy and inspector
-                // remain consistent for terrain tiles.
-                if (type == NODE_TYPE_MESH)
+                ImTextureRef typeIcon = isPrefabRoot ? iconObjPrefab : iconObjMesh;
+                const char *typeLabel = isPrefabRoot ? "Prefab" : "Mesh";
+
+                if (!isPrefabRoot)
                 {
-                    kMesh *asMesh = dynamic_cast<kMesh *>(obj);
-                    if (asMesh && asMesh->getSerializeType() == "terrain")
+                    // For kMesh objects flagged as terrain (via setSerializeType),
+                    // show the terrain icon/label so the hierarchy and inspector
+                    // remain consistent for terrain tiles.
+                    if (type == NODE_TYPE_MESH)
+                    {
+                        kMesh *asMesh = dynamic_cast<kMesh *>(obj);
+                        if (asMesh && asMesh->getSerializeType() == "terrain")
+                        {
+                            typeIcon = iconObjTerrain;
+                            typeLabel = "Terrain";
+                        }
+                    }
+                    if (type == NODE_TYPE_LIGHT)
+                    {
+                        typeIcon = iconObjLight;
+                        typeLabel = "Light";
+                    }
+                    else if (type == NODE_TYPE_AUDIO)
+                    {
+                        typeIcon = iconObjAudio;
+                        typeLabel = "Audio";
+                    }
+                    else if (type == NODE_TYPE_CAMERA)
+                    {
+                        typeIcon = iconObjCamera;
+                        typeLabel = "Camera";
+                    }
+                    else if (type == NODE_TYPE_TERRAIN)
                     {
                         typeIcon = iconObjTerrain;
                         typeLabel = "Terrain";
                     }
-                }
-                if (type == NODE_TYPE_LIGHT)
-                {
-                    typeIcon = iconObjLight;
-                    typeLabel = "Light";
-                }
-                else if (type == NODE_TYPE_AUDIO)
-                {
-                    typeIcon = iconObjAudio;
-                    typeLabel = "Audio";
-                }
-                else if (type == NODE_TYPE_CAMERA)
-                {
-                    typeIcon = iconObjCamera;
-                    typeLabel = "Camera";
-                }
-                else if (type == NODE_TYPE_TERRAIN)
-                {
-                    typeIcon = iconObjTerrain;
-                    typeLabel = "Terrain";
                 }
 
                 drawInlineIcon(typeIcon, typeLabel);
@@ -4702,6 +4710,60 @@ void PanelInspector::draw(bool &opened)
                 drawParticleSection(gui, obj, manager);
 
                 drawScriptsSection(gui, obj, manager);
+
+                // --- Prefab Apply/Revert buttons ----------------------------
+                // When a prefab instance has non-transform modifications, show
+                // "Apply" (overwrite the prefab source) and "Revert" (discard
+                // changes and reload from the prefab) at the bottom.
+                if (isPrefabRoot)
+                {
+                    bool dirty = manager->isPrefabDirty(obj);
+                    if (dirty)
+                    {
+                        gui->spacing();
+                        gui->separator();
+                        gui->spacing();
+
+                        float btnW = (gui->getContentRegionAvail().x - 4.0f) * 0.5f;
+
+                        // --- Apply button ---
+                        {
+                            gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
+                            gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
+                            if (ImGui::Button("Apply##Prefab", ImVec2(btnW, 0)))
+                            {
+                                // Save instance changes (excluding transform) to prefab source,
+                                // then refresh all instances so they pick up the changes.
+                                manager->applyPrefabInstance(obj);
+                                manager->clearPrefabTemplateCache();
+                                manager->refreshAllPrefabInstances(obj->getPrefabRef());
+                                if (manager->panelHierarchy)
+                                    manager->panelHierarchy->refreshList();
+                            }
+                            gui->popStyleColor(2);
+                        }
+
+                        gui->sameLine(0, 4.0f);
+
+                        // --- Revert button ---
+                        {
+                            gui->pushStyleColor(ImGuiCol_Button, kVec4(0.86f, 0.24f, 0.24f, 1.00f));
+                            gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.69f, 0.19f, 0.19f, 1.00f));
+                            if (ImGui::Button("Revert##Prefab", ImVec2(btnW, 0)))
+                            {
+                                manager->revertPrefabInstance(obj);
+                                manager->clearPrefabTemplateCache();
+                                if (manager->panelHierarchy)
+                                    manager->panelHierarchy->refreshList();
+                            }
+                            gui->popStyleColor(2);
+                        }
+
+                        gui->spacing();
+                        gui->textDisabled("Changes (excluding transform)");
+                        gui->textDisabled("affect this instance only.");
+                    }
+                }
 
             }
         }

@@ -88,9 +88,26 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	if (node.isPrefabDescendant)
 		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
+	// Dirty prefab instance roots render with yellow/orange text to indicate
+	// that non-transform changes have been made.
+	bool isPrefabRoot = false;
+	if (!node.isPrefabDescendant && node.type == "prefab")
+	{
+		// Check if this node corresponds to a dirty prefab instance.
+		if (manager->objectMap.count(node.uuid))
+		{
+			kObject *obj = manager->objectMap[node.uuid].object;
+			if (obj && !obj->getPrefabRef().empty() && manager->isPrefabDirty(obj))
+			{
+				isPrefabRoot = true;
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.0f, 1.0f)); // yellow/orange
+			}
+		}
+	}
+
 	bool nodeOpen = gui->treeStartEx(node.uuid, node.name, flags);
 
-	if (node.isPrefabDescendant)
+	if (node.isPrefabDescendant || isPrefabRoot)
 		ImGui::PopStyleColor();
 
 	// In prefab mode the hierarchy is flattened (no World/Scene wrapper),
