@@ -793,6 +793,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
                 for (kObject *obj : selObjs)
                 {
+                    // Use force-setters so the editor gizmo can always manipulate
+                    // objects, even when marked as static. The static guard only
+                    // blocks runtime (gameplay) modifications.
                     if (selObjs.size() == 1)
                     {
                         // pivotMatrix started as this object's world matrix,
@@ -801,9 +804,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                         glm::quat rot;
                         glm::vec4 persp;
                         glm::decompose(pivotCopy, scale, rot, pos, skew, persp);
-                        obj->setPosition(pos);
-                        obj->setRotation(glm::normalize(rot));
-                        obj->setScale(scale);
+                        obj->setPositionForced(pos);
+                        obj->setRotationForced(glm::normalize(rot));
+                        obj->setScaleForced(scale);
                     }
                     else if (manager->pivotMode == PivotMode::Individual)
                     {
@@ -826,9 +829,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                                        glm::vec3(pivotCopy[2]) / sNew.z);
                         glm::quat dRot = glm::normalize(glm::quat_cast(rNew * glm::transpose(rOld)));
 
-                        obj->setPosition(obj->getPosition() + dPos);
-                        obj->setRotation(glm::normalize(dRot * obj->getRotation()));
-                        obj->setScale(obj->getScale() * (sNew / sOld));
+                        obj->setPositionForced(obj->getPosition() + dPos);
+                        obj->setRotationForced(glm::normalize(dRot * obj->getRotation()));
+                        obj->setScaleForced(obj->getScale() * (sNew / sOld));
                     }
                     else
                     {
@@ -838,9 +841,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                         glm::quat rot;
                         glm::vec4 persp;
                         glm::decompose(newWorld, scale, rot, pos, skew, persp);
-                        obj->setPosition(pos);
-                        obj->setRotation(glm::normalize(rot));
-                        obj->setScale(scale);
+                        obj->setPositionForced(pos);
+                        obj->setRotationForced(glm::normalize(rot));
+                        obj->setScaleForced(scale);
                     }
                 }
             }

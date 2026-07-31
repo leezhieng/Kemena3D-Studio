@@ -4036,9 +4036,12 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                     mesh->setSerializeType("terrain");
                     mesh->setName(name);
                     mesh->setActive(active);
-                    mesh->setPosition(pos);
-                    mesh->setRotation(kQuat(rotEu));
-                    mesh->setScale(scale);
+                    // Use force-setters for terrain too — the static flag on the
+                    // original mesh (line 3978) may have been set before the
+                    // terrain branch deleted it and created a replacement.
+                    mesh->setPositionForced(pos);
+                    mesh->setRotationForced(kQuat(rotEu));
+                    mesh->setScaleForced(scale);
 
                     // Restore the material UUID from the saved world JSON.
                     // Without this the early return (result = mesh; return result;)
@@ -4175,6 +4178,7 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         kObject *empty = new kObject();
         empty->setName(name);
         empty->setActive(active);
+        empty->setStatic(obj.value("static", false));
         if (topLevel)
         {
             scene->addObject(empty, uuid);
@@ -4189,9 +4193,12 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
 
     if (result)
     {
-        result->setPosition(pos);
-        result->setRotation(kQuat(glm::radians(rotEu)));
-        result->setScale(scale);
+        // Use force-setters so the initial transform is always restored on load,
+        // even when the object is marked as static (the static guard only blocks
+        // runtime modifications — deserialization must always succeed).
+        result->setPositionForced(pos);
+        result->setRotationForced(kQuat(glm::radians(rotEu)));
+        result->setScaleForced(scale);
 
         // Prefab linkage — only set when present in JSON, otherwise stays empty.
         if (obj.contains("prefab_ref"))
@@ -5085,13 +5092,66 @@ void Manager::buildScripts(bool logSummary)
             ++found;
             if (!fs::exists(fs::path(comp.fileName)))
             {
-                ++failCount;
-                std::cerr << "buildScripts: source missing: " << comp.fileName << "\n";
-                if (panelConsole)
-                    panelConsole->addLog(LogLevel::Error,
-                                         "[Script] Source missing for '%s': %s",
-                                         node->getName().c_str(), comp.fileName.c_str());
-                continue;
+                // ── Auto-generate missing .as from its source .logic ──────
+                // When a .logic node graph is attached to an object, the
+                // script fileName points to Library/GeneratedScripts/<uuid>.as,
+                // but that file is only created when the .logic is opened and
+                // saved in the Script Editor.  If it hasn't been saved yet,
+                // compile it here so the user doesn't get a "source missing"
+                // error just for picking a .logic from the script picker.
+                fs::path genDir = projectPath / "Library" / "GeneratedScripts";
+                fs::path asPath(comp.fileName);
+                if (asPath.parent_path() == genDir)
+                {
+                    std::string uuid = asPath.stem().string();
+                    fs::path assetsDir = projectPath / "Assets";
+                    std::error_code ec2;
+                    for (auto it = fs::recursive_directory_iterator(assetsDir, ec2);
+                         it != fs::recursive_directory_iterator(); it.increment(ec2))
+                    {
+                        if (ec2)
+                            break;
+                        if (!it->is_regular_file() || it->path().extension() != ".logic")
+                            continue;
+                        try
+                        {
+                            std::ifstream f(it->path());
+                            if (!f.is_open())
+                                continue;
+                            nlohmann::json j;
+                            f >> j;
+                            if (j.value("uuid", std::string()) == uuid)
+                            {
+                                kScriptGraph graph;
+                                graph.fromJson(j);
+                                kScriptGraphResult res = kScriptGraphCompiler::compile(graph);
+                                if (res.success)
+                                {
+                                    fs::create_directories(genDir, ec2);
+                                    std::ofstream out(asPath);
+                                    if (out.is_open())
+                                    {
+                                        out << res.code;
+                                        out.close();
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        catch (...) { }
+                    }
+                }
+
+                if (!fs::exists(fs::path(comp.fileName)))
+                {
+                    ++failCount;
+                    std::cerr << "buildScripts: source missing: " << comp.fileName << "\n";
+                    if (panelConsole)
+                        panelConsole->addLog(LogLevel::Error,
+                                             "[Script] Source missing for '%s': %s",
+                                             node->getName().c_str(), comp.fileName.c_str());
+                    continue;
+                }
             }
 
             // One script-asset UUID per distinct source file.
@@ -6200,9 +6260,12 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
         if (!i.name.empty())
             newRoot->setName(i.name);
         newRoot->setActive(i.active);
-        newRoot->setPosition(i.pos);
-        newRoot->setRotation(i.rot);
-        newRoot->setScale(i.scl);
+        // Use force-setters so the transform is always restored, even when
+        // the object is marked as static (the static guard only blocks
+        // runtime modifications — deserialization must always succeed).
+        newRoot->setPositionForced(i.pos);
+        newRoot->setRotationForced(i.rot);
+        newRoot->setScaleForced(i.scl);
 
         // Restore parent + sibling placement.
         if (i.parent && i.parent != i.scene->getRootNode())
@@ -6514,9 +6577,11 @@ void Manager::revertPrefabInstance(kObject *instanceRoot)
     if (!name.empty())
         newRoot->setName(name);
     newRoot->setActive(active);
-    newRoot->setPosition(pos);
-    newRoot->setRotation(rot);
-    newRoot->setScale(scl);
+    // Use force-setters so the transform is always restored, even when
+    // the object is marked as static.
+    newRoot->setPositionForced(pos);
+    newRoot->setRotationForced(rot);
+    newRoot->setScaleForced(scl);
 
     // Restore parent + sibling placement.
     kObject *sceneRoot = instanceScene->getRootNode();
@@ -6611,9 +6676,11 @@ void Manager::replacePrefabSubtree(const kString &rootUuid,
     if (!name.empty())
         newRoot->setName(name);
     newRoot->setActive(active);
-    newRoot->setPosition(pos);
-    newRoot->setRotation(rot);
-    newRoot->setScale(scl);
+    // Use force-setters so the transform is always restored, even when
+    // the object is marked as static.
+    newRoot->setPositionForced(pos);
+    newRoot->setRotationForced(rot);
+    newRoot->setScaleForced(scl);
 
     // Restore parent + sibling placement.
     kObject *sceneRoot = targetScene->getRootNode();

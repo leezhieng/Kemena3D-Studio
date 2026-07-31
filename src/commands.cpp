@@ -104,9 +104,12 @@ static void applyTransformStates(const std::vector<TransformState> &states, Mana
     {
         kObject *obj = mgr->findObjectByUuid(s.uuid);
         if (!obj) continue;
-        obj->setPosition(s.pos);
-        obj->setRotation(s.rot);
-        obj->setScale(s.scale);
+        // Use force-setters so undo/redo can always restore transform state,
+        // even when the object is marked as static (the static guard only
+        // blocks runtime/gameplay modifications).
+        obj->setPositionForced(s.pos);
+        obj->setRotationForced(s.rot);
+        obj->setScaleForced(s.scale);
     }
 }
 
