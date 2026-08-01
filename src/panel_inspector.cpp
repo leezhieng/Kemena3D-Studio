@@ -4404,6 +4404,128 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
 }
 
 // ---------------------------------------------------------------------------
+// Per-section prefab dirty detection
+// ---------------------------------------------------------------------------
+
+/** @brief Tracks which inspector sections of a prefab instance differ from the source template. */
+struct PrefabDirtySections
+{
+    bool mesh    = false;
+    bool light   = false;
+    bool camera  = false;
+    bool audio   = false;
+    bool particle = false;
+    bool scripts = false;
+};
+
+/** @brief Maps a top-level JSON key to the inspector section it belongs to. */
+static const char *keyToSection(const std::string &key)
+{
+    // Mesh section keys
+    if (key == "file_name" || key == "reference" || key == "material_uuid" ||
+        key == "cast_shadow" || key == "receive_shadow" || key == "static" ||
+        key == "active" || key == "visible")
+        return "mesh";
+
+    // Light section keys
+    if (key == "power" || key == "diffuse" || key == "specular" ||
+        key == "constant" || key == "linear" || key == "quadratic" ||
+        key == "cutoff" || key == "outer_cutoff" || key == "light_type")
+        return "light";
+
+    // Camera section keys
+    if (key == "fov" || key == "near_clip" || key == "far_clip" ||
+        key == "aspect_ratio" || key == "scene_uuid" || key == "look_at" ||
+        key == "up_axis" || key == "type")
+        return "camera";
+
+    // Audio section keys
+    if (key == "audio_sources")
+        return "audio";
+
+    // Particle section keys
+    if (key == "particles")
+        return "particle";
+
+    // Scripts / physics / character / nav / listener keys
+    if (key == "scripts" || key == "physics_desc" || key == "character_desc" ||
+        key == "nav_mesh_desc" || key == "audio_listeners")
+        return "scripts";
+
+    return nullptr; // unknown or child key — not mapped to a top-level section
+}
+
+/**
+ * @brief Compares the live instance JSON against the prefab template to determine
+ *        which inspector sections have been modified (excluding transform).
+ *
+ * Skips identity keys (uuid, prefab_ref, template_uuid) and transform keys
+ * (position, rotation, scale). Children are recursed into but their dirty status
+ * is NOT propagated to parent sections — only top-level key changes matter.
+ */
+static PrefabDirtySections computePrefabDirtySections(
+    const nlohmann::json &templateRoot,
+    const nlohmann::json &instanceJson)
+{
+    PrefabDirtySections dirty;
+
+    // Collect all top-level keys from both objects, skipping transients.
+    std::set<std::string> keys;
+    auto collectKeys = [](const nlohmann::json &j, std::set<std::string> &out)
+    {
+        for (auto it = j.begin(); it != j.end(); ++it)
+        {
+            const std::string &k = it.key();
+            if (k == "uuid" || k == "position" || k == "rotation" || k == "scale" ||
+                k == "prefab_ref" || k == "template_uuid")
+                continue;
+            out.insert(k);
+        }
+    };
+    collectKeys(templateRoot, keys);
+    collectKeys(instanceJson, keys);
+
+    for (const std::string &k : keys)
+    {
+        bool aHas = templateRoot.contains(k);
+        bool bHas = instanceJson.contains(k);
+
+        // Key missing in one side → dirty.
+        if (aHas != bHas)
+        {
+            const char *sec = keyToSection(k);
+            if (sec)
+            {
+                if      (strcmp(sec, "mesh")     == 0) dirty.mesh     = true;
+                else if (strcmp(sec, "light")    == 0) dirty.light    = true;
+                else if (strcmp(sec, "camera")   == 0) dirty.camera   = true;
+                else if (strcmp(sec, "audio")    == 0) dirty.audio    = true;
+                else if (strcmp(sec, "particle") == 0) dirty.particle = true;
+                else if (strcmp(sec, "scripts")  == 0) dirty.scripts  = true;
+            }
+            continue;
+        }
+
+        // Both have the key — compare values.
+        if (templateRoot[k] != instanceJson[k])
+        {
+            const char *sec = keyToSection(k);
+            if (sec)
+            {
+                if      (strcmp(sec, "mesh")     == 0) dirty.mesh     = true;
+                else if (strcmp(sec, "light")    == 0) dirty.light    = true;
+                else if (strcmp(sec, "camera")   == 0) dirty.camera   = true;
+                else if (strcmp(sec, "audio")    == 0) dirty.audio    = true;
+                else if (strcmp(sec, "particle") == 0) dirty.particle = true;
+                else if (strcmp(sec, "scripts")  == 0) dirty.scripts  = true;
+            }
+        }
+    }
+
+    return dirty;
+}
+
+// ---------------------------------------------------------------------------
 // Main draw
 // ---------------------------------------------------------------------------
 void PanelInspector::draw(bool &opened)
@@ -4710,21 +4832,46 @@ void PanelInspector::draw(bool &opened)
                 drawTransformSection(gui, obj, manager);
                 gui->spacing();
 
-                // Determine if this is a dirty prefab instance for label coloring
-                bool isDirtyPrefab = isPrefabRoot && manager->isPrefabDirty(obj);
+                // Determine which sections of this prefab instance differ from
+                // the source template, so only actually-modified property labels
+                // turn yellow/orange (not every label on a dirty prefab).
+                PrefabDirtySections dirtySections;
+                if (isPrefabRoot)
+                {
+                    kString prefabUuid = obj->getPrefabRef();
+                    nlohmann::json templateRoot;
+                    auto it = manager->prefabTemplateCache.find(prefabUuid);
+                    if (it != manager->prefabTemplateCache.end())
+                    {
+                        templateRoot = it->second;
+                    }
+                    else
+                    {
+                        // Fallback: load the template on the fly (populates cache too).
+                        manager->isPrefabDirty(obj);
+                        auto it2 = manager->prefabTemplateCache.find(prefabUuid);
+                        if (it2 != manager->prefabTemplateCache.end())
+                            templateRoot = it2->second;
+                    }
+                    if (!templateRoot.is_null())
+                    {
+                        nlohmann::json instanceJson = obj->serialize();
+                        dirtySections = computePrefabDirtySections(templateRoot, instanceJson);
+                    }
+                }
 
                 if (type == NODE_TYPE_MESH)
-                    drawMeshSection(gui, static_cast<kMesh *>(obj), manager, manager->panelTerrain, isDirtyPrefab);
+                    drawMeshSection(gui, static_cast<kMesh *>(obj), manager, manager->panelTerrain, dirtySections.mesh);
                 else if (type == NODE_TYPE_LIGHT)
-                    drawLightSection(gui, static_cast<kLight *>(obj), manager, isDirtyPrefab);
+                    drawLightSection(gui, static_cast<kLight *>(obj), manager, dirtySections.light);
                 else if (type == NODE_TYPE_CAMERA)
-                    drawCameraSection(gui, static_cast<kCamera *>(obj), manager, isDirtyPrefab);
+                    drawCameraSection(gui, static_cast<kCamera *>(obj), manager, dirtySections.camera);
                 else if (type == NODE_TYPE_AUDIO)
-                    drawAudioSection(gui, obj, manager, isDirtyPrefab);
+                    drawAudioSection(gui, obj, manager, dirtySections.audio);
 
-                drawParticleSection(gui, obj, manager, isDirtyPrefab);
+                drawParticleSection(gui, obj, manager, dirtySections.particle);
 
-                drawScriptsSection(gui, obj, manager, isDirtyPrefab);
+                drawScriptsSection(gui, obj, manager, dirtySections.scripts);
 
                 // --- Prefab Apply/Revert buttons ----------------------------
                 // When a prefab instance has non-transform modifications, show
