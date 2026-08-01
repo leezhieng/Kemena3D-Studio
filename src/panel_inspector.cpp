@@ -17,7 +17,7 @@ namespace fs = std::filesystem;
 
 // Forward declarations for file-local helpers used by drawShaderPreview()
 static bool beginPropTable(kGuiManager *gui, const char *id);
-static void propLabel(kGuiManager *gui, const char *label, bool dirtyPrefab = false);
+static void propLabel(kGuiManager *gui, const char *label);
 
 PanelInspector::PanelInspector(kGuiManager *setGuiManager, Manager *setManager)
 {
@@ -1030,16 +1030,12 @@ static bool beginPropTable(kGuiManager *gui, const char *id)
     return true;
 }
 
-static void propLabel(kGuiManager *gui, const char *label, bool dirtyPrefab)
+static void propLabel(kGuiManager *gui, const char *label)
 {
     gui->tableNextRow();
     gui->tableSetColumnIndex(0);
     gui->alignTextToFramePadding();
-    if (dirtyPrefab)
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.0f, 1.0f)); // yellow/orange
     gui->text(label);
-    if (dirtyPrefab)
-        ImGui::PopStyleColor();
     if (gui->isItemHovered() && gui->calcTextSize(label).x > gui->getColumnWidth())
     {
         gui->beginTooltip();
@@ -1048,6 +1044,18 @@ static void propLabel(kGuiManager *gui, const char *label, bool dirtyPrefab)
     }
     gui->tableSetColumnIndex(1);
     gui->setNextItemWidth(-FLT_MIN);
+}
+
+// Collapsing section header whose title turns orange when the section's
+// properties differ from the prefab template (dirty).
+static bool sectionHeader(kGuiManager *gui, const char *label, bool dirty)
+{
+    if (dirty)
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.0f, 1.0f)); // yellow/orange
+    bool open = gui->collapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
+    if (dirty)
+        ImGui::PopStyleColor();
+    return open;
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,13 +1191,13 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
                      (mesh->getSerializeType() == "terrain");
 
     const char *header = isTerrain ? "Terrain" : "Mesh";
-    if (!gui->collapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen))
+    if (!sectionHeader(gui, header, isDirtyPrefab))
         return;
 
     if (!beginPropTable(gui, "MeshTable"))
         return;
 
-    propLabel(gui, "File", isDirtyPrefab);
+    propLabel(gui, "File");
     gui->beginDisabled(true);
     char fileBuf[256];
     strncpy_s(fileBuf, sizeof(fileBuf), mesh->getFileName().c_str(), _TRUNCATE);
@@ -1202,7 +1210,7 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
     // Also accepts a material dragged onto the field. The assignment is stored
     // as the material asset's UUID on the object, so it persists across save/load.
     {
-        propLabel(gui, "Material", isDirtyPrefab);
+        propLabel(gui, "Material");
 
         std::vector<std::string> matUuids = {""}; // index 0 = "(None)"
         std::vector<std::string> matNames = {"(None)"};
@@ -1295,7 +1303,7 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
         }
     }
 
-    propLabel(gui, "Cast Shadow", isDirtyPrefab);
+    propLabel(gui, "Cast Shadow");
     bool castShadow = mesh->getCastShadow();
     bool prevCastShadow = castShadow;
     if (gui->checkbox("##CastShadow", &castShadow))
@@ -1311,7 +1319,7 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
             { cap->setCastShadow(after); }));
     }
 
-    propLabel(gui, "Receive Shadow", isDirtyPrefab);
+    propLabel(gui, "Receive Shadow");
     bool receiveShadow = mesh->getReceiveShadow();
     bool prevReceiveShadow = receiveShadow;
     if (gui->checkbox("##ReceiveShadow", &receiveShadow))
@@ -1612,7 +1620,7 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
 // ---------------------------------------------------------------------------
 static void drawCameraSection(kGuiManager *gui, kCamera *cam, Manager *mgr, bool isDirtyPrefab = false)
 {
-    if (!gui->collapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen))
+    if (!sectionHeader(gui, "Camera", isDirtyPrefab))
         return;
 
     if (!beginPropTable(gui, "CamTable"))
@@ -1623,7 +1631,7 @@ static void drawCameraSection(kGuiManager *gui, kCamera *cam, Manager *mgr, bool
         static float s_fovBefore = 0.0f;
         float fov = cam->getFOV();
         float fovPreEdit = fov;
-        propLabel(gui, "FOV", isDirtyPrefab);
+        propLabel(gui, "FOV");
         if (gui->dragFloat("##FOV", &fov, 0.5f, 1.0f, 179.0f, "%.1f deg"))
             cam->setFOV(fov);
         if (gui->isItemActivated())
@@ -1646,7 +1654,7 @@ static void drawCameraSection(kGuiManager *gui, kCamera *cam, Manager *mgr, bool
         static float s_nearBefore = 0.0f;
         float nearClip = cam->getNearClip();
         float nearPreEdit = nearClip;
-        propLabel(gui, "Near Clip", isDirtyPrefab);
+        propLabel(gui, "Near Clip");
         if (gui->dragFloat("##Near", &nearClip, 0.01f, 0.001f, 10000.0f, "%.3f"))
             cam->setNearClip(nearClip);
         if (gui->isItemActivated())
@@ -1669,7 +1677,7 @@ static void drawCameraSection(kGuiManager *gui, kCamera *cam, Manager *mgr, bool
         static float s_farBefore = 0.0f;
         float farClip = cam->getFarClip();
         float farPreEdit = farClip;
-        propLabel(gui, "Far Clip", isDirtyPrefab);
+        propLabel(gui, "Far Clip");
         if (gui->dragFloat("##Far", &farClip, 1.0f, 0.1f, 100000.0f, "%.1f"))
             cam->setFarClip(farClip);
         if (gui->isItemActivated())
@@ -1713,7 +1721,7 @@ static void drawCameraSection(kGuiManager *gui, kCamera *cam, Manager *mgr, bool
         for (auto &s : sceneNames)
             scenePtrs.push_back(s.c_str());
 
-        propLabel(gui, "Scene", isDirtyPrefab);
+        propLabel(gui, "Scene");
         if (ImGui::Combo("##CamScene", &curIdx, scenePtrs.data(), (int)scenePtrs.size()))
             cam->setSceneUuid(curIdx == 0 ? "" : gameScenes[curIdx - 1]->getUuid());
     }
@@ -1753,7 +1761,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
     else if (lt == LIGHT_TYPE_SPOT)
         header = "Light (Spot)";
 
-    if (!gui->collapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen))
+    if (!sectionHeader(gui, header, isDirtyPrefab))
         return;
 
     if (!beginPropTable(gui, "LightTable"))
@@ -1764,7 +1772,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
         static float s_pwrBefore = 0.0f;
         float pwr = light->getPower();
         float pwrPreEdit = pwr;
-        propLabel(gui, "Power", isDirtyPrefab);
+        propLabel(gui, "Power");
         if (gui->dragFloat("##Power", &pwr, 0.1f, 0.0f, 10000.0f))
             light->setPower(pwr);
         if (gui->isItemActivated())
@@ -1788,7 +1796,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
         kVec3 diff = light->getDiffuseColor();
         kVec3 diffPreEdit = diff;
         float diffF[3] = {diff.r, diff.g, diff.b};
-        propLabel(gui, "Diffuse", isDirtyPrefab);
+        propLabel(gui, "Diffuse");
         if (gui->colorEdit3("##Diffuse", diffF))
             light->setDiffuseColor(kVec3(diffF[0], diffF[1], diffF[2]));
         if (gui->isItemActivated())
@@ -1812,7 +1820,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
         kVec3 spec = light->getSpecularColor();
         kVec3 specPreEdit = spec;
         float specF[3] = {spec.r, spec.g, spec.b};
-        propLabel(gui, "Specular", isDirtyPrefab);
+        propLabel(gui, "Specular");
         if (gui->colorEdit3("##Specular", specF))
             light->setSpecularColor(kVec3(specF[0], specF[1], specF[2]));
         if (gui->isItemActivated())
@@ -1837,7 +1845,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
             static float s_constBefore = 0.0f;
             float c = light->getConstant();
             float cPreEdit = c;
-            propLabel(gui, "Constant", isDirtyPrefab);
+            propLabel(gui, "Constant");
             if (gui->dragFloat("##Constant", &c, 0.01f, 0.0f, 10.0f))
                 light->setConstant(c);
             if (gui->isItemActivated())
@@ -1859,7 +1867,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
             static float s_linBefore = 0.0f;
             float l = light->getLinear();
             float lPreEdit = l;
-            propLabel(gui, "Linear", isDirtyPrefab);
+            propLabel(gui, "Linear");
             if (gui->dragFloat("##Linear", &l, 0.01f, 0.0f, 10.0f))
                 light->setLinear(l);
             if (gui->isItemActivated())
@@ -1881,7 +1889,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
             static float s_quadBefore = 0.0f;
             float q = light->getQuadratic();
             float qPreEdit = q;
-            propLabel(gui, "Quadratic", isDirtyPrefab);
+            propLabel(gui, "Quadratic");
             if (gui->dragFloat("##Quadratic", &q, 0.01f, 0.0f, 10.0f))
                 light->setQuadratic(q);
             if (gui->isItemActivated())
@@ -1907,7 +1915,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
             static float s_innerBefore = 0.0f;
             float inner = glm::degrees(glm::acos(light->getCutOff()));
             float innerPreEdit = inner;
-            propLabel(gui, "Inner Cone", isDirtyPrefab);
+            propLabel(gui, "Inner Cone");
             if (gui->dragFloat("##InnerCone", &inner, 0.5f, 0.0f, 89.0f, "%.1f deg"))
                 light->setCutOff(glm::cos(glm::radians(inner)));
             if (gui->isItemActivated())
@@ -1929,7 +1937,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
             static float s_outerBefore = 0.0f;
             float outer = glm::degrees(glm::acos(light->getOuterCutOff()));
             float outerPreEdit = outer;
-            propLabel(gui, "Outer Cone", isDirtyPrefab);
+            propLabel(gui, "Outer Cone");
             if (gui->dragFloat("##OuterCone", &outer, 0.5f, 0.0f, 89.0f, "%.1f deg"))
                 light->setOuterCutOff(glm::cos(glm::radians(outer)));
             if (gui->isItemActivated())
@@ -1956,7 +1964,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
 // ---------------------------------------------------------------------------
 static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool isDirtyPrefab = false)
 {
-    if (!gui->collapsingHeader("Audio Source", ImGuiTreeNodeFlags_DefaultOpen))
+    if (!sectionHeader(gui, "Audio Source", isDirtyPrefab))
         return;
 
     if (!beginPropTable(gui, "AudTable"))
@@ -1965,7 +1973,7 @@ static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool 
     auto &sources = obj->getAudioSources();
 
     {
-        propLabel(gui, "Audio Clip", isDirtyPrefab);
+        propLabel(gui, "Audio Clip");
 
         std::vector<std::string> audUuids = {""};
         std::vector<std::string> audNames = {"(None)"};
@@ -2040,37 +2048,37 @@ static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool 
     {
         auto &src = sources[0];
 
-        propLabel(gui, "Active", isDirtyPrefab);
+        propLabel(gui, "Active");
         if (ImGui::Checkbox("##AudAct", &src.isActive))
             mgr->projectSaved = false;
 
-        propLabel(gui, "Play On Awake", isDirtyPrefab);
+        propLabel(gui, "Play On Awake");
         if (ImGui::Checkbox("##AudPOA", &src.playOnAwake))
             mgr->projectSaved = false;
 
-        propLabel(gui, "Loop", isDirtyPrefab);
+        propLabel(gui, "Loop");
         if (ImGui::Checkbox("##AudLoop", &src.loop))
             mgr->projectSaved = false;
 
-        propLabel(gui, "Volume", isDirtyPrefab);
+        propLabel(gui, "Volume");
         if (ImGui::SliderFloat("##AudVol", &src.volume, 0.0f, 1.0f))
             mgr->projectSaved = false;
 
-        propLabel(gui, "Pitch", isDirtyPrefab);
+        propLabel(gui, "Pitch");
         if (ImGui::SliderFloat("##AudPitch", &src.pitch, 0.1f, 3.0f))
             mgr->projectSaved = false;
 
-        propLabel(gui, "3D Spatial", isDirtyPrefab);
+        propLabel(gui, "3D Spatial");
         if (ImGui::Checkbox("##AudSpat", &src.spatialize))
             mgr->projectSaved = false;
 
         if (src.spatialize)
         {
-            propLabel(gui, "Min Distance", isDirtyPrefab);
+            propLabel(gui, "Min Distance");
             if (ImGui::DragFloat("##AudMin", &src.minDistance, 0.1f, 0.0f, src.maxDistance))
                 mgr->projectSaved = false;
 
-            propLabel(gui, "Max Distance", isDirtyPrefab);
+            propLabel(gui, "Max Distance");
             if (ImGui::DragFloat("##AudMax", &src.maxDistance, 1.0f, src.minDistance, 10000.0f))
                 mgr->projectSaved = false;
         }
@@ -2231,7 +2239,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 		snprintf(headerLabel, sizeof(headerLabel), "%s##PartSec%d",
 		         p.name.c_str(), (int)pi);
 
-		if (!gui->collapsingHeader(headerLabel, ImGuiTreeNodeFlags_DefaultOpen))
+		if (!sectionHeader(gui, headerLabel, isDirtyPrefab))
 			continue;
 
 		if (!beginPropTable(gui, ("PartTable" + std::to_string(pi)).c_str()))
@@ -2241,7 +2249,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 		{
 			char nameBuf[128];
 			strncpy_s(nameBuf, sizeof(nameBuf), p.name.c_str(), _TRUNCATE);
-			propLabel(gui, "Name", isDirtyPrefab);
+			propLabel(gui, "Name");
 			if (ImGui::InputText("##PartName", nameBuf, sizeof(nameBuf)))
 			{
 				p.name = nameBuf;
@@ -2252,7 +2260,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 
 		// --- Active / Looping ---
 		{
-			propLabel(gui, "Active", isDirtyPrefab);
+			propLabel(gui, "Active");
 			if (ImGui::Checkbox("##PartActive", &p.isActive))
 			{
 				mgr->projectSaved = false;
@@ -2260,7 +2268,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 			}
 		}
 		{
-			propLabel(gui, "Looping", isDirtyPrefab);
+			propLabel(gui, "Looping");
 			if (ImGui::Checkbox("##PartLoop", &p.looping))
 			{
 				mgr->projectSaved = false;
@@ -2271,7 +2279,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 		// --- Emission ---
 		{
 			float maxP = (float)p.maxParticles;
-			propLabel(gui, "Max Particles", isDirtyPrefab);
+			propLabel(gui, "Max Particles");
 			if (ImGui::DragFloat("##PartMaxP", &maxP, 1.0f, 1.0f, 100000.0f, "%.0f"))
 			{
 				p.maxParticles = (int)std::max(1.0f, maxP);
@@ -2279,21 +2287,21 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 				mgr->refreshWindowTitle();
 			}
 
-			propLabel(gui, "Emission Rate", isDirtyPrefab);
+			propLabel(gui, "Emission Rate");
 			if (ImGui::DragFloat("##PartRate", &p.emissionRate, 0.5f, 0.0f, 10000.0f, "%.1f"))
 			{
 				mgr->projectSaved = false;
 				mgr->refreshWindowTitle();
 			}
 
-			propLabel(gui, "Lifetime", isDirtyPrefab);
+			propLabel(gui, "Lifetime");
 			if (ImGui::DragFloat("##PartLife", &p.lifetime, 0.05f, 0.01f, 300.0f, "%.2f"))
 			{
 				mgr->projectSaved = false;
 				mgr->refreshWindowTitle();
 			}
 
-			propLabel(gui, "Gravity Scale", isDirtyPrefab);
+			propLabel(gui, "Gravity Scale");
 			if (ImGui::DragFloat("##PartGravity", &p.gravityScale, 0.01f, -10.0f, 10.0f, "%.2f"))
 			{
 				mgr->projectSaved = false;
@@ -2304,7 +2312,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 		// --- Velocity ---
 		{
 			float vel[3] = {p.startVelocity.x, p.startVelocity.y, p.startVelocity.z};
-			propLabel(gui, "Start Velocity", isDirtyPrefab);
+			propLabel(gui, "Start Velocity");
 			if (ImGui::DragFloat3("##PartVel", vel, 0.01f))
 			{
 				p.startVelocity = kVec3(vel[0], vel[1], vel[2]);
@@ -2312,7 +2320,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 				mgr->refreshWindowTitle();
 			}
 
-			propLabel(gui, "Start Speed", isDirtyPrefab);
+			propLabel(gui, "Start Speed");
 			if (ImGui::DragFloat("##PartSpeed", &p.startSpeed, 0.05f, 0.0f, 1000.0f, "%.2f"))
 			{
 				mgr->projectSaved = false;
@@ -2320,7 +2328,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 			}
 
 			float var[3] = {p.velocityVariance.x, p.velocityVariance.y, p.velocityVariance.z};
-			propLabel(gui, "Vel. Variance", isDirtyPrefab);
+			propLabel(gui, "Vel. Variance");
 			if (ImGui::DragFloat3("##PartVar", var, 0.01f))
 			{
 				p.velocityVariance = kVec3(var[0], var[1], var[2]);
@@ -2332,7 +2340,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 		// --- Visual ---
 		{
 			float cs[4] = {p.colorStart.r, p.colorStart.g, p.colorStart.b, p.colorStart.a};
-			propLabel(gui, "Start Color", isDirtyPrefab);
+			propLabel(gui, "Start Color");
 			if (ImGui::ColorEdit4("##PartCStart", cs))
 			{
 				p.colorStart = kVec4(cs[0], cs[1], cs[2], cs[3]);
@@ -2341,7 +2349,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 			}
 
 			float ce[4] = {p.colorEnd.r, p.colorEnd.g, p.colorEnd.b, p.colorEnd.a};
-			propLabel(gui, "End Color", isDirtyPrefab);
+			propLabel(gui, "End Color");
 			if (ImGui::ColorEdit4("##PartCEnd", ce))
 			{
 				p.colorEnd = kVec4(ce[0], ce[1], ce[2], ce[3]);
@@ -2349,14 +2357,14 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 				mgr->refreshWindowTitle();
 			}
 
-			propLabel(gui, "Start Size", isDirtyPrefab);
+			propLabel(gui, "Start Size");
 			if (ImGui::DragFloat("##PartSzStart", &p.sizeStart, 0.01f, 0.0f, 100.0f, "%.2f"))
 			{
 				mgr->projectSaved = false;
 				mgr->refreshWindowTitle();
 			}
 
-			propLabel(gui, "End Size", isDirtyPrefab);
+			propLabel(gui, "End Size");
 			if (ImGui::DragFloat("##PartSzEnd", &p.sizeEnd, 0.01f, 0.0f, 100.0f, "%.2f"))
 			{
 				mgr->projectSaved = false;
@@ -2368,7 +2376,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 		{
 			const char *shapeNames[] = {"Point", "Sphere", "Cone", "Box"};
 			int curShape = (int)p.emissionShape;
-			propLabel(gui, "Shape", isDirtyPrefab);
+			propLabel(gui, "Shape");
 			if (ImGui::Combo("##PartEmitShape", &curShape, shapeNames, 4))
 			{
 				p.emissionShape = (kParticle::EmissionShape)curShape;
@@ -2377,7 +2385,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 			}
 
 			float sz[3] = {p.shapeSize.x, p.shapeSize.y, p.shapeSize.z};
-			propLabel(gui, "Shape Size", isDirtyPrefab);
+			propLabel(gui, "Shape Size");
 			if (ImGui::DragFloat3("##PartShapeSz", sz, 0.01f, 0.01f, 1000.0f))
 			{
 				p.shapeSize = kVec3(sz[0], sz[1], sz[2]);
@@ -2390,7 +2398,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 		{
 			char texBuf[512];
 			strncpy_s(texBuf, sizeof(texBuf), p.texturePath.c_str(), _TRUNCATE);
-			propLabel(gui, "Texture Path", isDirtyPrefab);
+			propLabel(gui, "Texture Path");
 			if (ImGui::InputText("##PartTex", texBuf, sizeof(texBuf)))
 			{
 				p.texturePath = texBuf;
@@ -2423,7 +2431,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
     // ── Physics ─────────────────────────────────────────────────────────────
     if (obj->getHasPhysicsDesc())
     {
-        if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen))
+        if (sectionHeader(gui, "Physics", isDirtyPrefab))
         {
             kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
             const bool dynamic = (desc.type == kPhysicsObjectType::Dynamic);
@@ -2437,7 +2445,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 const bool needsStaticBody =
                     (desc.shape.type == kPhysicsShapeType::Mesh ||
                      desc.shape.type == kPhysicsShapeType::Plane);
-                propLabel(gui, "Body Type", isDirtyPrefab);
+                propLabel(gui, "Body Type");
                 if (ImGui::BeginCombo("##PhysBody", bodyNames[bodyIdx]))
                 {
                     for (int i = 0; i < 4; ++i)
@@ -2462,7 +2470,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 const char *shapeNames[] = {
                     "Sphere", "Box", "Capsule", "Cylinder", "Convex Hull", "Mesh", "Plane"};
                 int shapeIdx = (int)desc.shape.type;
-                propLabel(gui, "Shape", isDirtyPrefab);
+                propLabel(gui, "Shape");
                 if (ImGui::Combo("##PhysShape", &shapeIdx, shapeNames,
                                  IM_ARRAYSIZE(shapeNames)))
                 {
@@ -2486,7 +2494,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 case kPhysicsShapeType::Box:
                 {
                     float he[3] = {desc.shape.halfExtents.x, desc.shape.halfExtents.y, desc.shape.halfExtents.z};
-                    propLabel(gui, "Half Extents", isDirtyPrefab);
+                    propLabel(gui, "Half Extents");
                     if (ImGui::DragFloat3("##PhysHE", he, 0.01f, 0.001f, 1000.0f))
                     {
                         desc.shape.halfExtents = kVec3(he[0], he[1], he[2]);
@@ -2495,23 +2503,23 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                     break;
                 }
                 case kPhysicsShapeType::Sphere:
-                    propLabel(gui, "Radius", isDirtyPrefab);
+                    propLabel(gui, "Radius");
                     if (ImGui::DragFloat("##PhysR", &desc.shape.radius, 0.01f, 0.001f, 1000.0f))
                         manager->projectSaved = false;
                     break;
                 case kPhysicsShapeType::Capsule:
                 case kPhysicsShapeType::Cylinder:
-                    propLabel(gui, "Radius", isDirtyPrefab);
+                    propLabel(gui, "Radius");
                     if (ImGui::DragFloat("##PhysR", &desc.shape.radius, 0.01f, 0.001f, 1000.0f))
                         manager->projectSaved = false;
-                    propLabel(gui, "Height", isDirtyPrefab);
+                    propLabel(gui, "Height");
                     if (ImGui::DragFloat("##PhysH", &desc.shape.height, 0.01f, 0.001f, 1000.0f))
                         manager->projectSaved = false;
                     break;
                 case kPhysicsShapeType::ConvexHull:
                 case kPhysicsShapeType::Mesh:
                 {
-                    propLabel(gui, "Source", isDirtyPrefab);
+                    propLabel(gui, "Source");
                     ImGui::TextDisabled(desc.shape.type == kPhysicsShapeType::Mesh
                                             ? "Object's mesh (static / kinematic only)"
                                             : "Object's mesh (convex hull)");
@@ -2520,7 +2528,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                     float sc[3] = {desc.shape.customScale.x,
                                    desc.shape.customScale.y,
                                    desc.shape.customScale.z};
-                    propLabel(gui, "Size", isDirtyPrefab);
+                    propLabel(gui, "Size");
                     if (ImGui::DragFloat3("##PhysScale", sc, 0.01f, 0.01f, 1000.0f, "%.3f"))
                     {
                         desc.shape.customScale = kVec3(sc[0], sc[1], sc[2]);
@@ -2530,7 +2538,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 }
                 case kPhysicsShapeType::Plane:
                 {
-                    propLabel(gui, "Source", isDirtyPrefab);
+                    propLabel(gui, "Source");
                     ImGui::TextDisabled("Object's +Y axis (static / kinematic only)");
 
                     // Plane is mathematically infinite; halfExtents.x/z
@@ -2539,7 +2547,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                     float he[3] = {desc.shape.halfExtents.x,
                                    desc.shape.halfExtents.y,
                                    desc.shape.halfExtents.z};
-                    propLabel(gui, "Half Size", isDirtyPrefab);
+                    propLabel(gui, "Half Size");
                     if (ImGui::DragFloat3("##PlaneHE", he, 0.05f, 0.1f, 10000.0f, "%.2f"))
                     {
                         desc.shape.halfExtents = kVec3(he[0], he[1], he[2]);
@@ -2552,29 +2560,29 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 // Mass / damping / gravity-factor are Dynamic-only; greyed
                 // out otherwise so the user still sees the value.
                 gui->beginDisabled(!dynamic);
-                propLabel(gui, "Mass (kg)", isDirtyPrefab);
+                propLabel(gui, "Mass (kg)");
                 if (ImGui::DragFloat("##PhysMass", &desc.mass, 0.05f, 0.001f, 10000.0f, "%.3f"))
                     manager->projectSaved = false;
                 gui->endDisabled();
 
-                propLabel(gui, "Friction", isDirtyPrefab);
+                propLabel(gui, "Friction");
                 if (ImGui::DragFloat("##PhysFr", &desc.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Restitution", isDirtyPrefab);
+                propLabel(gui, "Restitution");
                 if (ImGui::DragFloat("##PhysRest", &desc.restitution, 0.01f, 0.0f, 1.0f, "%.2f"))
                     manager->projectSaved = false;
 
                 gui->beginDisabled(!dynamic);
-                propLabel(gui, "Linear Damping", isDirtyPrefab);
+                propLabel(gui, "Linear Damping");
                 if (ImGui::DragFloat("##PhysLD", &desc.linearDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Angular Damping", isDirtyPrefab);
+                propLabel(gui, "Angular Damping");
                 if (ImGui::DragFloat("##PhysAD", &desc.angularDamping, 0.01f, 0.0f, 10.0f, "%.3f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Gravity Factor", isDirtyPrefab);
+                propLabel(gui, "Gravity Factor");
                 if (ImGui::DragFloat("##PhysGF", &desc.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
                     manager->projectSaved = false;
                 gui->endDisabled();
@@ -2595,37 +2603,37 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
     // ── Character Controller ────────────────────────────────────────────────
     if (obj->getHasCharacterDesc())
     {
-        if (ImGui::CollapsingHeader("Character Controller", ImGuiTreeNodeFlags_DefaultOpen))
+        if (sectionHeader(gui, "Character Controller", isDirtyPrefab))
         {
             kCharacterControllerDesc &cd = obj->getCharacterDesc();
 
             if (beginPropTable(gui, "CharTable"))
             {
-                propLabel(gui, "Radius", isDirtyPrefab);
+                propLabel(gui, "Radius");
                 if (ImGui::DragFloat("##CCRad", &cd.radius, 0.01f, 0.01f, 100.0f, "%.3f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Height", isDirtyPrefab);
+                propLabel(gui, "Height");
                 if (ImGui::DragFloat("##CCHt", &cd.height, 0.01f, 0.05f, 100.0f, "%.3f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Mass (kg)", isDirtyPrefab);
+                propLabel(gui, "Mass (kg)");
                 if (ImGui::DragFloat("##CCMass", &cd.mass, 0.5f, 0.1f, 10000.0f, "%.2f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Friction", isDirtyPrefab);
+                propLabel(gui, "Friction");
                 if (ImGui::DragFloat("##CCFr", &cd.friction, 0.01f, 0.0f, 1.0f, "%.2f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Slope Limit", isDirtyPrefab);
+                propLabel(gui, "Slope Limit");
                 if (ImGui::DragFloat("##CCSlope", &cd.slopeLimit, 0.5f, 0.0f, 89.0f, "%.1f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Step Height", isDirtyPrefab);
+                propLabel(gui, "Step Height");
                 if (ImGui::DragFloat("##CCStep", &cd.stepHeight, 0.01f, 0.0f, 10.0f, "%.3f"))
                     manager->projectSaved = false;
 
-                propLabel(gui, "Gravity Factor", isDirtyPrefab);
+                propLabel(gui, "Gravity Factor");
                 if (ImGui::DragFloat("##CCGF", &cd.gravityFactor, 0.01f, -10.0f, 10.0f, "%.2f"))
                     manager->projectSaved = false;
 
@@ -2648,7 +2656,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
     // held by the Manager, not serialized.
     if (obj->getHasNavMeshDesc())
     {
-        if (ImGui::CollapsingHeader("Navigation", ImGuiTreeNodeFlags_DefaultOpen))
+        if (sectionHeader(gui, "Navigation", isDirtyPrefab))
         {
             kNavMeshDesc &nd = obj->getNavMeshDesc();
 
@@ -2673,7 +2681,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 if (nd.useArea)
                 {
                     float sz[3] = {nd.areaSize.x, nd.areaSize.y, nd.areaSize.z};
-                    propLabel(gui, "Area Size", isDirtyPrefab);
+                    propLabel(gui, "Area Size");
                     if (ImGui::DragFloat3("##NavSz", sz, 0.1f, 0.1f, 100000.0f))
                     {
                         nd.areaSize = kVec3(sz[0], sz[1], sz[2]);
@@ -2681,19 +2689,19 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                     }
                 }
 
-                propLabel(gui, "Agent Radius", isDirtyPrefab);
+                propLabel(gui, "Agent Radius");
                 if (ImGui::DragFloat("##NavAR", &nd.config.agentRadius, 0.01f, 0.01f, 100.0f, "%.2f"))
                     manager->projectSaved = false;
-                propLabel(gui, "Agent Height", isDirtyPrefab);
+                propLabel(gui, "Agent Height");
                 if (ImGui::DragFloat("##NavAH", &nd.config.agentHeight, 0.01f, 0.01f, 100.0f, "%.2f"))
                     manager->projectSaved = false;
-                propLabel(gui, "Max Climb", isDirtyPrefab);
+                propLabel(gui, "Max Climb");
                 if (ImGui::DragFloat("##NavMC", &nd.config.agentMaxClimb, 0.01f, 0.0f, 100.0f, "%.2f"))
                     manager->projectSaved = false;
-                propLabel(gui, "Max Slope", isDirtyPrefab);
+                propLabel(gui, "Max Slope");
                 if (ImGui::DragFloat("##NavMS", &nd.config.agentMaxSlope, 0.5f, 0.0f, 89.0f, "%.1f"))
                     manager->projectSaved = false;
-                propLabel(gui, "Cell Size", isDirtyPrefab);
+                propLabel(gui, "Cell Size");
                 if (ImGui::DragFloat("##NavCS", &nd.config.cellSize, 0.01f, 0.01f, 10.0f, "%.2f"))
                     manager->projectSaved = false;
 
@@ -2730,7 +2738,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
     // ── Scripts ─────────────────────────────────────────────────────────────
     if (!obj->getScripts().empty())
     {
-        if (ImGui::CollapsingHeader("Scripts", ImGuiTreeNodeFlags_DefaultOpen))
+        if (sectionHeader(gui, "Scripts", isDirtyPrefab))
         {
             auto &scripts = obj->getScripts();
             kString toRemove;
@@ -2758,7 +2766,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
     // ── Audio Sources ────────────────────────────────────────────────────────
     if (!obj->getAudioSources().empty())
     {
-        if (ImGui::CollapsingHeader("Audio Sources", ImGuiTreeNodeFlags_DefaultOpen))
+        if (sectionHeader(gui, "Audio Sources", isDirtyPrefab))
         {
             auto &sources = obj->getAudioSources();
             kString toRemove;
@@ -2831,7 +2839,7 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
     // ── Audio Listener ───────────────────────────────────────────────────────
     if (!obj->getAudioListeners().empty())
     {
-        if (ImGui::CollapsingHeader("Audio Listener", ImGuiTreeNodeFlags_DefaultOpen))
+        if (sectionHeader(gui, "Audio Listener", isDirtyPrefab))
         {
             auto &l = obj->getAudioListeners()[0];
             ImGui::PushID(l.uuid.c_str());
