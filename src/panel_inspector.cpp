@@ -4452,12 +4452,15 @@ static const char *keyToSection(const std::string &key)
         return "audio";
 
     // Particle section keys
-    if (key == "particles")
+    if (key == "particles" || key == "particle")
         return "particle";
 
     // Scripts / physics / character / nav / listener keys
-    if (key == "scripts" || key == "physics_desc" || key == "character_desc" ||
-        key == "nav_mesh_desc" || key == "audio_listeners")
+    if (key == "scripts" || key == "script" ||
+        key == "physics_desc" || key == "physics" ||
+        key == "character_desc" || key == "character" ||
+        key == "nav_mesh_desc" || key == "navmesh_surface" ||
+        key == "audio_listeners")
         return "scripts";
 
     return nullptr; // unknown or child key — not mapped to a top-level section
