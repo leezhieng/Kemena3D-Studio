@@ -41,6 +41,7 @@ PanelInspector::PanelInspector(kGuiManager *setGuiManager, Manager *setManager)
     iconObjScene = loadIcon("ICON_OBJECT_SCENE");
     iconObjTerrain = loadIcon("ICON_OBJECT_TERRAIN");
     iconObjPrefab = loadIcon("ICON_OBJECT_PREFAB");
+    iconObjPrefabEdited = loadIcon("ICON_OBJECT_PREFAB_EDITED");
 
     iconFileModel = loadIcon("ICON_MODEL_FILE");
     iconFileImage = loadIcon("ICON_IMAGE_FILE");
@@ -4431,8 +4432,7 @@ static const char *keyToSection(const std::string &key)
 {
     // Mesh section keys
     if (key == "file_name" || key == "reference" || key == "material_uuid" ||
-        key == "cast_shadow" || key == "receive_shadow" || key == "static" ||
-        key == "active" || key == "visible")
+        key == "cast_shadow" || key == "receive_shadow")
         return "mesh";
 
     // Light section keys
@@ -4731,8 +4731,9 @@ void PanelInspector::draw(bool &opened)
                 // Prefab instance roots use the prefab icon regardless of
                 // underlying object type, consistent with the hierarchy panel.
                 bool isPrefabRoot = !obj->getPrefabRef().empty();
+                bool isPrefabDirty = isPrefabRoot && manager->isPrefabDirty(obj);
 
-                ImTextureRef typeIcon = isPrefabRoot ? iconObjPrefab : iconObjMesh;
+                ImTextureRef typeIcon = isPrefabRoot ? (isPrefabDirty ? iconObjPrefabEdited : iconObjPrefab) : iconObjMesh;
                 const char *typeLabel = isPrefabRoot ? "Prefab" : "Mesh";
 
                 if (!isPrefabRoot)

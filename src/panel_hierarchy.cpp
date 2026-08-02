@@ -42,6 +42,9 @@ PanelHierarchy::PanelHierarchy(kGuiManager *setGuiManager, Manager *setManager, 
 	kTexture2D *tex_prefab = assetManager->loadTexture2DFromResource("ICON_OBJECT_PREFAB", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconPrefab = tex_prefab->getTextureID();
 
+	kTexture2D *tex_prefab_edited = assetManager->loadTexture2DFromResource("ICON_OBJECT_PREFAB_EDITED", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconPrefabEdited = tex_prefab_edited->getTextureID();
+
 	kTexture2D *tex_terrain = assetManager->loadTexture2DFromResource("ICON_OBJECT_TERRAIN", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconTerrain = tex_terrain->getTextureID();
 
@@ -78,18 +81,9 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		flags |= ImGuiTreeNodeFlags_DefaultOpen;
 	}
 
-	// Draw the icon
-	gui->image(node.icon, kVec2(16, 16));
-
-	gui->sameLine();
-
-	// Prefab descendants render greyed-out and don't accept clicks/drag-drop;
-	// structural changes inside a prefab go through the prefab editor.
-	if (node.isPrefabDescendant)
-		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-
-	// Dirty prefab instance roots render with yellow/orange text to indicate
-	// that non-transform changes have been made.
+	// Dirty prefab instance roots show a different icon (cube-orange) AND
+	// orange text to indicate non-transform changes (e.g. active/static).
+	uint32_t drawIcon = node.icon;
 	bool isPrefabRoot = false;
 	if (!node.isPrefabDescendant && node.type == "prefab")
 	{
@@ -99,11 +93,24 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 			kObject *obj = manager->objectMap[node.uuid].object;
 			if (obj && !obj->getPrefabRef().empty() && manager->isPrefabDirty(obj))
 			{
+				drawIcon = iconPrefabEdited;
 				isPrefabRoot = true;
-				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.0f, 1.0f)); // yellow/orange
 			}
 		}
 	}
+
+	// Draw the icon
+	gui->image(drawIcon, kVec2(16, 16));
+
+	gui->sameLine();
+
+	// Prefab descendants render greyed-out and don't accept clicks/drag-drop;
+	// structural changes inside a prefab go through the prefab editor.
+	if (node.isPrefabDescendant)
+		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+
+	if (isPrefabRoot)
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.0f, 1.0f)); // yellow/orange
 
 	bool nodeOpen = gui->treeStartEx(node.uuid, node.name, flags);
 

@@ -42,6 +42,7 @@ private:
 	uint32_t iconCamera = 0;	///< Icon for camera objects.
 	uint32_t iconAudio = 0;	///< Icon for audio emitter objects.
 	uint32_t iconPrefab = 0;	///< Icon for prefab-instance root nodes.
+	uint32_t iconPrefabEdited = 0; ///< Icon for dirty prefab-instance root nodes (cube-orange).
 	uint32_t iconTerrain = 0; ///< Icon for terrain tile objects.
 
 	kString searchBuffer; ///< Current text in the hierarchy search box.

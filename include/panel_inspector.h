@@ -53,6 +53,7 @@ private:
 	ImTextureRef iconObjScene = nullptr;   ///< Icon for scene root objects.
 	ImTextureRef iconObjTerrain = nullptr; ///< Icon for terrain objects.
 	ImTextureRef iconObjPrefab = nullptr;  ///< Icon for prefab-instance roots.
+	ImTextureRef iconObjPrefabEdited = nullptr; ///< Icon for dirty prefab-instance roots (cube-orange).
 
 	// File type icons
 	ImTextureRef iconFileModel = nullptr;	 ///< Icon for model/mesh asset files.

@@ -75,6 +75,7 @@ ICON_OBJECT_LIGHT RCDATA "res/icons/label/light.png"
 ICON_OBJECT_CAMERA RCDATA "res/icons/label/camera.png"
 ICON_OBJECT_AUDIO RCDATA "res/icons/label/audio.png"
 ICON_OBJECT_PREFAB RCDATA "res/icons/label/cube-black.png"
+ICON_OBJECT_PREFAB_EDITED RCDATA "res/icons/label/cube-orange.png"
 ICON_OBJECT_TERRAIN RCDATA "res/icons/label/mountain.png"
 
 ICON_DETACH_BUTTON RCDATA "res/icons/button/detach.png"
