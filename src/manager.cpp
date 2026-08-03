@@ -1828,6 +1828,18 @@ static void applyCameraIcon(kCamera *cam, kAssetManager *am)
     cam->setMaterial(mat);
 }
 
+// Apply the GIZMO_AUDIO icon material to an audio-source object.
+static void applyAudioIcon(kObject *obj, kAssetManager *am)
+{
+    kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial *mat = am->createMaterial(shader);
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
+    kTexture2D *tex = am->loadTexture2DFromResource("GIZMO_AUDIO", "albedoMap",
+                                                    kTextureFormat::TEX_FORMAT_RGBA);
+    mat->addTexture(tex);
+    obj->setMaterial(mat);
+}
+
 // ---------------------------------------------------------------------------
 // Edit — selection helpers
 // ---------------------------------------------------------------------------
@@ -2238,15 +2250,7 @@ void Manager::createAudio()
 
     // Assign the gizmo material for audio icon billboard
     if (kAssetManager *am = getAssetManager())
-    {
-        kShader *shader = am->loadGlslFromResource("SHADER_ICON");
-        kMaterial *mat = am->createMaterial(shader);
-        mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
-        kTexture2D *tex = am->loadTexture2DFromResource("ICON_FILE_AUDIO", "albedoMap",
-                                                        kTextureFormat::TEX_FORMAT_RGBA);
-        mat->addTexture(tex);
-        obj->setMaterial(mat);
-    }
+        applyAudioIcon(obj, am);
 
     finishCreate(this, obj, scene, [this, obj, uuid]()
                  {
@@ -4173,6 +4177,26 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
 
         result = cam;
     }
+    else if (type == "audio")
+    {
+        kObject *audioObj = new kObject();
+        audioObj->setType(kNodeType::NODE_TYPE_AUDIO);
+        audioObj->setName(name);
+        audioObj->setActive(active);
+        audioObj->setStatic(obj.value("static", false));
+        if (topLevel)
+        {
+            scene->addObject(audioObj, uuid);
+        }
+        else
+        {
+            audioObj->setUuid(uuid.empty() ? generateUuid() : uuid);
+            audioObj->setParent(parent);
+        }
+        if (am)
+            applyAudioIcon(audioObj, am);
+        result = audioObj;
+    }
     else
     {
         kObject *empty = new kObject();
@@ -4327,6 +4351,39 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 s.checksum = sj.value("checksum", std::string(""));
                 s.isActive = sj.value("active", true);
                 result->addScript(s);
+            }
+        }
+
+        // Audio sources — restore each attached audio source descriptor.
+        if (obj.contains("audio_sources") && obj["audio_sources"].is_array())
+        {
+            for (const auto &aj : obj["audio_sources"])
+            {
+                kAudioSource as;
+                as.uuid         = aj.value("uuid", generateUuid());
+                as.name         = aj.value("name", std::string("Audio Source"));
+                as.audioFile    = aj.value("audio_file", std::string(""));
+                as.isActive     = aj.value("active", true);
+                as.playOnAwake  = aj.value("play_on_awake", false);
+                as.loop         = aj.value("loop", false);
+                as.volume       = aj.value("volume", 1.0f);
+                as.pitch        = aj.value("pitch", 1.0f);
+                as.spatialize   = aj.value("spatialize", true);
+                as.minDistance  = aj.value("min_distance", 1.0f);
+                as.maxDistance  = aj.value("max_distance", 100.0f);
+                result->addAudioSource(as);
+            }
+        }
+
+        // Audio listeners — restore each attached audio listener descriptor.
+        if (obj.contains("audio_listeners") && obj["audio_listeners"].is_array())
+        {
+            for (const auto &lj : obj["audio_listeners"])
+            {
+                kAudioListener al;
+                al.uuid    = lj.value("uuid", generateUuid());
+                al.isActive = lj.value("active", true);
+                result->addAudioListener(al);
             }
         }
 
@@ -5366,10 +5423,13 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
 
         if (info.type == "audio")
         {
+            obj->setType(kNodeType::NODE_TYPE_AUDIO);
             kAudioSource src;
             src.uuid = generateUuid();
             src.audioFile = assetUuid; // reference the audio asset by its project UUID
             obj->addAudioSource(src);
+            if (kAssetManager *am = getAssetManager())
+                applyAudioIcon(obj, am);
         }
         else
         {

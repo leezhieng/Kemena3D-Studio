@@ -2417,7 +2417,7 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 }
 
 // ---------------------------------------------------------------------------
-// Scripts section (Physics / Scripts / Audio Sources / Listener)
+// Scripts section (Physics / Scripts / Audio Listener)
 // ---------------------------------------------------------------------------
 static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager, bool isDirtyPrefab = false)
 {
@@ -2758,79 +2758,6 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
             if (!toRemove.empty())
             {
                 obj->removeScript(toRemove);
-                manager->projectSaved = false;
-            }
-        }
-        gui->spacing();
-    }
-
-    // ── Audio Sources ────────────────────────────────────────────────────────
-    if (!obj->getAudioSources().empty())
-    {
-        if (sectionHeader(gui, "Audio Sources", isDirtyPrefab))
-        {
-            auto &sources = obj->getAudioSources();
-            kString toRemove;
-            for (auto &src : sources)
-            {
-                ImGui::PushID(src.uuid.c_str());
-                if (ImGui::Checkbox("##AudActive", &src.isActive))
-                    manager->projectSaved = false;
-                ImGui::SameLine();
-                fs::path p(src.audioFile);
-                ImGui::TextUnformatted(p.filename().string().empty()
-                                           ? src.name.c_str()
-                                           : p.filename().string().c_str());
-                ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
-                if (ImGui::SmallButton("x##RemAud"))
-                    toRemove = src.uuid;
-
-                // Expanded audio source properties
-                ImGui::Indent();
-                bool loopV = src.loop;
-                if (ImGui::Checkbox("Loop##AudLoop", &loopV))
-                {
-                    src.loop = loopV;
-                    manager->projectSaved = false;
-                }
-                ImGui::SameLine();
-                bool powV = src.playOnAwake;
-                if (ImGui::Checkbox("Play On Awake##AudPOA", &powV))
-                {
-                    src.playOnAwake = powV;
-                    manager->projectSaved = false;
-                }
-
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderFloat("Volume##AudVol", &src.volume, 0.0f, 1.0f))
-                    manager->projectSaved = false;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderFloat("Pitch##AudPitch", &src.pitch, 0.1f, 3.0f))
-                    manager->projectSaved = false;
-
-                bool spatV = src.spatialize;
-                if (ImGui::Checkbox("3D Spatial##AudSpat", &spatV))
-                {
-                    src.spatialize = spatV;
-                    manager->projectSaved = false;
-                }
-
-                if (src.spatialize)
-                {
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat("Min Dist##AudMin", &src.minDistance, 0.1f, 0.0f, src.maxDistance))
-                        manager->projectSaved = false;
-                    ImGui::SetNextItemWidth(-1);
-                    if (ImGui::DragFloat("Max Dist##AudMax", &src.maxDistance, 1.0f, src.minDistance, 10000.0f))
-                        manager->projectSaved = false;
-                }
-                ImGui::Unindent();
-
-                ImGui::PopID();
-            }
-            if (!toRemove.empty())
-            {
-                obj->removeAudioSource(toRemove);
                 manager->projectSaved = false;
             }
         }
