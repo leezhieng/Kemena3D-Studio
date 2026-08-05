@@ -71,10 +71,14 @@ def rebuild_jolt_md(kemena3d_source_dir, modes):
         return
     for mode in modes:
         build_dir = jolt_cmake / f"build_{mode}"
+        # Remove stale build directory in case the generator (VS version) changed
+        if build_dir.exists():
+            print(f"[INFO] Removing previous Jolt build directory: {build_dir}")
+            shutil.rmtree(str(build_dir))
         print(f"\n[INFO] Rebuilding Jolt ({mode}) with /MD CRT...")
         run_cmd(
             f'cmake -S "{jolt_cmake}" -B "{build_dir}" '
-            f'-G "Visual Studio 17 2022" '
+            f'-G "Visual Studio 18 2026" '
             f'-DCMAKE_BUILD_TYPE={mode} '
             f'-DUSE_STATIC_MSVC_RUNTIME_LIBRARY=OFF'
         )
@@ -111,7 +115,7 @@ def main():
     compiler = choose(
         "\nPlease choose a compiler:",
         {
-            "1": "Build with Visual Studio 2022 (Community Edition)",
+            "1": "Build with Visual Studio 2026 (Community Edition)",
             "2": "Build with MinGW (GCC 14 or above)"
         }
     )
@@ -143,7 +147,7 @@ def main():
     link_static = "ON" if link_type == "1" else "OFF"
     make_program = None
     if compiler == "1":
-        generator = "Visual Studio 17 2022"
+        generator = "Visual Studio 18 2026"
         extra_args = f"-DUSE_MINGW=OFF -DKEMENA3D_LINK_STATIC={link_static}"
     else:
         generator = "MinGW Makefiles"
