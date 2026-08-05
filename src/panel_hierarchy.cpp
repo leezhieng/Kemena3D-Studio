@@ -365,8 +365,7 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 				// Regular object — show Rename, Duplicate, Delete.
 				if (ImGui::MenuItem("Rename"))
 				{
-					strncpy(renameBuffer, node.name.c_str(), sizeof(renameBuffer) - 1);
-					renameBuffer[sizeof(renameBuffer) - 1] = '\0';
+					strncpy_s(renameBuffer, sizeof(renameBuffer), node.name.c_str(), _TRUNCATE);
 					renameNodeUuid = node.uuid;
 					manager->selectObject(node.uuid, true);
 				}

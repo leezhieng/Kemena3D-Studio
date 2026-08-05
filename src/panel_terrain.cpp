@@ -671,7 +671,7 @@ void PanelTerrain::draw(bool &isOpened)
             if (ImGui::TreeNode(label.c_str()))
             {
                 static char nameBuf[128];
-                strncpy(nameBuf, layer.name.c_str(), sizeof(nameBuf) - 1);
+                strncpy_s(nameBuf, sizeof(nameBuf), layer.name.c_str(), _TRUNCATE);
                 if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
                     layer.name = nameBuf;
                 ImGui::InputFloat("Tile Size", &layer.tileSize);

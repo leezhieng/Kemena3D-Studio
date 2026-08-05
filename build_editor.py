@@ -5,6 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Map compiler choice → CMake generator name
+COMPILER_GENERATOR = {
+    "1": "Visual Studio 18 2026",
+    "2": "Visual Studio 17 2022",
+    "3": "MinGW Makefiles",
+}
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 DEFAULT_SDK_DIR = "D:/Projects/Kemena3D/kemena3d/Output"
@@ -54,7 +61,14 @@ def banner():
  ------------------------------------------------------------------------
 """)
 
-def choose(prompt, options: dict):
+def choose(prompt, options: dict, env=None):
+    # Non-interactive override: if the given environment variable holds a valid
+    # option key, use it without prompting (used by CI).
+    if env:
+        val = os.environ.get(env, "").strip()
+        if val in options:
+            print(f"{prompt}\n  [{env}={val}] (non-interactive)")
+            return val
     print(prompt)
     for k, v in options.items():
         print(f"{k}: {v}")
@@ -63,7 +77,7 @@ def choose(prompt, options: dict):
         raise ValueError(f"Invalid choice: {choice}")
     return choice
 
-def rebuild_jolt_md(kemena3d_source_dir, modes):
+def rebuild_jolt_md(kemena3d_source_dir, modes, vs_generator="Visual Studio 18 2026"):
     """Rebuild JoltPhysics with /MD (MultiThreadedDLL) to match the kemena3d SDK CRT."""
     jolt_cmake = Path(kemena3d_source_dir) / "Dependencies/jolt/Build"
     if not jolt_cmake.exists():
@@ -78,10 +92,16 @@ def rebuild_jolt_md(kemena3d_source_dir, modes):
         print(f"\n[INFO] Rebuilding Jolt ({mode}) with /MD CRT...")
         run_cmd(
             f'cmake -S "{jolt_cmake}" -B "{build_dir}" '
-            f'-G "Visual Studio 18 2026" '
+            f'-G "{vs_generator}" '
             f'-DCMAKE_BUILD_TYPE={mode} '
             f'-DUSE_STATIC_MSVC_RUNTIME_LIBRARY=OFF '
             f'-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL '
+            f'-DTARGET_UNIT_TESTS=OFF '
+            f'-DTARGET_HELLO_WORLD=OFF '
+            f'-DTARGET_SAMPLES=OFF '
+            f'-DTARGET_VIEWER=OFF '
+            f'-DTARGET_PERFORMANCE_TEST=OFF '
+            f'-DBUILD_SHARED_LIBS=OFF '
             f'-DENABLE_ALL_WARNINGS=OFF'
         )
         run_cmd(f'cmake --build "{build_dir}" --config {mode} --parallel')
@@ -118,7 +138,8 @@ def main():
         "\nPlease choose a compiler:",
         {
             "1": "Build with Visual Studio 2026 (Community Edition)",
-            "2": "Build with MinGW (GCC 14 or above)"
+            "2": "Build with Visual Studio 2022 (Community Edition)",
+            "3": "Build with MinGW (GCC 14 or above)"
         }
     )
 
@@ -148,8 +169,8 @@ def main():
     # CMake generator and args
     link_static = "ON" if link_type == "1" else "OFF"
     make_program = None
-    if compiler == "1":
-        generator = "Visual Studio 18 2026"
+    if compiler in ("1", "2"):
+        generator = COMPILER_GENERATOR.get(compiler, "Visual Studio 18 2026")
         extra_args = f"-DUSE_MINGW=OFF -DKEMENA3D_LINK_STATIC={link_static}"
     else:
         generator = "MinGW Makefiles"
@@ -166,9 +187,9 @@ def main():
         modes = ["Debug", "Release"]
 
     # MSVC: ensure Jolt is built with /MD to match the kemena3d SDK CRT
-    if compiler == "1":
+    if compiler in ("1", "2"):
         kemena3d_source_dir = str(Path(sdk_dir).parent)
-        rebuild_jolt_md(kemena3d_source_dir, modes)
+        rebuild_jolt_md(kemena3d_source_dir, modes, generator)
 
     for mode in modes:
         build_with_cmake(generator, mode, extra_args, sdk_dir, make_program)

@@ -385,8 +385,7 @@ void PanelParticle::drawToolbar()
     ImGui::Separator();
 
     char nameBuf[256];
-    strncpy(nameBuf, doc.name.c_str(), sizeof(nameBuf) - 1);
-    nameBuf[sizeof(nameBuf) - 1] = 0;
+    strncpy_s(nameBuf, sizeof(nameBuf), doc.name.c_str(), _TRUNCATE);
     ImGui::SetNextItemWidth(200);
     if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
     {
@@ -475,8 +474,7 @@ void PanelParticle::drawTimeline()
         ImGui::PushID(i);
         ImGui::SetNextItemWidth(LABEL_W - 12);
         char nameBuf[128];
-        strncpy(nameBuf, e.name.c_str(), sizeof(nameBuf) - 1);
-        nameBuf[sizeof(nameBuf) - 1] = 0;
+        strncpy_s(nameBuf, sizeof(nameBuf), e.name.c_str(), _TRUNCATE);
         if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
         {
             e.name = nameBuf;
@@ -594,8 +592,7 @@ void PanelParticle::drawEmitterDetail()
     if (ImGui::CollapsingHeader("Emitter", ImGuiTreeNodeFlags_DefaultOpen))
     {
         char nameBuf[128];
-        strncpy(nameBuf, e.name.c_str(), sizeof(nameBuf) - 1);
-        nameBuf[sizeof(nameBuf) - 1] = 0;
+        strncpy_s(nameBuf, sizeof(nameBuf), e.name.c_str(), _TRUNCATE);
         ImGui::SetNextItemWidth(200);
         if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
         {
@@ -661,8 +658,7 @@ void PanelParticle::drawEmitterDetail()
         if (ImGui::SliderFloat("End Size", &e.sizeEnd, 0.0f, 2.0f, "%.2f")) doc.dirty = true;
 
         char spriteBuf[512];
-        strncpy(spriteBuf, e.spritePath.c_str(), sizeof(spriteBuf) - 1);
-        spriteBuf[sizeof(spriteBuf) - 1] = 0;
+        strncpy_s(spriteBuf, sizeof(spriteBuf), e.spritePath.c_str(), _TRUNCATE);
         ImGui::SetNextItemWidth(300);
         if (ImGui::InputText("Sprite Path", spriteBuf, sizeof(spriteBuf)))
         {
@@ -671,8 +667,7 @@ void PanelParticle::drawEmitterDetail()
         }
 
         char meshBuf[256];
-        strncpy(meshBuf, e.meshUuid.c_str(), sizeof(meshBuf) - 1);
-        meshBuf[sizeof(meshBuf) - 1] = 0;
+        strncpy_s(meshBuf, sizeof(meshBuf), e.meshUuid.c_str(), _TRUNCATE);
         ImGui::SetNextItemWidth(300);
         if (ImGui::InputText("Mesh UUID", meshBuf, sizeof(meshBuf)))
         {
@@ -681,8 +676,7 @@ void PanelParticle::drawEmitterDetail()
         }
 
         char matBuf[256];
-        strncpy(matBuf, e.materialUuid.c_str(), sizeof(matBuf) - 1);
-        matBuf[sizeof(matBuf) - 1] = 0;
+        strncpy_s(matBuf, sizeof(matBuf), e.materialUuid.c_str(), _TRUNCATE);
         ImGui::SetNextItemWidth(300);
         if (ImGui::InputText("Material UUID", matBuf, sizeof(matBuf)))
         {
