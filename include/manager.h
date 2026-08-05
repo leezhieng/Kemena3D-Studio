@@ -366,8 +366,11 @@ public:
 
     // --- Audio preview -------------------------------------------------------
     kAudioManager *audioPreviewManager = nullptr;
+    kAudio        *audioPreviewClip     = nullptr; ///< Currently-previewing clip (nullptr when idle).
+    kString        audioPreviewSourceUuid;          ///< UUID of the audio source whose clip is previewing.
     void startAudioPreview(kAudioSource &src);
-    void stopAudioPreview(kAudioSource &src);
+    void stopAudioPreview();
+    bool isAudioPreviewPlaying() const;
 
     // --- Drag-and-drop helpers ----------------------------------------------
     kObject *instantiateAssetFromUuid(const kString &assetUuid, const kVec3 &positionHint = kVec3(0));

@@ -2300,6 +2300,32 @@ void Manager::createParticle()
 
 void Manager::startAudioPreview(kAudioSource &src)
 {
+    // If already previewing this same source, stop it (toggle off).
+    if (audioPreviewClip && audioPreviewSourceUuid == src.uuid)
+    {
+        stopAudioPreview();
+        return;
+    }
+
+    // If a different clip is playing, stop it first.
+    if (audioPreviewClip)
+        stopAudioPreview();
+
+    // Resolve the stored audio-file UUID to an actual filesystem path.
+    fs::path audioPath;
+    if (!src.audioFile.empty())
+    {
+        auto it = fileMap.find(src.audioFile);
+        if (it != fileMap.end() && it->second.type == "audio")
+            audioPath = projectPath / "Assets" / it->second.path;
+    }
+
+    if (audioPath.empty() || !fs::exists(audioPath))
+    {
+        std::cerr << "Audio preview: cannot resolve audio file for UUID " << src.audioFile << "\n";
+        return;
+    }
+
     if (!audioPreviewManager)
     {
         audioPreviewManager = createAudioManager();
@@ -2310,7 +2336,8 @@ void Manager::startAudioPreview(kAudioSource &src)
             return;
         }
     }
-    kAudio *clip = audioPreviewManager->loadAudio(src.audioFile);
+
+    kAudio *clip = audioPreviewManager->loadAudio(audioPath.string());
     if (clip)
     {
         clip->setLooping(src.loop);
@@ -2318,16 +2345,25 @@ void Manager::startAudioPreview(kAudioSource &src)
         clip->setPitch(src.pitch);
         clip->setSpatialization(src.spatialize);
         clip->play();
+        audioPreviewClip = clip;
+        audioPreviewSourceUuid = src.uuid;
     }
 }
 
-void Manager::stopAudioPreview(kAudioSource & /*src*/)
+void Manager::stopAudioPreview()
 {
-    if (!audioPreviewManager)
-        return;
-    // Simple approach: shutdown and re-init to stop all preview playback
-    audioPreviewManager->shutdown();
-    audioPreviewManager->init();
+    if (audioPreviewClip && audioPreviewManager)
+    {
+        audioPreviewClip->stop();
+        audioPreviewManager->unloadAudio(audioPreviewClip);
+    }
+    audioPreviewClip = nullptr;
+    audioPreviewSourceUuid.clear();
+}
+
+bool Manager::isAudioPreviewPlaying() const
+{
+    return audioPreviewClip && audioPreviewClip->isPlaying();
 }
 
 // ---------------------------------------------------------------------------
@@ -4199,20 +4235,49 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
     }
     else
     {
-        kObject *empty = new kObject();
-        empty->setName(name);
-        empty->setActive(active);
-        empty->setStatic(obj.value("static", false));
-        if (topLevel)
+        // Fallback: if the saved type is "object" but the JSON carries
+        // audio-source data (can happen when the engine library was not
+        // rebuilt after the NODE_TYPE_AUDIO serialisation was added),
+        // promote the object to a proper audio emitter so the inspector
+        // shows the Audio Source section and the hierarchy uses the
+        // audio icon.
+        bool hasAudioSources = obj.contains("audio_sources") &&
+                               obj["audio_sources"].is_array() &&
+                               !obj["audio_sources"].empty();
+
+        if (hasAudioSources)
         {
-            scene->addObject(empty, uuid);
+            kObject *audioObj = new kObject();
+            audioObj->setType(kNodeType::NODE_TYPE_AUDIO);
+            audioObj->setName(name);
+            audioObj->setActive(active);
+            audioObj->setStatic(obj.value("static", false));
+            if (topLevel)
+                scene->addObject(audioObj, uuid);
+            else
+            {
+                audioObj->setUuid(uuid.empty() ? generateUuid() : uuid);
+                audioObj->setParent(parent);
+            }
+            if (am)
+                applyAudioIcon(audioObj, am);
+            result = audioObj;
         }
         else
         {
-            empty->setUuid(uuid.empty() ? generateUuid() : uuid);
-            empty->setParent(parent);
+            kObject *empty = new kObject();
+            empty->setName(name);
+            empty->setActive(active);
+            empty->setStatic(obj.value("static", false));
+            if (topLevel)
+                scene->addObject(empty, uuid);
+            else
+            {
+                empty->setUuid(uuid.empty() ? generateUuid() : uuid);
+                empty->setParent(parent);
+            }
+            result = empty;
         }
-        result = empty;
     }
 
     if (result)

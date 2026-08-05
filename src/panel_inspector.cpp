@@ -2090,11 +2090,11 @@ static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool 
     gui->spacing();
     if (!sources.empty())
     {
-        if (ImGui::Button("Preview", ImVec2(80, 0)))
+        bool playing = mgr->isAudioPreviewPlaying() &&
+                       mgr->audioPreviewSourceUuid == sources[0].uuid;
+        const char *label = playing ? "Stop" : "Play";
+        if (ImGui::Button(label, ImVec2(80, 0)))
             mgr->startAudioPreview(sources[0]);
-        ImGui::SameLine();
-        if (ImGui::Button("Stop", ImVec2(80, 0)))
-            mgr->stopAudioPreview(sources[0]);
     }
 }
 
