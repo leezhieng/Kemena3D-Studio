@@ -133,8 +133,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(MSVC)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         SDL3-static
-        $<$<CONFIG:Debug>:assimp-vc144-mtd>
-        $<$<CONFIG:Release>:assimp-vc144-mt>
+        $<$<CONFIG:Debug>:assimp-vc143-mtd>
+        $<$<CONFIG:Release>:assimp-vc143-mt>
         $<$<CONFIG:Debug>:angelscriptd>
         $<$<CONFIG:Release>:angelscript>
         imgui

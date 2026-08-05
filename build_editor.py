@@ -80,7 +80,9 @@ def rebuild_jolt_md(kemena3d_source_dir, modes):
             f'cmake -S "{jolt_cmake}" -B "{build_dir}" '
             f'-G "Visual Studio 18 2026" '
             f'-DCMAKE_BUILD_TYPE={mode} '
-            f'-DUSE_STATIC_MSVC_RUNTIME_LIBRARY=OFF'
+            f'-DUSE_STATIC_MSVC_RUNTIME_LIBRARY=OFF '
+            f'-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL '
+            f'-DENABLE_ALL_WARNINGS=OFF'
         )
         run_cmd(f'cmake --build "{build_dir}" --config {mode} --parallel')
 
