@@ -77,6 +77,13 @@ def choose(prompt, options: dict, env=None):
         raise ValueError(f"Invalid choice: {choice}")
     return choice
 
+def _generator_in_cache(cache_file, vs_generator):
+    """Return True if the CMake cache was generated with the requested generator."""
+    if not cache_file.exists():
+        return False
+    content = cache_file.read_text(errors="ignore")
+    return f"CMAKE_GENERATOR:INTERNAL={vs_generator}" in content
+
 def rebuild_jolt_md(kemena3d_source_dir, modes, vs_generator="Visual Studio 18 2026"):
     """Rebuild JoltPhysics with /MD (MultiThreadedDLL) to match the kemena3d SDK CRT."""
     jolt_cmake = Path(kemena3d_source_dir) / "Dependencies/jolt/Build"
@@ -85,10 +92,20 @@ def rebuild_jolt_md(kemena3d_source_dir, modes, vs_generator="Visual Studio 18 2
         return
     for mode in modes:
         build_dir = jolt_cmake / f"build_{mode}"
-        # Remove stale build directory in case the generator (VS version) changed
+        jolt_lib = build_dir / mode / "Jolt.lib"
+        cache_file = build_dir / "CMakeCache.txt"
+
+        # Only remove if the generator changed or the output lib is missing
         if build_dir.exists():
-            print(f"[INFO] Removing previous Jolt build directory: {build_dir}")
-            shutil.rmtree(str(build_dir))
+            stale = not _generator_in_cache(cache_file, vs_generator) or not jolt_lib.exists()
+            if stale:
+                reason = "generator changed" if not _generator_in_cache(cache_file, vs_generator) else "lib missing"
+                print(f"[INFO] Removing stale Jolt build directory ({reason}): {build_dir}")
+                shutil.rmtree(str(build_dir))
+            else:
+                print(f"[INFO] Jolt ({mode}) already built with /MD CRT, skipping.")
+                continue
+
         print(f"\n[INFO] Rebuilding Jolt ({mode}) with /MD CRT...")
         run_cmd(
             f'cmake -S "{jolt_cmake}" -B "{build_dir}" '

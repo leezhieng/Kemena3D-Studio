@@ -190,6 +190,19 @@ bool convertImageToDDS(const fs::path& inputPath, const fs::path& outputPath, co
  */
 bool convertImageToDxt5(const fs::path& inputPath, const fs::path& outputPath);
 
+/**
+ * @brief Convert an audio file to a PCM WAV using miniaudio.
+ *
+ * Decodes the source file (any format miniaudio supports: MP3, OGG, WAV, FLAC)
+ * and re-encodes it as a 16-bit PCM WAV at @p outputPath. The output format
+ * (sample rate, channels, bit depth) matches the decoded source.
+ *
+ * @param inputPath  Path to the source audio file.
+ * @param outputPath Destination path for the generated .wav file.
+ * @return True on successful conversion, false if decoding or encoding fails.
+ */
+bool convertAudioToWav(const fs::path& inputPath, const fs::path& outputPath);
+
 // ---------------------------------------------------------------------------
 // Shader reflection — `// @var` material parameter annotations
 // ---------------------------------------------------------------------------

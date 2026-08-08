@@ -52,7 +52,7 @@ class PanelConsole
 		char inputBuf[256] = "";                      ///< Backing buffer for the command input field.
 		bool scrollToBottom = false;                  ///< When true, the view scrolls to the latest entry on next draw.
 
-		std::unordered_set<int> selectedIndices;     ///< Indices of all currently selected lines.
+		std::unordered_set<size_t> selectedIndices;  ///< Indices of all currently selected lines.
         size_t lastClickedIndex = -1;               ///< Index of the last clicked line, used as the anchor for shift-range selection.
 
         bool showCopiedTooltip = false;              ///< Whether the "copied to clipboard" tooltip is currently shown.

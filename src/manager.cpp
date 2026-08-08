@@ -749,6 +749,16 @@ void Manager::checkAssetChange()
 
                     if (!assetExt.empty())
                         tryDelete(libraryFolder / "ImportedAssets" / (uuid + assetExt));
+                    else if (type == "audio")
+                    {
+                        // Audio files keep their original extension; scan for any match.
+                        for (const char* ext : {".wav", ".ogg", ".mp3", ".flac"})
+                        {
+                            fs::path cand = libraryFolder / "ImportedAssets" / (uuid + ext);
+                            if (fs::exists(cand))
+                                { tryDelete(cand); break; }
+                        }
+                    }
 
                     tryDelete(libraryFolder / "Thumbnails" / (uuid + ".png"));
 
@@ -845,6 +855,9 @@ void Manager::checkAssetChange()
                     uuidExt = ".dds";
 
                 fs::path srcFullPath = assetsPath / relativePath;
+
+                if (fileType == "audio")
+                    uuidExt = ".wav"; // always transcode to 16-bit PCM WAV
                 fs::path destDir = libraryFolder / "ImportedAssets";
                 fs::path destFile = destDir / (fileUuid + uuidExt);
                 fs::path thumbnailPath = libraryFolder / "Thumbnails" / (fileUuid + ".png");
@@ -910,7 +923,7 @@ void Manager::checkAssetChange()
                     }
                 }
 
-                if (needImport && (fileType == "mesh" || fileType == "image"))
+                if (needImport && (fileType == "mesh" || fileType == "image" || fileType == "audio"))
                 {
                     std::cout << srcFullPath << " -> " << destFile << "\n";
                     importTasks.push_back({srcFullPath, destFile, fileType,
@@ -1217,6 +1230,12 @@ void Manager::startBatchImport(const std::vector<ImportTask> &tasks)
 				task.success = convertImageToDxt5(task.inputPath, task.outputPath);
 				if (!task.success)
 					task.errorMsg = "image import failed (unsupported or corrupt source file?)";
+			}
+			else if (task.type == "audio")
+			{
+				task.success = convertAudioToWav(task.inputPath, task.outputPath);
+				if (!task.success)
+					task.errorMsg = "audio import failed (unsupported or corrupt source file?)";
 			}
 			else
 			{
@@ -2312,12 +2331,28 @@ void Manager::startAudioPreview(kAudioSource &src)
         stopAudioPreview();
 
     // Resolve the stored audio-file UUID to an actual filesystem path.
+    // Prefer the converted file in Library/ImportedAssets, fall back to the
+    // original source file in Assets/.
     fs::path audioPath;
     if (!src.audioFile.empty())
     {
-        auto it = fileMap.find(src.audioFile);
-        if (it != fileMap.end() && it->second.type == "audio")
-            audioPath = projectPath / "Assets" / it->second.path;
+        // Try the converted Library file first (any extension)
+        static const char* kAudioExts[] = {".wav", ".ogg", ".mp3", ".flac"};
+        for (const char* ext : kAudioExts)
+        {
+            fs::path cand = projectPath / "Library" / "ImportedAssets" / (src.audioFile + ext);
+            if (fs::exists(cand))
+            {
+                audioPath = cand;
+                break;
+            }
+        }
+        if (audioPath.empty())
+        {
+            auto it = fileMap.find(src.audioFile);
+            if (it != fileMap.end() && it->second.type == "audio")
+                audioPath = projectPath / "Assets" / it->second.path;
+        }
     }
 
     if (audioPath.empty() || !fs::exists(audioPath))
@@ -2335,6 +2370,9 @@ void Manager::startAudioPreview(kAudioSource &src)
             audioPreviewManager = nullptr;
             return;
         }
+        // Set up a default listener so non-spatialized preview sounds are audible.
+        audioPreviewManager->setListenerPosition(kVec3(0.0f));
+        audioPreviewManager->setListenerDirection(kVec3(0.0f, 0.0f, -1.0f), kVec3(0.0f, 1.0f, 0.0f));
     }
 
     kAudio *clip = audioPreviewManager->loadAudio(audioPath.string());
@@ -2347,6 +2385,79 @@ void Manager::startAudioPreview(kAudioSource &src)
         clip->play();
         audioPreviewClip = clip;
         audioPreviewSourceUuid = src.uuid;
+        audioPreviewAssetUuid.clear();
+    }
+}
+
+void Manager::startAudioPreviewByUuid(const kString &audioUuid)
+{
+    // Toggle: if already previewing this asset, stop.
+    if (audioPreviewClip && audioPreviewAssetUuid == audioUuid)
+    {
+        stopAudioPreview();
+        return;
+    }
+
+    // Stop any other preview.
+    if (audioPreviewClip)
+        stopAudioPreview();
+
+    // Resolve to the audio file. Try Library/ImportedAssets first (any extension),
+    // then fall back to the original asset in Assets/.
+    auto resolveAudioPath = [&](const kString &uuid) -> fs::path
+    {
+        static const char* kAudioExts[] = {".wav", ".ogg", ".mp3", ".flac"};
+        for (const char* ext : kAudioExts)
+        {
+            fs::path cand = projectPath / "Library" / "ImportedAssets" / (uuid + ext);
+            if (fs::exists(cand))
+                return cand;
+        }
+        // Fall back to the original asset in Assets/.
+        auto it = fileMap.find(uuid);
+        if (it != fileMap.end() && it->second.type == "audio")
+        {
+            fs::path srcPath = projectPath / "Assets" / it->second.path;
+            if (fs::exists(srcPath))
+                return srcPath;
+        }
+        return fs::path();
+    };
+
+    fs::path libPath = resolveAudioPath(audioUuid);
+    if (libPath.empty())
+    {
+        std::cerr << "Audio preview: cannot resolve audio file for UUID " << audioUuid
+                  << " (tried Library/ImportedAssets and Assets/)" << std::endl;
+        return;
+    }
+    std::cout << "[Audio Preview] Playing: " << libPath.string() << std::endl;
+
+    if (!audioPreviewManager)
+    {
+        audioPreviewManager = createAudioManager();
+        if (!audioPreviewManager || !audioPreviewManager->init())
+        {
+            std::cerr << "Audio preview: failed to init audio manager\n";
+            audioPreviewManager = nullptr;
+            return;
+        }
+        // Set up a default listener so non-spatialized preview sounds are audible.
+        audioPreviewManager->setListenerPosition(kVec3(0.0f));
+        audioPreviewManager->setListenerDirection(kVec3(0.0f, 0.0f, -1.0f), kVec3(0.0f, 1.0f, 0.0f));
+    }
+
+    kAudio *clip = audioPreviewManager->loadAudio(libPath.string());
+    if (clip)
+    {
+        clip->setLooping(false);
+        clip->setVolume(1.0f);
+        clip->setPitch(1.0f);
+        clip->setSpatialization(false);
+        clip->play();
+        audioPreviewClip = clip;
+        audioPreviewAssetUuid = audioUuid;
+        audioPreviewSourceUuid.clear();
     }
 }
 
@@ -2359,11 +2470,17 @@ void Manager::stopAudioPreview()
     }
     audioPreviewClip = nullptr;
     audioPreviewSourceUuid.clear();
+    audioPreviewAssetUuid.clear();
 }
 
 bool Manager::isAudioPreviewPlaying() const
 {
     return audioPreviewClip && audioPreviewClip->isPlaying();
+}
+
+bool Manager::isAudioAssetPreviewPlaying() const
+{
+    return audioPreviewClip && audioPreviewClip->isPlaying() && !audioPreviewAssetUuid.empty();
 }
 
 // ---------------------------------------------------------------------------
@@ -7473,5 +7590,38 @@ void Manager::deleteAssets(const std::vector<fs::path> &paths)
             std::cerr << "Failed to delete " << p << ": " << ec.message() << "\n";
     }
 
+    checkAssetChange();
+}
+
+void Manager::reimportAsset(const kString &uuid)
+{
+    if (uuid.empty() || projectPath.empty())
+        return;
+
+    // Delete the converted file in Library/ImportedAssets and thumbnail/metadata
+    // so checkAssetChange will re-import from the source.
+    fs::path libDir = projectPath / "Library" / "ImportedAssets";
+
+    // Try common extensions for mesh/image/audio
+    static const char* kExts[] = {".glb", ".dds", ".wav", ".ogg", ".mp3", ".flac"};
+    for (const char* ext : kExts)
+    {
+        fs::path cand = libDir / (uuid + ext);
+        if (fs::exists(cand))
+        {
+            std::error_code ec;
+            fs::remove(cand, ec);
+            break;
+        }
+    }
+
+    // Remove thumbnail and metadata to force regeneration
+    auto tryRemove = [](const fs::path &p) {
+        if (fs::exists(p)) { std::error_code ec; fs::remove(p, ec); }
+    };
+    tryRemove(projectPath / "Library" / "Thumbnails" / (uuid + ".png"));
+    tryRemove(projectPath / "Library" / "Metadata" / (uuid + ".json"));
+
+    // Trigger re-import
     checkAssetChange();
 }

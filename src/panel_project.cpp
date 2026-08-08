@@ -714,6 +714,9 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 			{ manager->duplicateAsset(node.fullPath); needRefreshList = true; }
 		if (ImGui::MenuItem("Delete"))
 			executeDeleteSelected();
+		ImGui::Separator();
+		if (ImGui::MenuItem("Reimport"))
+			{ manager->reimportAsset(node.uuid); needRefreshList = true; }
 		ImGui::EndPopup();
 	}
 
@@ -1041,6 +1044,9 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 					if (ImGui::MenuItem("Delete"))
 						executeDeleteSelected();
 					ImGui::Separator();
+					if (ImGui::MenuItem("Reimport"))
+						{ manager->reimportAsset(child->uuid); needRefreshList = true; }
+					ImGui::Separator();
 					// "Create Animation" for mesh files
 					if (child->type == 1 && !child->uuid.empty())
 					{
@@ -1119,6 +1125,20 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 				if (ImGui::MenuItem("Animation Clip"))
 					{ manager->createNewAnimation();  needRefreshList = true; }
 				ImGui::EndMenu();
+			}
+			ImGui::Separator();
+			if (ImGui::MenuItem("Show in Explorer"))
+			{
+				fs::path dir = manager->projectPath / "Assets";
+				for (size_t i = 1; i < manager->currentDir.size(); ++i)
+					dir /= manager->currentDir[i];
+	#ifdef _WIN32
+				ShellExecuteA(nullptr, "open", "explorer", ("/select," + dir.string()).c_str(), nullptr, SW_SHOW);
+	#elif __APPLE__
+				system(("open \"" + dir.string() + "\"").c_str());
+	#else
+				system(("xdg-open \"" + dir.string() + "\"").c_str());
+	#endif
 			}
 			ImGui::EndPopup();
 		}

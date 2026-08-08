@@ -38,7 +38,17 @@ set(SOURCES
     resources.rc
 )
 
-add_executable(${PROJECT_NAME} ${SOURCES})
+# Miniaudio custom decoder backends (libvorbis, libopus).
+# Compiled directly so their symbols (ma_decoding_backend_libvorbis,
+# ma_decoding_backend_libopus) are always available regardless of
+# the SDK build state.  The audio codec libs (ogg, vorbis, opus, etc.)
+# are already linked below.
+set(MINIAUDIO_DECODER_SRC
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libvorbis/miniaudio_libvorbis.c"
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libopus/miniaudio_libopus.c"
+)
+
+add_executable(${PROJECT_NAME} ${SOURCES} ${MINIAUDIO_DECODER_SRC})
 
 # Release builds use the GUI subsystem (no console window); Debug keeps the console
 # Use generator expression so this works with both single-config and multi-config generators
@@ -64,6 +74,14 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "$<$<CONFIG:Release>:${KEMENA3D_SDK_DIR}/Release/include/src>"
     "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/assimp/build_Debug/include>"
     "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/assimp/build_Release/include>"
+    # Miniaudio custom decoder headers (libvorbis, libopus)
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libvorbis"
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libopus"
+    # Audio codec headers (ogg, vorbis, opus, opusfile)
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/ogg/include"
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/include"
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/opus/include"
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/opusfile/include"
 )
 
 # Preprocessor defines
@@ -97,8 +115,6 @@ if(MSVC)
         $<$<CONFIG:Release>:/DEBUG>
         $<$<CONFIG:Release>:/OPT:REF>
         $<$<CONFIG:Release>:/OPT:ICF>
-        # Suppress LNK4098: some deps rebuilt with /MD still embed MSVCRTD as a default lib
-        $<$<AND:$<CONFIG:Debug>,$<BOOL:${KEMENA3D_LINK_STATIC}>>:/NODEFAULTLIB:msvcrtd>
     )
 else()
     # GCC / MinGW
@@ -155,6 +171,17 @@ if(MSVC)
         # Jolt Physics (MSVC build tree — not installed to SDK output)
         "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/Debug/Jolt.lib>"
         "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/Release/Jolt.lib>"
+        # Audio codec libraries (ogg, vorbis, vorbisfile, opus, opusfile)
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/ogg/build_Debug/Debug/ogg.lib>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/ogg/build_Release/Release/ogg.lib>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Debug/lib/Debug/vorbis.lib>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Release/lib/Release/vorbis.lib>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Debug/lib/Debug/vorbisfile.lib>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Release/lib/Release/vorbisfile.lib>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/opus/build_Release/Release/opus.lib>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/opus/build_Release/Release/opus.lib>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/opusfile/build_Debug/Debug/opusfile.lib>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/opusfile/build_Release/Release/opusfile.lib>"
     )
 else()
     # GCC / MinGW
@@ -175,6 +202,17 @@ else()
         "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/recast/dist/lib/Release/libDetour.a>"
         "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/recast/dist/lib/Release/libDetourCrowd.a>"
         "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/recast/dist/lib/Release/libDetourTileCache.a>"
+        # Audio codec libraries (MinGW)
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/ogg/build_Debug/libogg.a>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/ogg/build_Release/libogg.a>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Debug/lib/libvorbis.a>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Release/lib/libvorbis.a>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Debug/lib/libvorbisfile.a>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/build_Release/lib/libvorbisfile.a>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/opus/build_Debug/libopus.a>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/opus/build_Release/libopus.a>"
+        "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/opusfile/build_Debug/libopusfile.a>"
+        "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/opusfile/build_Release/libopusfile.a>"
     )
 
     # MinGW-only linker flags: static runtime, strip symbols in Release

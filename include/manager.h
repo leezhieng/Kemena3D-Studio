@@ -300,6 +300,7 @@ public:
     void createNewParticle();
     void createNewAnimationFromMesh(const kString &meshUuid, const fs::path &meshPath);
     void deleteAssets(const std::vector<fs::path> &paths);
+    void reimportAsset(const kString &uuid);
     bool renameAsset(const fs::path &oldPath, const kString &newName);
     bool duplicateAsset(const fs::path &srcPath);
     bool moveAsset(const fs::path &srcPath, const fs::path &destDir);
@@ -368,9 +369,12 @@ public:
     kAudioManager *audioPreviewManager = nullptr;
     kAudio        *audioPreviewClip     = nullptr; ///< Currently-previewing clip (nullptr when idle).
     kString        audioPreviewSourceUuid;          ///< UUID of the audio source whose clip is previewing.
+    kString        audioPreviewAssetUuid;           ///< UUID of the project audio asset being previewed ("" when idle).
     void startAudioPreview(kAudioSource &src);
+    void startAudioPreviewByUuid(const kString &audioUuid);
     void stopAudioPreview();
     bool isAudioPreviewPlaying() const;
+    bool isAudioAssetPreviewPlaying() const;
 
     // --- Drag-and-drop helpers ----------------------------------------------
     kObject *instantiateAssetFromUuid(const kString &assetUuid, const kVec3 &positionHint = kVec3(0));

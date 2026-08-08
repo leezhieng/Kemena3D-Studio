@@ -3030,6 +3030,80 @@ static void drawAssetThumbnail(kGuiManager *gui, const PanelProject::SelectedPro
     }
 }
 
+static void drawAudioAssetPreview(kGuiManager *gui, const PanelProject::SelectedProjectAsset &asset, Manager *mgr)
+{
+    drawAssetThumbnail(gui, asset);
+
+    gui->spacing();
+    gui->separator();
+    gui->spacing();
+
+    // File info
+    if (!gui->collapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen))
+        return;
+
+    if (!beginPropTable(gui, "AudioTable"))
+        return;
+
+    propLabel(gui, "Name");
+    gui->beginDisabled(true);
+    char nameBuf[256];
+    strncpy_s(nameBuf, sizeof(nameBuf), asset.name.c_str(), _TRUNCATE);
+    ImGui::InputText("##AudFileName", nameBuf, sizeof(nameBuf));
+    gui->endDisabled();
+
+    propLabel(gui, "UUID");
+    gui->beginDisabled(true);
+    char uuidBuf[64];
+    strncpy_s(uuidBuf, sizeof(uuidBuf), asset.uuid.c_str(), _TRUNCATE);
+    ImGui::InputText("##AudUuid", uuidBuf, sizeof(uuidBuf));
+    gui->endDisabled();
+
+    gui->tableEnd();
+
+    gui->spacing();
+
+    // Play / Stop toggle button
+    bool isPlaying = mgr->isAudioPreviewPlaying() &&
+                     (mgr->audioPreviewAssetUuid == asset.uuid ||
+                      mgr->audioPreviewSourceUuid == asset.uuid);
+    const char *label = isPlaying ? "Stop" : "Play";
+
+    if (isPlaying)
+    {
+        gui->pushStyleColor(ImGuiCol_Button, kVec4(0.86f, 0.24f, 0.24f, 1.00f));
+        gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.69f, 0.19f, 0.19f, 1.00f));
+    }
+    else
+    {
+        gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
+        gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
+    }
+
+    if (ImGui::Button(label, ImVec2(ImGui::GetContentRegionAvail().x, 0)))
+    {
+        if (isPlaying)
+        {
+            mgr->stopAudioPreview();
+        }
+        else
+        {
+            // Construct a temporary audio source and use the proven startAudioPreview path.
+            kAudioSource tmpSrc;
+            tmpSrc.uuid = generateUuid();
+            tmpSrc.audioFile = asset.uuid;
+            tmpSrc.isActive = true;
+            tmpSrc.loop = false;
+            tmpSrc.volume = 1.0f;
+            tmpSrc.pitch = 1.0f;
+            tmpSrc.spatialize = true; // enable spatialization so the listener matters
+            mgr->startAudioPreview(tmpSrc);
+        }
+    }
+
+    gui->popStyleColor(2);
+}
+
 static void saveMetaJson(const fs::path &metaPath, const nlohmann::json &j)
 {
     std::ofstream f(metaPath);
@@ -4524,6 +4598,8 @@ void PanelInspector::draw(bool &opened)
                 drawMaterialViewer(asset);
             else if (!asset.isFolder && asset.fileType == "animation")
                 drawAnimationPreview(asset);
+            else if (!asset.isFolder && asset.fileType == "audio")
+                drawAudioAssetPreview(gui, asset, manager);
             else
                 drawAssetThumbnail(gui, asset);
             if (!asset.isFolder)

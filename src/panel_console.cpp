@@ -146,7 +146,7 @@ void PanelConsole::draw(bool &opened)
                         if (selectedIndices.empty())
                             textToCopy = item.text;
                         else
-                            for (int idx : selectedIndices)
+                            for (size_t idx : selectedIndices)
                                 textToCopy += consoleItems[idx].text + "\n";
 
                         gui->setClipboardText(textToCopy);

@@ -1,5 +1,10 @@
 #include "util.h"
 
+#include <miniaudio.h>
+// Custom decoding backends provided by the Kemena3D SDK
+#include "miniaudio_libvorbis.h"
+#include "miniaudio_libopus.h"
+
 #include <stb/stb_image.h>
 #define STB_DXT_IMPLEMENTATION
 #include <stb/stb_dxt.h>
@@ -622,6 +627,135 @@ bool convertImageToDxt5(const fs::path &inputPath, const fs::path &outputPath)
     return convertImageToDDS(inputPath, outputPath, ImageImportOptions{});
 }
 
+bool convertAudioToWav(const fs::path &inputPath, const fs::path &outputPath)
+{
+    // Decode the source file using miniaudio's ma_decoder, then write
+    // a 16-bit PCM WAV.  This guarantees the library copy is in a format
+    // that every platform backend can play, regardless of the source codec
+    // (Vorbis, Opus, MP3, FLAC, …).
+
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
+
+    // Register custom decoding backends so the importer can handle Opus and
+    // Vorbis files via libopus/libvorbis, not just the built-in stb_vorbis.
+    {
+        ma_decoding_backend_vtable* customBackends[] = {
+            ma_decoding_backend_libvorbis,
+            ma_decoding_backend_libopus,
+        };
+        config.ppCustomBackendVTables = customBackends;
+        config.customBackendCount     = sizeof(customBackends) / sizeof(customBackends[0]);
+        config.pCustomBackendUserData = nullptr;
+    }
+
+    ma_decoder decoder;
+    ma_result result = ma_decoder_init_file(inputPath.string().c_str(), &config, &decoder);
+    if (result != MA_SUCCESS)
+    {
+        std::cerr << "[Audio Import] Failed to decode '" << inputPath
+                  << "' (ma_result = " << result << ")." << std::endl;
+        return false;
+    }
+
+    // Read all PCM frames into a float buffer
+    ma_uint64 totalFrames = 0;
+    std::vector<float> floatSamples;
+    {
+        ma_uint64 framesRead = 0;
+        float temp[4096 * 2]; // up to 2 channels * 4096 frames
+        do
+        {
+            framesRead = 0;
+            result = ma_decoder_read_pcm_frames(&decoder, temp, 4096, &framesRead);
+            if (result != MA_SUCCESS && result != MA_AT_END)
+            {
+                std::cerr << "[Audio Import] Read error for '" << inputPath
+                          << "' (ma_result = " << result << ")." << std::endl;
+                ma_decoder_uninit(&decoder);
+                return false;
+            }
+            if (framesRead > 0)
+            {
+                size_t sampleCount = framesRead * decoder.outputChannels;
+                floatSamples.insert(floatSamples.end(), temp, temp + sampleCount);
+                totalFrames += framesRead;
+            }
+        } while (result != MA_AT_END && framesRead > 0);
+    }
+
+    ma_uint32 sampleRate    = decoder.outputSampleRate;
+    ma_uint32 channels      = decoder.outputChannels;
+    ma_uint32 bitsPerSample = 16;
+    ma_decoder_uninit(&decoder);
+
+    if (totalFrames == 0 || floatSamples.empty())
+    {
+        std::cerr << "[Audio Import] No audio data decoded from '" << inputPath << "'." << std::endl;
+        return false;
+    }
+
+    // Convert float → int16
+    const size_t totalSamples = floatSamples.size();
+    std::vector<ma_int16> pcmData(totalSamples);
+    for (size_t i = 0; i < totalSamples; ++i)
+    {
+        float s = floatSamples[i];
+        if (s > 1.0f)  s = 1.0f;
+        if (s < -1.0f) s = -1.0f;
+        pcmData[i] = static_cast<ma_int16>(s * 32767.0f);
+    }
+    floatSamples.clear(); // free float buffer early
+    floatSamples.shrink_to_fit();
+
+    // Write a canonical 16-bit PCM WAV
+    std::ofstream out(outputPath, std::ios::binary);
+    if (!out)
+    {
+        std::cerr << "[Audio Import] Cannot open output file '" << outputPath
+                  << "' for writing." << std::endl;
+        return false;
+    }
+
+    ma_uint32 byteRate    = sampleRate * channels * (bitsPerSample / 8);
+    ma_uint16 blockAlign  = static_cast<ma_uint16>(channels * (bitsPerSample / 8));
+    ma_uint32 dataSize    = static_cast<ma_uint32>(totalSamples * (bitsPerSample / 8));
+    ma_uint32 riffSize    = 36 + dataSize;
+
+    auto write32 = [&](ma_uint32 v) { out.write(reinterpret_cast<const char *>(&v), 4); };
+    auto write16 = [&](ma_uint16 v) { out.write(reinterpret_cast<const char *>(&v), 2); };
+
+    out.write("RIFF", 4);
+    write32(riffSize);
+    out.write("WAVE", 4);
+
+    // fmt  sub-chunk
+    out.write("fmt ", 4);
+    write32(16);                    // sub-chunk size (PCM)
+    write16(1);                     // audio format (PCM = 1)
+    write16(static_cast<ma_uint16>(channels));
+    write32(sampleRate);
+    write32(byteRate);
+    write16(blockAlign);
+    write16(static_cast<ma_uint16>(bitsPerSample));
+
+    // data sub-chunk
+    out.write("data", 4);
+    write32(dataSize);
+    out.write(reinterpret_cast<const char *>(pcmData.data()), dataSize);
+
+    out.close();
+    if (!out)
+    {
+        std::cerr << "[Audio Import] Write error for '" << outputPath << "'." << std::endl;
+        return false;
+    }
+
+    std::cout << "[Audio Import] " << inputPath.filename()
+              << " -> " << outputPath.filename()
+              << " (" << sampleRate << " Hz, " << channels << " ch, "
+              << totalFrames << " frames)" << std::endl;
+    return true;
+}
 // ---------------------------------------------------------------------------
 // Shader reflection
 // ---------------------------------------------------------------------------
