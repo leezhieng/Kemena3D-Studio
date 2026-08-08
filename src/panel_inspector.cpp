@@ -3088,16 +3088,7 @@ static void drawAudioAssetPreview(kGuiManager *gui, const PanelProject::Selected
         }
         else
         {
-            // Construct a temporary audio source and use the proven startAudioPreview path.
-            kAudioSource tmpSrc;
-            tmpSrc.uuid = generateUuid();
-            tmpSrc.audioFile = asset.uuid;
-            tmpSrc.isActive = true;
-            tmpSrc.loop = false;
-            tmpSrc.volume = 1.0f;
-            tmpSrc.pitch = 1.0f;
-            tmpSrc.spatialize = true; // enable spatialization so the listener matters
-            mgr->startAudioPreview(tmpSrc);
+            mgr->startAudioPreviewByUuid(asset.uuid);
         }
     }
 

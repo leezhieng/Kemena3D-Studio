@@ -652,9 +652,15 @@ bool convertAudioToWav(const fs::path &inputPath, const fs::path &outputPath)
     ma_result result = ma_decoder_init_file(inputPath.string().c_str(), &config, &decoder);
     if (result != MA_SUCCESS)
     {
-        std::cerr << "[Audio Import] Failed to decode '" << inputPath
-                  << "' (ma_result = " << result << ")." << std::endl;
-        return false;
+        // Fall back: copy the original file as-is. The engine can decode
+        // most formats (Vorbis, MP3, FLAC) directly from source, and the
+        // WAV conversion is a best-effort optimisation.
+        std::cerr << "[Audio Import] Decode of '" << inputPath
+                  << "' failed (ma_result = " << result
+                  << "), copying source as-is." << std::endl;
+        std::error_code ec;
+        fs::copy_file(inputPath, outputPath, fs::copy_options::overwrite_existing, ec);
+        return !ec;
     }
 
     // Read all PCM frames into a float buffer

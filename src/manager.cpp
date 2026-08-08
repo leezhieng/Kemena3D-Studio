@@ -18,6 +18,11 @@
 #include <kemena/kshadernode.h>
 #include <kemena/kscriptgraph.h>
 
+#include <miniaudio.h>
+// Custom decoding backends provided by the Kemena3D SDK
+#include "miniaudio_libvorbis.h"
+#include "miniaudio_libopus.h"
+
 #include <set>
 #include <functional>
 #include <ctime>
@@ -1296,7 +1301,10 @@ void Manager::drawImportPopup(PanelConsole *console)
 
                     if (!task.success && !task.reported)
                     {
-                        console->addLog(LogLevel::Error, "[Import] Failed to convert '%s': %s",
+                        // Audio files play directly from source — WAV conversion is
+                        // a best-effort optimisation, not a hard requirement.
+                        LogLevel lvl = (task.type == "audio") ? LogLevel::Warning : LogLevel::Error;
+                        console->addLog(lvl, "[Import] Failed to convert '%s': %s",
                                         task.inputPath.generic_string().c_str(),
                                         task.errorMsg.empty() ? "unknown error" : task.errorMsg.c_str());
                         task.reported = true;
@@ -1356,7 +1364,6 @@ void Manager::processThumbnailQueue(PanelConsole *console)
         const uint8_t WAVE_COLOR_G = 160;
         const uint8_t WAVE_COLOR_B = 220;
 
-        // Generate a stylised waveform pattern
         std::vector<uint8_t> canvas(THUMB * THUMB * 4);
         for (int i = 0; i < THUMB * THUMB * 4; i += 4)
         {
@@ -1367,39 +1374,99 @@ void Manager::processThumbnailQueue(PanelConsole *console)
         }
 
         const int centerY = THUMB / 2;
-        const int maxAmplitude = THUMB / 2 - 8;
-        const int numBars = 40;
-        const int barWidth = std::max(1, (THUMB - numBars + 1) / numBars);
+        const int maxAmplitude = THUMB / 2 - 6;
 
-        for (int i = 0; i < numBars; ++i)
+        // Attempt to decode the actual audio file for a real waveform.
+        // Use the same custom backends (libvorbis, libopus) as convertAudioToWav
+        // and the audio preview engine so .ogg (Vorbis) and .opus files decode.
+        float* pcmData = nullptr;
+        ma_uint64 frameCount = 0;
         {
-            // Pseudo-random bar heights based on position
-            float t = (float)i / (float)(numBars - 1);
-            float env = std::sin(t * 3.14159f) * 0.9f + 0.1f;
-            int seed = i * 127 + 31;
-            float rnd = (float)((seed * 1103515245 + 12345) & 0x7fffffff) / (float)0x7fffffff;
-            rnd = rnd * 0.6f + 0.2f;
-            int barH = (int)(rnd * env * maxAmplitude);
-            if (barH < 1)
-                barH = 1;
+            ma_decoder_config decCfg = ma_decoder_config_init(ma_format_f32, 1, 0);
 
-            int barX = i * (barWidth + 1);
-            for (int dx = 0; dx < barWidth; ++dx)
+            ma_decoding_backend_vtable* customBackends[] = {
+                ma_decoding_backend_libvorbis,
+                ma_decoding_backend_libopus,
+            };
+            decCfg.ppCustomBackendVTables = customBackends;
+            decCfg.customBackendCount     = sizeof(customBackends) / sizeof(customBackends[0]);
+            decCfg.pCustomBackendUserData = nullptr;
+
+            ma_result mr = ma_decode_file(task.srcPath.string().c_str(), &decCfg,
+                                          &frameCount, (void**)&pcmData);
+            if (mr != MA_SUCCESS)
             {
-                int px = barX + dx;
-                if (px >= THUMB)
-                    break;
+                pcmData = nullptr;
+                frameCount = 0;
+            }
+        }
+
+        std::vector<float> monoBuf;
+        if (pcmData && frameCount > 0)
+        {
+            // Cap at ~60 seconds at 48 kHz to limit memory usage.
+            const ma_uint64 capFrames = 48000 * 60;
+            if (frameCount > capFrames)
+                frameCount = capFrames;
+
+            monoBuf.assign(pcmData, pcmData + (size_t)frameCount);
+            ma_free(pcmData, NULL);
+        }
+
+        if (!monoBuf.empty())
+        {
+            // Draw one vertical bar per pixel column, derived from the actual samples.
+            const int numBars = THUMB;
+            size_t samplesPerBar = monoBuf.size() / (size_t)numBars;
+            if (samplesPerBar < 1)
+                samplesPerBar = 1;
+
+            for (int bar = 0; bar < numBars; ++bar)
+            {
+                size_t start = (size_t)bar * samplesPerBar;
+                size_t end = start + samplesPerBar;
+                if (end > monoBuf.size())
+                    end = monoBuf.size();
+
+                // Peak amplitude within this slice.
+                float peak = 0.0f;
+                for (size_t s = start; s < end; ++s)
+                {
+                    float a = std::abs(monoBuf[s]);
+                    if (a > peak) peak = a;
+                }
+
+                int barH = (int)(peak * (float)maxAmplitude);
+                if (barH < 1) barH = 1;
+                if (barH > maxAmplitude) barH = maxAmplitude;
+
+                // Draw the vertical bar — brighter near centre, fading toward edges.
                 for (int dy = -barH; dy <= barH; ++dy)
                 {
                     int py = centerY + dy;
                     if (py < 0 || py >= THUMB)
                         continue;
-                    int idx = (py * THUMB + px) * 4;
-                    canvas[idx] = WAVE_COLOR_R;
-                    canvas[idx + 1] = WAVE_COLOR_G;
-                    canvas[idx + 2] = WAVE_COLOR_B;
+                    int idx = (py * THUMB + bar) * 4;
+
+                    float fade = 1.0f - (std::abs((float)dy) / (float)barH) * 0.45f;
+                    canvas[idx]     = (uint8_t)((float)WAVE_COLOR_R * fade);
+                    canvas[idx + 1] = (uint8_t)((float)WAVE_COLOR_G * fade);
+                    canvas[idx + 2] = (uint8_t)((float)WAVE_COLOR_B * fade);
                     canvas[idx + 3] = 255;
                 }
+            }
+        }
+        else
+        {
+            // Fallback: a simple centred horizontal line when decoding fails.
+            int idx = centerY * THUMB * 4;
+            for (int x = 4; x < THUMB - 4; ++x)
+            {
+                int i = idx + x * 4;
+                canvas[i]     = WAVE_COLOR_R;
+                canvas[i + 1] = WAVE_COLOR_G;
+                canvas[i + 2] = WAVE_COLOR_B;
+                canvas[i + 3] = 180;
             }
         }
 
