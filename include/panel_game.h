@@ -24,18 +24,21 @@ enum class GamePlayState
 };
 
 /**
- * @brief Snapshot of a single object's transform and active state.
+ * @brief Snapshot of a single object's full state.
  *
  * Captured for every scene node when play begins so the original editor scene
- * can be fully restored when play stops.
+ * can be fully restored when play stops. Stores a complete JSON serialization
+ * of the object so non-transform properties (camera FOV, light power, materials,
+ * etc.) edited during play are also reverted on stop.
  */
 struct ObjectTransformSnapshot
 {
-    kString uuid;   ///< UUID of the object this snapshot belongs to.
-    kVec3   pos;    ///< Position at capture time.
-    kQuat   rot;    ///< Rotation at capture time.
-    kVec3   scale;  ///< Scale at capture time.
-    bool    active; ///< Active/enabled flag at capture time.
+    kString        uuid;  ///< UUID of the object this snapshot belongs to.
+    kVec3          pos;   ///< Position at capture time.
+    kQuat          rot;   ///< Rotation at capture time.
+    kVec3          scale; ///< Scale at capture time.
+    bool           active; ///< Active/enabled flag at capture time.
+    nlohmann::json state; ///< Full serialized state for non-transform properties.
 };
 
 /**

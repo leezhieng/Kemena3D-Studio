@@ -21,7 +21,7 @@ out vec2 v_texCoord;
 
 void main()
 {
-    vec4  totalPos    = vec4(vertexPosition, 1.0);
+    vec4  totalPos    = vec4(0.0);
     float totalWeight = 0.0;
 
     for (int i = 0; i < MAX_BONE_INFLUENCE; i++)
@@ -29,7 +29,7 @@ void main()
         int   boneID = boneIDs[i];
         float weight = weights[i];
         if (boneID < 0 || weight <= 0.0) continue;
-        if (boneID >= MAX_BONES) { totalPos = vec4(vertexPosition, 1.0); break; }
+        if (boneID >= MAX_BONES) { totalPos = vec4(0.0); break; }
         totalPos    += finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0) * weight;
         totalWeight += weight;
     }

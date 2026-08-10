@@ -154,6 +154,11 @@ void PanelConsole::draw(bool &opened)
                         copiedTooltipTime = 0.0f; // reset timer
                     }
 
+                    gui->separator();
+
+                    if (gui->menuItem("Clear Console"))
+                        consoleItems.clear();
+
                     gui->popStyleColor();
                     gui->popupEnd();
                 }

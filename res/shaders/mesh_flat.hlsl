@@ -36,7 +36,7 @@ struct VSOutput
 
 VSOutput VSMain(VSInput input)
 {
-    float4 totalPos    = float4(input.position, 1.0);
+    float4 totalPos    = float4(0.0, 0.0, 0.0, 0.0);
     float  totalWeight = 0.0;
 
     for (int i = 0; i < MAX_BONE_INFLUENCE; i++)
@@ -44,7 +44,7 @@ VSOutput VSMain(VSInput input)
         int   boneID = input.boneIDs[i];
         float weight = input.weights[i];
         if (boneID < 0 || weight <= 0.0) continue;
-        if (boneID >= MAX_BONES) { totalPos = float4(input.position, 1.0); break; }
+        if (boneID >= MAX_BONES) { totalPos = float4(0.0, 0.0, 0.0, 0.0); break; }
         totalPos    += mul(finalBonesMatrices[boneID], float4(input.position, 1.0)) * weight;
         totalWeight += weight;
     }

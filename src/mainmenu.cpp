@@ -583,8 +583,14 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 				gui->menuEnd();
 			}
 
-			if (gui->menuItem("Audio", "", false, manager->projectOpened))
-				manager->createAudio();
+			if (gui->menu("Audio"))
+			{
+				if (gui->menuItem("Audio Source", "", false, manager->projectOpened))
+					manager->createAudio();
+				if (gui->menuItem("Audio Listener", "", false, manager->projectOpened))
+					manager->createAudioListener();
+				gui->menuEnd();
+			}
 			if (gui->menuItem("Video", "", false, manager->projectOpened))
 			{
 			}

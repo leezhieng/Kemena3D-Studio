@@ -768,7 +768,7 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 
 			if (ext == ".txt" || ext == ".ini" || ext == ".xml" || ext == ".json")
 				icon = iconText;
-			else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tiff" || ext == ".tga")
+			else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tif" || ext == ".tiff" || ext == ".tga")
 				icon = iconImage;
 			else if (ext == ".as")
 				icon = iconScript;
@@ -908,7 +908,7 @@ void PanelProject::refreshThumbnailList()
 
 							if (ext == ".txt" || ext == ".ini" || ext == ".xml" || ext == ".json")
 								icon = iconText;
-							else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tiff" || ext == ".tga")
+							else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tif" || ext == ".tiff" || ext == ".tga")
 								icon = iconImage;
 							else if (ext == ".as")
 								icon = iconScript;

@@ -1140,6 +1140,7 @@ int main()
 	delete panelAnimator;
 	delete panelTerrain;
 	delete splashScreen;
+	delete manager;         // shuts down persistent audio engine
 	gui->destroy();
 	rendererWorld->destroy();
 	rendererPrefab->destroy();

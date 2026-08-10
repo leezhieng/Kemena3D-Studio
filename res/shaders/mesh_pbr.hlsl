@@ -63,7 +63,7 @@ float3x3 inverse3x3(float3x3 m)
 
 VSOutput VSMain(VSInput input)
 {
-    float4 totalPos       = float4(input.position, 1.0);
+    float4 totalPos       = float4(0.0, 0.0, 0.0, 0.0);
     float3 totalNormal    = float3(0, 0, 0);
     float3 totalTangent   = float3(0, 0, 0);
     float3 totalBitangent = float3(0, 0, 0);
@@ -76,10 +76,10 @@ VSOutput VSMain(VSInput input)
         if (boneID < 0 || weight <= 0.0) continue;
         if (boneID >= MAX_BONES)
         {
-            totalPos       = float4(input.position, 1.0);
-            totalNormal    = input.normal;
-            totalTangent   = input.tangent;
-            totalBitangent = input.bitangent;
+            totalPos       = float4(0.0, 0.0, 0.0, 0.0);
+            totalNormal    = float3(0, 0, 0);
+            totalTangent   = float3(0, 0, 0);
+            totalBitangent = float3(0, 0, 0);
             break;
         }
         totalPos       += mul(finalBonesMatrices[boneID], float4(input.position, 1.0)) * weight;

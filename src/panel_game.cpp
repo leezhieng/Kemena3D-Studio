@@ -59,11 +59,12 @@ void PanelGame::captureNodeRecursive(kObject *node)
     if (!node)
         return;
     ObjectTransformSnapshot snap;
-    snap.uuid = node->getUuid();
-    snap.pos = node->getPosition();
-    snap.rot = node->getRotation();
-    snap.scale = node->getScale();
+    snap.uuid   = node->getUuid();
+    snap.pos    = node->getPosition();
+    snap.rot    = node->getRotation();
+    snap.scale  = node->getScale();
     snap.active = node->getActive();
+    snap.state  = node->serialize();   // Full JSON snapshot for non-transform revert
     sceneSnapshot.push_back(snap);
     for (kObject *child : node->getChildren())
         captureNodeRecursive(child);
@@ -82,12 +83,81 @@ void PanelGame::restoreSnapshot()
     for (const auto &snap : sceneSnapshot)
     {
         kObject *obj = manager->findObjectByUuid(snap.uuid);
-        if (obj)
+        if (!obj)
+            continue;
+
+        // Restore transform and active state.
+        obj->setPosition(snap.pos);
+        obj->setRotation(snap.rot);
+        obj->setScale(snap.scale);
+        obj->setActive(snap.active);
+
+        // Restore non-transform properties from the full JSON snapshot.
+        const auto &j = snap.state;
+        if (j.is_null() || !j.is_object())
+            continue;
+
+        // --- Common properties ---
+        if (j.contains("name") && j["name"].is_string())
+            obj->setName(kString(j["name"].get<std::string>()));
+        if (j.contains("static") && j["static"].is_boolean())
+            obj->setStatic(j["static"].get<bool>());
+
+        // --- Camera-specific ---
+        if (j.contains("fov") && j["fov"].is_number())
         {
-            obj->setPosition(snap.pos);
-            obj->setRotation(snap.rot);
-            obj->setScale(snap.scale);
-            obj->setActive(snap.active);
+            kCamera *cam = dynamic_cast<kCamera *>(obj);
+            if (cam)
+            {
+                cam->setFOV(j["fov"].get<float>());
+                if (j.contains("near_clip")    && j["near_clip"].is_number())    cam->setNearClip(j["near_clip"].get<float>());
+                if (j.contains("far_clip")     && j["far_clip"].is_number())     cam->setFarClip(j["far_clip"].get<float>());
+                if (j.contains("scene_uuid")   && j["scene_uuid"].is_string())   cam->setSceneUuid(j["scene_uuid"].get<std::string>());
+                if (j.contains("aspect_ratio") && j["aspect_ratio"].is_number()) cam->setAspectRatio(j["aspect_ratio"].get<float>());
+            }
+        }
+
+        // --- Light-specific ---
+        if ((j.contains("power") && j["power"].is_number()) || j.contains("light_type"))
+        {
+            kLight *light = dynamic_cast<kLight *>(obj);
+            if (light)
+            {
+                if (j.contains("power")    && j["power"].is_number())    light->setPower(j["power"].get<float>());
+                if (j.contains("diffuse")  && j["diffuse"].is_object())
+                {
+                    const auto &d = j["diffuse"];
+                    if (d.contains("x") && d["x"].is_number() &&
+                        d.contains("y") && d["y"].is_number() &&
+                        d.contains("z") && d["z"].is_number())
+                        light->setDiffuseColor(kVec3(d["x"].get<float>(), d["y"].get<float>(), d["z"].get<float>()));
+                }
+                if (j.contains("specular") && j["specular"].is_object())
+                {
+                    const auto &s = j["specular"];
+                    if (s.contains("x") && s["x"].is_number() &&
+                        s.contains("y") && s["y"].is_number() &&
+                        s.contains("z") && s["z"].is_number())
+                        light->setSpecularColor(kVec3(s["x"].get<float>(), s["y"].get<float>(), s["z"].get<float>()));
+                }
+                if (j.contains("constant")     && j["constant"].is_number())     light->setConstant(j["constant"].get<float>());
+                if (j.contains("linear")       && j["linear"].is_number())       light->setLinear(j["linear"].get<float>());
+                if (j.contains("quadratic")    && j["quadratic"].is_number())    light->setQuadratic(j["quadratic"].get<float>());
+                if (j.contains("cutoff")       && j["cutoff"].is_number())       light->setCutOff(j["cutoff"].get<float>());
+                if (j.contains("outer_cutoff") && j["outer_cutoff"].is_number()) light->setOuterCutOff(j["outer_cutoff"].get<float>());
+            }
+        }
+
+        // --- Mesh-specific ---
+        if (j.contains("cast_shadow") && j["cast_shadow"].is_boolean())
+        {
+            kMesh *mesh = dynamic_cast<kMesh *>(obj);
+            if (mesh)
+            {
+                mesh->setCastShadow(j["cast_shadow"].get<bool>());
+                if (j.contains("receive_shadow") && j["receive_shadow"].is_boolean())
+                    mesh->setReceiveShadow(j["receive_shadow"].get<bool>());
+            }
         }
     }
     sceneSnapshot.clear();
@@ -135,6 +205,8 @@ void PanelGame::pressPlay()
         manager->startPhysicsSimulation();
         // Compile attached scripts to bytecode and dispatch Awake()/Start().
         manager->startScripts();
+        // Start all active, play-on-awake audio sources in the world.
+        manager->startGameAudio();
         playState = GamePlayState::Playing;
     }
     else if (playState == GamePlayState::Paused)
@@ -153,6 +225,8 @@ void PanelGame::pressStop()
 {
     if (playState != GamePlayState::Stopped)
     {
+        // Stop all in-game audio before tearing down the scene state.
+        manager->stopGameAudio();
         // Tear down physics BEFORE restoring transforms so the bodies don't
         // overwrite our restored positions on a final sync.
         manager->stopPhysicsSimulation();
@@ -298,6 +372,11 @@ void PanelGame::draw(bool &isOpened)
         {
             // Keep camera aspect ratio in sync with the panel
             gameCamera->setAspectRatio((float)newW / (float)newH);
+
+            // Update the audio listener position from the game camera every frame
+            // while the game is running (no-op when stopped or no spatial audio).
+            if (playState != GamePlayState::Stopped)
+                manager->updateGameAudio(gameCamera);
 
             // Render scene only — no editor overlay, no outlines, no debug shapes
             gameRenderer->render(manager->getWorld(), gameScene, gameCamera);

@@ -50,6 +50,7 @@ private:
 	ImTextureRef iconObjLight = nullptr;   ///< Icon for light scene objects.
 	ImTextureRef iconObjCamera = nullptr;  ///< Icon for camera scene objects.
 	ImTextureRef iconObjAudio = nullptr;   ///< Icon for audio emitter scene objects.
+	ImTextureRef iconObjAudioListener = nullptr; ///< Icon for audio listener scene objects.
 	ImTextureRef iconObjScene = nullptr;   ///< Icon for scene root objects.
 	ImTextureRef iconObjTerrain = nullptr; ///< Icon for terrain objects.
 	ImTextureRef iconObjPrefab = nullptr;  ///< Icon for prefab-instance roots.

@@ -878,7 +878,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         int targetW = std::max(96, std::min((int)(panelSize.x * 0.30f), 480));
         float aspect = previewCam->getAspectRatio();
         if (aspect <= 0.0f)
-            aspect = 16.0f / 9.0f;
+            aspect = 4.0f / 3.0f;
         int targetH = (int)((float)targetW / aspect);
         const int maxH = std::max(64, (int)(panelSize.y * 0.40f));
         if (targetH > maxH)

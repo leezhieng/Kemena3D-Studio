@@ -39,6 +39,9 @@ PanelHierarchy::PanelHierarchy(kGuiManager *setGuiManager, Manager *setManager, 
 	kTexture2D *tex_audio = assetManager->loadTexture2DFromResource("ICON_OBJECT_AUDIO", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconAudio = tex_audio->getTextureID();
 
+	kTexture2D *tex_audio_listener = assetManager->loadTexture2DFromResource("ICON_OBJECT_AUDIO_LISTENER", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconAudioListener = tex_audio_listener->getTextureID();
+
 	kTexture2D *tex_prefab = assetManager->loadTexture2DFromResource("ICON_OBJECT_PREFAB", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconPrefab = tex_prefab->getTextureID();
 
@@ -610,6 +613,11 @@ void PanelHierarchy::refreshList()
 			outType = "camera";
 			return iconCamera;
 		case kNodeType::NODE_TYPE_AUDIO:
+			if (!obj->getAudioListeners().empty() && obj->getAudioSources().empty())
+			{
+				outType = "audio_listener";
+				return iconAudioListener;
+			}
 			outType = "audio";
 			return iconAudio;
 		default:

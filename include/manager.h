@@ -201,6 +201,7 @@ public:
     void createTerrain();
     void createNavMesh();
     void createAudio();
+    void createAudioListener();
     void createParticle();
 
     // --- Publish ------------------------------------------------------------
@@ -375,6 +376,41 @@ public:
     void stopAudioPreview();
     bool isAudioPreviewPlaying() const;
     bool isAudioAssetPreviewPlaying() const;
+
+    // --- In-game audio (runtime playback during Game panel play) ------------
+    /**
+     * @brief Tracks a loaded game-audio clip together with its owning object
+     *        so position can be updated every frame for spatialized sources.
+     */
+    struct GameAudioEntry
+    {
+        kAudio  *clip   = nullptr;  ///< Loaded audio clip.
+        kObject *object = nullptr;  ///< Owning scene object (for position updates).
+        bool     spatialize = false; ///< Whether 3D spatialization is enabled.
+    };
+
+    kAudioManager          *gameAudioManager = nullptr;
+    std::vector<GameAudioEntry> gameAudioEntries;    ///< All audio clips started for the current play session.
+    bool                    gameAudioHasSpatial = false; ///< True if any game audio entry uses 3D spatialization.
+
+    /**
+     * @brief Iterates the active world/scene, loads and starts every
+     *        kAudioSource with isActive && playOnAwake == true.
+     */
+    void startGameAudio();
+
+    /** @brief Stops and unloads all in-game audio clips started by startGameAudio(). */
+    void stopGameAudio();
+
+    /**
+     * @brief Called every frame while the game is playing.
+     *
+     * Updates the audio listener position from the game camera (if any
+     * spatialized source exists) and the world-space position of each
+     * spatialized audio source.
+     * @param gameCamera  The camera used for the game view (may be nullptr).
+     */
+    void updateGameAudio(kCamera *gameCamera);
 
     // --- Drag-and-drop helpers ----------------------------------------------
     kObject *instantiateAssetFromUuid(const kString &assetUuid, const kVec3 &positionHint = kVec3(0));

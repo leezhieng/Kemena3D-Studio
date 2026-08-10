@@ -38,6 +38,7 @@ PanelInspector::PanelInspector(kGuiManager *setGuiManager, Manager *setManager)
     iconObjLight = loadIcon("ICON_OBJECT_LIGHT");
     iconObjCamera = loadIcon("ICON_OBJECT_CAMERA");
     iconObjAudio = loadIcon("ICON_OBJECT_AUDIO");
+    iconObjAudioListener = loadIcon("ICON_OBJECT_AUDIO_LISTENER");
     iconObjScene = loadIcon("ICON_OBJECT_SCENE");
     iconObjTerrain = loadIcon("ICON_OBJECT_TERRAIN");
     iconObjPrefab = loadIcon("ICON_OBJECT_PREFAB");
@@ -1963,7 +1964,7 @@ static void drawLightSection(kGuiManager *gui, kLight *light, Manager *mgr, bool
 // ---------------------------------------------------------------------------
 // Audio section
 // ---------------------------------------------------------------------------
-static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool isDirtyPrefab = false)
+static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool isDirtyPrefab, ImTextureRef audioFileIcon)
 {
     if (!sectionHeader(gui, "Audio Source", isDirtyPrefab))
         return;
@@ -2015,6 +2016,7 @@ static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool 
                 src.volume = 1.0f;
                 src.pitch = 1.0f;
                 src.spatialize = true;
+                src.attenuationModel = 2;
                 obj->addAudioSource(src);
             }
             else
@@ -2033,15 +2035,14 @@ static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool 
             mgr->refreshWindowTitle();
         }
 
-        if (current > 0 && mgr->panelProject)
+        // Waveform / thumbnail preview row — sits below Audio Clip, above Active.
+        if (mgr->panelProject && current > 0)
         {
-            ImTextureRef thumbIcon = mgr->panelProject->getThumbnailIcon(audUuids[current], nullptr);
-            if (thumbIcon != nullptr)
-            {
-                float imgSize = 64.0f;
-                gui->sameLine();
-                ImGui::Image(thumbIcon, ImVec2(imgSize, imgSize));
-            }
+            gui->tableNextRow();
+            gui->tableSetColumnIndex(1);
+            ImTextureRef thumbIcon = mgr->panelProject->getThumbnailIcon(audUuids[current], audioFileIcon);
+            float imgSize = 64.0f;
+            ImGui::Image(thumbIcon, ImVec2(imgSize, imgSize));
         }
     }
 
@@ -2051,37 +2052,69 @@ static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool 
 
         propLabel(gui, "Active");
         if (ImGui::Checkbox("##AudAct", &src.isActive))
+        {
             mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
 
         propLabel(gui, "Play On Awake");
         if (ImGui::Checkbox("##AudPOA", &src.playOnAwake))
+        {
             mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
 
         propLabel(gui, "Loop");
         if (ImGui::Checkbox("##AudLoop", &src.loop))
+        {
             mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
 
         propLabel(gui, "Volume");
-        if (ImGui::SliderFloat("##AudVol", &src.volume, 0.0f, 1.0f))
+        if (ImGui::DragFloat("##AudVol", &src.volume, 0.01f, 0.0f, 5.0f, "%.2f"))
+        {
             mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
 
         propLabel(gui, "Pitch");
-        if (ImGui::SliderFloat("##AudPitch", &src.pitch, 0.1f, 3.0f))
+        if (ImGui::DragFloat("##AudPitch", &src.pitch, 0.01f, 0.1f, 3.0f, "%.2f"))
+        {
             mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
 
         propLabel(gui, "3D Spatial");
         if (ImGui::Checkbox("##AudSpat", &src.spatialize))
+        {
             mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
 
         if (src.spatialize)
         {
+            propLabel(gui, "Attenuation");
+            const char *attModels[] = {"None", "Inverse", "Linear", "Exponential"};
+            if (ImGui::Combo("##AudAtt", &src.attenuationModel, attModels, 4))
+            {
+                mgr->projectSaved = false;
+                mgr->refreshWindowTitle();
+            }
+
             propLabel(gui, "Min Distance");
             if (ImGui::DragFloat("##AudMin", &src.minDistance, 0.1f, 0.0f, src.maxDistance))
+            {
                 mgr->projectSaved = false;
+                mgr->refreshWindowTitle();
+            }
 
             propLabel(gui, "Max Distance");
             if (ImGui::DragFloat("##AudMax", &src.maxDistance, 1.0f, src.minDistance, 10000.0f))
+            {
                 mgr->projectSaved = false;
+                mgr->refreshWindowTitle();
+            }
         }
     }
 
@@ -2093,8 +2126,15 @@ static void drawAudioSection(kGuiManager *gui, kObject *obj, Manager *mgr, bool 
         bool playing = mgr->isAudioPreviewPlaying() &&
                        mgr->audioPreviewSourceUuid == sources[0].uuid;
         const char *label = playing ? "Stop" : "Play";
+        if (playing)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.72f, 0.16f, 0.16f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.00f));
+        }
         if (ImGui::Button(label, ImVec2(80, 0)))
             mgr->startAudioPreview(sources[0]);
+        if (playing)
+            ImGui::PopStyleColor(2);
     }
 }
 
@@ -2417,7 +2457,35 @@ static void drawParticleSection(kGuiManager *gui, kObject *obj, Manager *mgr, bo
 }
 
 // ---------------------------------------------------------------------------
-// Scripts section (Physics / Scripts / Audio Listener)
+// Audio Listener section
+// ---------------------------------------------------------------------------
+static void drawAudioListenerSection(kGuiManager *gui, kObject *obj, Manager *manager, bool isDirtyPrefab = false)
+{
+    if (obj->getAudioListeners().empty())
+        return;
+
+    if (!sectionHeader(gui, "Audio Listener", isDirtyPrefab))
+        return;
+
+    auto &l = obj->getAudioListeners()[0];
+    ImGui::PushID(l.uuid.c_str());
+    if (ImGui::Checkbox("Active##ListActive", &l.isActive))
+        manager->projectSaved = false;
+    ImGui::SameLine();
+    ImGui::TextUnformatted("Audio Listener");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
+    if (ImGui::SmallButton("x##RemList"))
+    {
+        obj->removeAudioListener(l.uuid);
+        manager->projectSaved = false;
+    }
+    ImGui::PopID();
+
+    gui->spacing();
+}
+
+// ---------------------------------------------------------------------------
+// Scripts section (Physics / Scripts)
 // ---------------------------------------------------------------------------
 static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager, bool isDirtyPrefab = false)
 {
@@ -2760,28 +2828,6 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 obj->removeScript(toRemove);
                 manager->projectSaved = false;
             }
-        }
-        gui->spacing();
-    }
-
-    // ── Audio Listener ───────────────────────────────────────────────────────
-    if (!obj->getAudioListeners().empty())
-    {
-        if (sectionHeader(gui, "Audio Listener", isDirtyPrefab))
-        {
-            auto &l = obj->getAudioListeners()[0];
-            ImGui::PushID(l.uuid.c_str());
-            if (ImGui::Checkbox("Active##ListActive", &l.isActive))
-                manager->projectSaved = false;
-            ImGui::SameLine();
-            ImGui::TextUnformatted("Audio Listener");
-            ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
-            if (ImGui::SmallButton("x##RemList"))
-            {
-                obj->removeAudioListener(l.uuid);
-                manager->projectSaved = false;
-            }
-            ImGui::PopID();
         }
         gui->spacing();
     }
@@ -4472,15 +4518,23 @@ static PrefabDirtySections computePrefabDirtySections(
 {
     PrefabDirtySections dirty;
 
+    // Keys that are identity/transform/linkage or camera-derived and therefore
+    // expected to differ between a prefab template and a live instance.
+    auto isTransient = [](const std::string &k) -> bool {
+        return k == "uuid" || k == "position" || k == "rotation" || k == "scale" ||
+               k == "prefab_ref" || k == "template_uuid" ||
+               k == "look_at" || k == "up_axis" ||
+               k == "aspect_ratio" || k == "scene_uuid";
+    };
+
     // Collect all top-level keys from both objects, skipping transients.
     std::set<std::string> keys;
-    auto collectKeys = [](const nlohmann::json &j, std::set<std::string> &out)
+    auto collectKeys = [&](const nlohmann::json &j, std::set<std::string> &out)
     {
         for (auto it = j.begin(); it != j.end(); ++it)
         {
             const std::string &k = it.key();
-            if (k == "uuid" || k == "position" || k == "rotation" || k == "scale" ||
-                k == "prefab_ref" || k == "template_uuid")
+            if (isTransient(k))
                 continue;
             out.insert(k);
         }
@@ -4493,9 +4547,15 @@ static PrefabDirtySections computePrefabDirtySections(
         bool aHas = templateRoot.contains(k);
         bool bHas = instanceJson.contains(k);
 
-        // Key missing in one side → dirty.
+        // Key missing in one side → dirty, unless the other side is an empty
+        // array (older templates may omit keys that newer serialization emits as []).
         if (aHas != bHas)
         {
+            if (!aHas && bHas && instanceJson[k].is_array() && instanceJson[k].empty())
+                continue; // template missing key, instance has [] → equivalent
+            if (!bHas && aHas && templateRoot[k].is_array() && templateRoot[k].empty())
+                continue; // instance missing key, template has [] → equivalent
+
             const char *sec = keyToSection(k);
             if (sec)
             {
@@ -4751,8 +4811,23 @@ void PanelInspector::draw(bool &opened)
                     }
                     else if (type == NODE_TYPE_AUDIO)
                     {
-                        typeIcon = iconObjAudio;
-                        typeLabel = "Audio";
+                        // Differentiate Audio Source vs Audio Listener based on
+                        // which component descriptors are attached to the object.
+                        if (!obj->getAudioListeners().empty() && obj->getAudioSources().empty())
+                        {
+                            typeIcon  = iconObjAudioListener;
+                            typeLabel = "Audio Listener";
+                        }
+                        else if (!obj->getAudioSources().empty() && obj->getAudioListeners().empty())
+                        {
+                            typeIcon  = iconObjAudio;
+                            typeLabel = "Audio Source";
+                        }
+                        else
+                        {
+                            typeIcon  = iconObjAudio;
+                            typeLabel = "Audio";
+                        }
                     }
                     else if (type == NODE_TYPE_CAMERA)
                     {
@@ -4872,10 +4947,12 @@ void PanelInspector::draw(bool &opened)
                     drawLightSection(gui, static_cast<kLight *>(obj), manager, dirtySections.light);
                 else if (type == NODE_TYPE_CAMERA)
                     drawCameraSection(gui, static_cast<kCamera *>(obj), manager, dirtySections.camera);
-                else if (type == NODE_TYPE_AUDIO)
-                    drawAudioSection(gui, obj, manager, dirtySections.audio);
+                else if (type == NODE_TYPE_AUDIO && !obj->getAudioSources().empty())
+                    drawAudioSection(gui, obj, manager, dirtySections.audio, iconFileAudio);
 
                 drawParticleSection(gui, obj, manager, dirtySections.particle);
+
+                drawAudioListenerSection(gui, obj, manager, dirtySections.scripts);
 
                 drawScriptsSection(gui, obj, manager, dirtySections.scripts);
 
@@ -4902,9 +4979,10 @@ void PanelInspector::draw(bool &opened)
                             {
                                 // Save instance changes (excluding transform) to prefab source,
                                 // then refresh all instances so they pick up the changes.
+                                kString prefabRef = obj->getPrefabRef(); // capture before potential deletion
                                 manager->applyPrefabInstance(obj);
                                 manager->clearPrefabTemplateCache();
-                                manager->refreshAllPrefabInstances(obj->getPrefabRef());
+                                manager->refreshAllPrefabInstances(prefabRef);
                                 if (manager->panelHierarchy)
                                     manager->panelHierarchy->refreshList();
                             }

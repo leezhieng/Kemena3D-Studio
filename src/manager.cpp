@@ -81,7 +81,27 @@ Manager::Manager(kWindow *setWindow, kWorld *setWorld, kRenderer *setRenderer)
     loadRecentProjects();
 }
 
-Manager::~Manager() = default;
+Manager::~Manager()
+{
+    if (gameAudioManager)
+    {
+        // Stop any clips still playing and unload them, then tear down the
+        // engine.  No new Play/Stop cycles can start after the destructor
+        // runs, so we don't need the re-entrancy guard used in stopGameAudio.
+        for (auto &entry : gameAudioEntries)
+        {
+            if (entry.clip)
+            {
+                entry.clip->stop();
+                gameAudioManager->unloadAudio(entry.clip);
+            }
+        }
+        gameAudioEntries.clear();
+        gameAudioManager->shutdown();
+        delete gameAudioManager;
+        gameAudioManager = nullptr;
+    }
+}
 
 kString Manager::getCurrentDirPath()
 {
@@ -1164,6 +1184,18 @@ void Manager::deleteObjectRecursive(kObject *node)
     // Clear the children list to avoid dangling pointers
     node->getChildren().clear();
 
+    // If this node is a camera, remove it from the world camera list
+    // before deletion so that PanelGame::findGameCamera() won't return
+    // a dangling pointer and crash (e.g. when applying a prefab).
+    if (node->getType() == NODE_TYPE_CAMERA)
+    {
+        kCamera *cam = static_cast<kCamera *>(node);
+        if (world)
+            world->removeCamera(cam);
+        if (defaultGameCamera == cam)
+            defaultGameCamera = nullptr;
+    }
+
     // Finally delete this node
     delete node;
 }
@@ -1174,7 +1206,7 @@ kString Manager::checkAssetType(const fs::path &p)
 
     if (ext == ".txt" || ext == ".ini" || ext == ".xml" || ext == ".json")
         return "text";
-    else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tiff" || ext == ".tga")
+    else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tif" || ext == ".tiff" || ext == ".tga")
         return "image";
     else if (ext == ".as")
         return "script";
@@ -1926,6 +1958,18 @@ static void applyAudioIcon(kObject *obj, kAssetManager *am)
     obj->setMaterial(mat);
 }
 
+// Apply the GIZMO_LISTENER icon material to an audio-listener object.
+static void applyAudioListenerIcon(kObject *obj, kAssetManager *am)
+{
+    kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial *mat = am->createMaterial(shader);
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
+    kTexture2D *tex = am->loadTexture2DFromResource("GIZMO_LISTENER", "albedoMap",
+                                                    kTextureFormat::TEX_FORMAT_RGBA);
+    mat->addTexture(tex);
+    obj->setMaterial(mat);
+}
+
 // ---------------------------------------------------------------------------
 // Edit — selection helpers
 // ---------------------------------------------------------------------------
@@ -2352,6 +2396,41 @@ void Manager::createAudio()
             if (panelHierarchy) panelHierarchy->refreshList(); });
 }
 
+void Manager::createAudioListener()
+{
+    if (!scene)
+        return;
+
+    kObject *obj = new kObject();
+    obj->setType(kNodeType::NODE_TYPE_AUDIO);
+    obj->setName("Audio Listener");
+    scene->addObject(obj);
+    kString uuid = obj->getUuid();
+
+    // Attach a default audio listener descriptor
+    kAudioListener listener;
+    listener.uuid     = generateUuid();
+    listener.isActive = true;
+    obj->addAudioListener(listener);
+
+    // Assign the gizmo material for listener icon billboard
+    if (kAssetManager *am = getAssetManager())
+        applyAudioListenerIcon(obj, am);
+
+    finishCreate(this, obj, scene, [this, obj, uuid]()
+                 {
+            scene->removeObject(obj);
+            selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
+                                  selectedObjects.end());
+            if (selectedObject == obj) selectedObject = nullptr;
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, obj, uuid]()
+                 {
+            scene->addObject(obj, uuid);
+            selectedObject = obj;
+            selectObject(uuid, true);
+            if (panelHierarchy) panelHierarchy->refreshList(); });
+}
+
 void Manager::createParticle()
 {
     if (!scene)
@@ -2548,6 +2627,300 @@ bool Manager::isAudioPreviewPlaying() const
 bool Manager::isAudioAssetPreviewPlaying() const
 {
     return audioPreviewClip && audioPreviewClip->isPlaying() && !audioPreviewAssetUuid.empty();
+}
+
+// ---------------------------------------------------------------------------
+// In-game audio (runtime playback during Game panel Play)
+// ---------------------------------------------------------------------------
+
+void Manager::startGameAudio()
+{
+    // Already running — stop the current clips first to avoid duplicates.
+    if (!gameAudioEntries.empty())
+        stopGameAudio();
+
+    if (!world)
+        return;
+
+    // Create the audio engine once and keep it alive across Play/Stop cycles.
+    // Destroying and recreating ma_engine on every stop causes a race with the
+    // audio callback thread, leading to access-violation crashes inside
+    // ma_engine_uninit.  The engine is destroyed only when the editor exits.
+    if (!gameAudioManager)
+    {
+        gameAudioManager = createAudioManager();
+        if (!gameAudioManager || !gameAudioManager->init())
+        {
+            std::cerr << "[GameAudio] Failed to initialise audio engine.\n";
+            delete gameAudioManager;
+            gameAudioManager = nullptr;
+            return;
+        }
+    }
+
+    gameAudioHasSpatial = false;
+    gameAudioEntries.clear();
+
+    const auto &scenes = world->getScenes();
+
+    // Walk every object in every scene and start audio sources that are
+    // both active and marked play-on-awake.
+    std::function<void(kObject *)> walk = [&](kObject *node)
+    {
+        if (!node || !node->getActive())
+            return;
+
+        for (const kAudioSource &src : node->getAudioSources())
+        {
+            if (!src.isActive || !src.playOnAwake || src.audioFile.empty())
+                continue;
+
+            // Resolve the audio file path (same logic as startAudioPreview).
+            fs::path audioPath;
+            static const char *kAudioExts[] = {".wav", ".ogg", ".mp3", ".flac"};
+            for (const char *ext : kAudioExts)
+            {
+                fs::path cand = projectPath / "Library" / "ImportedAssets" / (src.audioFile + ext);
+                if (fs::exists(cand))
+                {
+                    audioPath = cand;
+                    break;
+                }
+            }
+            if (audioPath.empty())
+            {
+                auto it = fileMap.find(src.audioFile);
+                if (it != fileMap.end() && it->second.type == "audio")
+                    audioPath = projectPath / "Assets" / it->second.path;
+            }
+
+            if (audioPath.empty() || !fs::exists(audioPath))
+            {
+                std::cerr << "[GameAudio] Cannot resolve audio file for source '"
+                          << src.name << "' (UUID " << src.audioFile << ")\n";
+                continue;
+            }
+
+            kAudio *clip = gameAudioManager->loadAudio(audioPath.string());
+            if (!clip)
+            {
+                std::cerr << "[GameAudio] Failed to load '" << audioPath.string() << "'\n";
+                continue;
+            }
+
+            // Apply all source properties to the loaded clip.
+            clip->setLooping(src.loop);
+            clip->setVolume(src.volume);
+            clip->setPitch(src.pitch);
+            clip->setSpatialization(src.spatialize);
+            if (src.spatialize)
+            {
+                clip->setAttenuationModel(src.attenuationModel);
+                clip->setMinDistance(src.minDistance);
+                clip->setMaxDistance(src.maxDistance);
+                clip->setPosition(node->getGlobalPosition());
+            }
+
+            clip->play();
+
+            GameAudioEntry entry;
+            entry.clip       = clip;
+            entry.object     = node;
+            entry.spatialize = src.spatialize;
+            gameAudioEntries.push_back(entry);
+
+            if (src.spatialize)
+                gameAudioHasSpatial = true;
+        }
+
+        for (kObject *child : node->getChildren())
+            walk(child);
+    };
+
+    for (kScene *s : scenes)
+    {
+        if (s && s->getRootNode())
+            walk(s->getRootNode());
+    }
+
+    // If any spatialized audio was started, immediately position the listener
+    // so the first audio callback uses the correct position (before the next
+    // frame's updateGameAudio call has a chance to run).
+    if (gameAudioHasSpatial && gameAudioManager)
+    {
+        // Prefer an active kAudioListener in the scene, falling back to the
+        // default game camera (if set and not the editor camera), then the
+        // first non-editor camera.
+        kVec3  listenerPos;
+        kVec3  listenerForward;
+        kVec3  listenerUp;
+        bool   haveListener = false;
+
+        // Search for an active kAudioListener first.
+        {
+            std::function<kObject *(kObject *)> findActiveListener = [&](kObject *node) -> kObject *
+            {
+                if (!node || !node->getActive())
+                    return nullptr;
+                for (const kAudioListener &l : node->getAudioListeners())
+                    if (l.isActive)
+                        return node;
+                for (kObject *child : node->getChildren())
+                {
+                    kObject *found = findActiveListener(child);
+                    if (found)
+                        return found;
+                }
+                return nullptr;
+            };
+
+            for (kScene *s : scenes)
+            {
+                if (!s || !s->getRootNode())
+                    continue;
+                kObject *listenerObj = findActiveListener(s->getRootNode());
+                if (listenerObj)
+                {
+                    listenerPos     = listenerObj->getGlobalPosition();
+                    kQuat rot       = listenerObj->getGlobalRotation();
+                    listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
+                    listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
+                    haveListener    = true;
+                    break;
+                }
+            }
+        }
+
+        // Fall back to the default game camera (if not the editor camera).
+        if (!haveListener && defaultGameCamera &&
+            defaultGameCamera != editorCamera)
+        {
+            listenerPos     = defaultGameCamera->getPosition();
+            kQuat rot       = defaultGameCamera->getGlobalRotation();
+            listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
+            listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
+            haveListener    = true;
+        }
+
+        // Last resort: first non-editor camera in the world.
+        if (!haveListener && world)
+        {
+            for (kCamera *cam : world->getCameras())
+            {
+                if (cam != editorCamera)
+                {
+                    listenerPos     = cam->getPosition();
+                    kQuat rot       = cam->getGlobalRotation();
+                    listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
+                    listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
+                    haveListener    = true;
+                    break;
+                }
+            }
+        }
+
+        if (haveListener)
+        {
+            gameAudioManager->setListenerPosition(listenerPos);
+            gameAudioManager->setListenerDirection(listenerForward, listenerUp);
+        }
+    }
+}
+
+void Manager::stopGameAudio()
+{
+    if (!gameAudioManager)
+        return;
+
+    // Stop and unload every clip that was started by startGameAudio(),
+    // but keep the audio engine alive — destroying ma_engine on every
+    // stop cycle races with the audio callback thread and crashes.
+    for (auto &entry : gameAudioEntries)
+    {
+        if (entry.clip)
+        {
+            entry.clip->stop();
+            gameAudioManager->unloadAudio(entry.clip);
+        }
+    }
+    gameAudioEntries.clear();
+    gameAudioHasSpatial = false;
+}
+
+void Manager::updateGameAudio(kCamera *gameCamera)
+{
+    if (!gameAudioManager || gameAudioEntries.empty())
+        return;
+
+    if (gameAudioHasSpatial)
+    {
+        kVec3 listenerPos;
+        kVec3 listenerForward;
+        kVec3 listenerUp;
+
+        // Find the first active kAudioListener in the world. If one exists,
+        // use its world position and orientation as the audio listener.
+        // Otherwise fall back to the game camera.
+        kObject *activeListener = nullptr;
+        if (world)
+        {
+            for (kScene *s : world->getScenes())
+            {
+                if (!s || !s->getRootNode())
+                    continue;
+
+                std::function<kObject *(kObject *)> findListener = [&](kObject *node) -> kObject *
+                {
+                    if (!node || !node->getActive())
+                        return nullptr;
+                    for (const kAudioListener &l : node->getAudioListeners())
+                        if (l.isActive)
+                            return node;
+                    for (kObject *child : node->getChildren())
+                    {
+                        kObject *found = findListener(child);
+                        if (found)
+                            return found;
+                    }
+                    return nullptr;
+                };
+
+                activeListener = findListener(s->getRootNode());
+                if (activeListener)
+                    break;
+            }
+        }
+
+        if (activeListener)
+        {
+            listenerPos     = activeListener->getGlobalPosition();
+            kQuat rot       = activeListener->getGlobalRotation();
+            listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
+            listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
+        }
+        else if (gameCamera)
+        {
+            listenerPos     = gameCamera->getPosition();
+            kQuat rot       = gameCamera->getGlobalRotation();
+            listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
+            listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
+        }
+        else
+        {
+            // No listener and no camera — skip.
+            return;
+        }
+
+        gameAudioManager->setListenerPosition(listenerPos);
+        gameAudioManager->setListenerDirection(listenerForward, listenerUp);
+    }
+
+    // Keep each spatialized source positioned at its owning object.
+    for (const auto &entry : gameAudioEntries)
+    {
+        if (entry.spatialize && entry.clip && entry.object)
+            entry.clip->setPosition(entry.object->getGlobalPosition());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4414,7 +4787,22 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             audioObj->setParent(parent);
         }
         if (am)
-            applyAudioIcon(audioObj, am);
+        {
+            // Determine icon from JSON before components are loaded:
+            // a pure listener (has audio_listeners but no audio_sources)
+            // should use the listener icon, not the generic audio icon.
+            bool hasListeners = obj.contains("audio_listeners") &&
+                                obj["audio_listeners"].is_array() &&
+                                !obj["audio_listeners"].empty();
+            bool hasSources = obj.contains("audio_sources") &&
+                              obj["audio_sources"].is_array() &&
+                              !obj["audio_sources"].empty();
+
+            if (hasListeners && !hasSources)
+                applyAudioListenerIcon(audioObj, am);
+            else
+                applyAudioIcon(audioObj, am);
+        }
         result = audioObj;
     }
     else
@@ -6369,7 +6757,12 @@ bool Manager::applyPrefabInstance(kObject *instanceRoot)
     std::function<void(json &)> toTemplate = [&](json &node)
     {
         kString existingTpl = node.value("template_uuid", kString(""));
-        kString newUuid = existingTpl.empty() ? generateUuid() : existingTpl;
+        // Preserve the existing template UUID when available; otherwise
+        // fall back to the current uuid so the template root identity
+        // survives across repeated Apply operations.
+        kString newUuid = existingTpl.empty()
+                              ? node.value("uuid", generateUuid())
+                              : existingTpl;
         node["uuid"] = newUuid;
         node.erase("prefab_ref");
         node.erase("template_uuid");
@@ -6661,10 +7054,26 @@ void Manager::unpackPrefabInstance(kObject *instanceRoot)
 // Helper: recursively compare two JSON nodes ignoring transform/linkage keys
 // (uuid, position, rotation, scale, prefab_ref, template_uuid) that are
 // expected to differ between a prefab template and a live instance.
+// Also ignores camera-derived keys (look_at, up_axis) that are computed from
+// position/rotation and therefore naturally diverge on prefab instances.
 static bool jsonEqualsIgnoreTransform(const nlohmann::json &a, const nlohmann::json &b)
 {
     if (a.type() != b.type())
+    {
+        // Treat null / missing vs empty array as equivalent — older prefab
+        // templates may omit keys that newer serialization emits as [].
+        if ((a.is_array() && a.empty() && (b.is_null() || b.type() == nlohmann::json::value_t::discarded)) ||
+            (b.is_array() && b.empty() && (a.is_null() || a.type() == nlohmann::json::value_t::discarded)))
+            return true;
         return false;
+    }
+
+    auto isIgnored = [](const std::string &key) -> bool {
+        return key == "uuid" || key == "position" || key == "rotation" ||
+               key == "scale" || key == "prefab_ref" || key == "template_uuid" ||
+               key == "look_at" || key == "up_axis" ||
+               key == "aspect_ratio" || key == "scene_uuid";
+    };
 
     if (a.is_object())
     {
@@ -6672,22 +7081,28 @@ static bool jsonEqualsIgnoreTransform(const nlohmann::json &a, const nlohmann::j
         std::set<std::string> keys;
         for (auto it = a.begin(); it != a.end(); ++it)
         {
-            // Skip identity/transform keys and prefab linkage
-            if (it.key() == "uuid" || it.key() == "position" || it.key() == "rotation" || it.key() == "scale" ||
-                it.key() == "prefab_ref" || it.key() == "template_uuid")
+            if (isIgnored(it.key()))
                 continue;
             keys.insert(it.key());
         }
         for (auto it = b.begin(); it != b.end(); ++it)
         {
-            if (it.key() == "uuid" || it.key() == "position" || it.key() == "rotation" || it.key() == "scale" ||
-                it.key() == "prefab_ref" || it.key() == "template_uuid")
+            if (isIgnored(it.key()))
                 continue;
             keys.insert(it.key());
         }
         for (const std::string &k : keys)
         {
-            if (!a.contains(k) || !b.contains(k))
+            bool aHas = a.contains(k);
+            bool bHas = b.contains(k);
+            // Treat a missing key as equivalent to an empty array — older
+            // prefab templates may omit keys (script, audio_sources,
+            // audio_listeners, particle) that newer serialization emits as [].
+            if (!aHas && bHas && b[k].is_array() && b[k].empty())
+                continue;
+            if (!bHas && aHas && a[k].is_array() && a[k].empty())
+                continue;
+            if (!aHas || !bHas)
                 return false;
             if (!jsonEqualsIgnoreTransform(a[k], b[k]))
                 return false;
@@ -7233,51 +7648,95 @@ bool Manager::reimportMesh(const kString &meshUuid)
     return true;
 }
 
+// Recursively walk a node subtree and collect kMesh objects whose refName
+// matches a pending reload UUID. Returns {mesh, parent} pairs.
+static void collectMeshMatches(kObject *node, const std::vector<kString> &pending,
+                               std::vector<std::pair<kObject *, kObject *>> &out)
+{
+    kMesh *m = dynamic_cast<kMesh *>(node);
+    if (m && !m->getRefName().empty() &&
+        std::find(pending.begin(), pending.end(), m->getRefName()) != pending.end())
+    {
+        out.push_back({node, node->getParent()});
+    }
+    for (kObject *child : node->getChildren())
+        collectMeshMatches(child, pending, out);
+}
+
 void Manager::processPendingMeshReloads()
 {
-    if (pendingMeshReloads.empty() || !world)
+    if (pendingMeshReloads.empty())
         return;
 
-    kAssetManager *am = getAssetManager();
-    bool any = false;
-
-    auto scenes = world->getScenes();
-    // Skip index 0 (the editor scene); its gizmos never reference mesh assets.
-    for (size_t si = 1; si < scenes.size(); ++si)
-    {
-        kScene *s = scenes[si];
-        if (!s || !s->getRootNode())
-            continue;
-
-        // Collect the top-level objects instanced from a queued mesh first
-        // (their serialized JSON carries the source asset UUID as "reference").
-        std::vector<kObject *> matches;
-        std::vector<nlohmann::json> snapshots;
-        for (kObject *child : s->getRootNode()->getChildren())
+    // Process one world's scenes: find matching meshes, detach/delete/reload.
+    auto processScenes = [&](kWorld *w, kAssetManager *am) -> bool {
+        if (!w) return false;
+        bool any = false;
+        auto scenes = w->getScenes();
+        // Skip index 0 for the main world (editor gizmo scene); the prefab
+        // world has no editor scene so process all of its scenes.
+        size_t start = (w == world) ? 1 : 0;
+        for (size_t si = start; si < scenes.size(); ++si)
         {
-            nlohmann::json j = child->serialize();
-            kString ref = j.value("reference", std::string());
-            if (!ref.empty() &&
-                std::find(pendingMeshReloads.begin(), pendingMeshReloads.end(), ref) != pendingMeshReloads.end())
+            kScene *s = scenes[si];
+            if (!s || !s->getRootNode()) continue;
+
+            // Recursively collect all meshes in this scene whose asset UUID
+            // is queued for reload (handles nested / prefab-instance meshes).
+            std::vector<std::pair<kObject *, kObject *>> matches; // {mesh, parent}
+            for (kObject *child : s->getRootNode()->getChildren())
+                collectMeshMatches(child, pendingMeshReloads, matches);
+
+            std::vector<nlohmann::json> snapshots;
+            snapshots.reserve(matches.size());
+            for (auto &pair : matches)
+                snapshots.push_back(pair.first->serialize());
+
+            for (size_t i = 0; i < matches.size(); ++i)
             {
-                matches.push_back(child);
-                snapshots.push_back(std::move(j));
+                kObject *obj    = matches[i].first;
+                kObject *parent = matches[i].second;
+
+                // Drop selection if it points into the subtree being freed.
+                if (selectedObject == obj)
+                    selectedObject = nullptr;
+                selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(),
+                                                  obj->getUuid()),
+                                      selectedObjects.end());
+
+                // Detach from parent (scene root or another object), then delete.
+                obj->detachFromParent();
+                deleteObjectRecursive(obj);
+
+                // Reload. Top-level objects (parent is scene root) pass nullptr
+                // so loadObjectFromJson calls scene->addMesh. Nested objects
+                // pass the original parent so the new mesh is re-parented.
+                bool isTopLevel = (parent == s->getRootNode() || parent == nullptr);
+                loadObjectFromJson(snapshots[i], s, w, am, projectPath,
+                                   editorCamera, isTopLevel ? nullptr : parent);
+                any = true;
             }
         }
+        return any;
+    };
 
-        for (size_t i = 0; i < matches.size(); ++i)
+    kAssetManager *am = getAssetManager();
+    bool any = processScenes(world, am);
+
+    // Also process the prefab world when prefab editing is active.
+    if (prefabEditing && prefabWorld)
+    {
+        kDriver *savedDriver = kDriver::getCurrent();
+        if (prefabRenderer && prefabRenderer->getDriver())
         {
-            kObject *obj = matches[i];
-            // Drop selection that points at the subtree we're about to free.
-            if (selectedObject == obj)
-                selectedObject = nullptr;
-            selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), obj->getUuid()),
-                                  selectedObjects.end());
-
-            s->removeMesh(static_cast<kMesh *>(obj));                                  // unlink from scene root
-            deleteObjectRecursive(obj);                                                // free the old subtree
-            loadObjectFromJson(snapshots[i], s, world, am, projectPath, editorCamera); // rebuild from new .glb
-            any = true;
+            prefabRenderer->getDriver()->makeCurrent(window);
+            kDriver::setCurrent(prefabRenderer->getDriver());
+        }
+        any |= processScenes(prefabWorld, prefabAssetManager ? prefabAssetManager : am);
+        if (savedDriver)
+        {
+            savedDriver->makeCurrent(window);
+            kDriver::setCurrent(savedDriver);
         }
     }
 
