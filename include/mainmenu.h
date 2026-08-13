@@ -40,7 +40,9 @@ struct ShowPanel
 inline ShowPanel showPanel;                       ///< Global panel-visibility state shared across the editor UI.
 inline ImGuiSettingsHandler ini_handler;          ///< ImGui settings handler used to persist panel state in the layout .ini.
 inline bool isReloadLayout = false;               ///< When true, the editor reloads the layout from @ref layoutFileName next frame.
+inline bool isReloadDefaultLayout = false;        ///< When true, the editor reloads the embedded default layout next frame.
 inline kString layoutFileName = "layout.ini";     ///< Path of the layout .ini file to (re)load.
+inline kString savedWorkspaceFileName = "Config/workspace.ini"; ///< Workspace layout file stored relative to the open project directory.
 inline bool showSplashScreen = false;             ///< When true, the splash screen popup is displayed.
 inline bool showAbout        = false;             ///< When true, the About dialog is displayed.
 
@@ -83,6 +85,22 @@ class MainMenu
 		 * @param filter Index of the file filter that was active when selected.
 		 */
 		static void SDLCALL loadWorkspaceCallback(void* userdata, const char* const* filelist, int filter);
+
+		/**
+		 * @brief Appends the current panel-visibility state to a workspace ini file.
+		 *
+		 * Written as an explicit [Panels] section so panel visibility is
+		 * guaranteed to persist even if ImGui's own custom settings handler is
+		 * unavailable at save time.
+		 * @param path Workspace file to append to.
+		 */
+		static void savePanelStateToFile(const kString &path);
+
+		/**
+		 * @brief Reads the explicit [Panels] section back from a workspace ini file.
+		 * @param path Workspace file to parse.
+		 */
+		static void loadPanelStateFromFile(const kString &path);
 
 		/**
 		 * @brief Draws the menu bar, the Build Settings popup, and dispatches menu actions.

@@ -2490,7 +2490,7 @@ static void drawAudioListenerSection(kGuiManager *gui, kObject *obj, Manager *ma
 static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager, bool isDirtyPrefab = false)
 {
     gui->spacing();
-    gui->separatorText("Scripts");
+    gui->separatorText("Components");
     gui->spacing();
 
     // Each section renders only when its data is present. To add a
@@ -2804,6 +2804,40 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
         gui->spacing();
     }
 
+    // ── Animator ────────────────────────────────────────────────────────────
+    if (!obj->getAnimatorRef().empty())
+    {
+        kString assigned = obj->getAnimatorRef();
+
+        if (sectionHeader(gui, "Animator", isDirtyPrefab))
+        {
+            // Show the assigned animator name
+            std::string displayName = assigned;
+            auto it = manager->fileMap.find(assigned);
+            if (it != manager->fileMap.end())
+                displayName = fs::path(it->second.path).stem().string();
+            else
+            {
+                // Truncate UUID for display
+                if (displayName.size() > 16)
+                    displayName = displayName.substr(0, 8) + "...";
+            }
+
+            gui->textUnformatted(displayName.c_str());
+
+            // Remove button
+            if (ImGui::SmallButton("x##RemAnim"))
+            {
+                obj->setAnimatorRef("");
+                manager->projectSaved = false;
+                manager->refreshWindowTitle();
+            }
+
+            gui->spacing();
+        }
+        gui->spacing();
+    }
+
     // ── Scripts ─────────────────────────────────────────────────────────────
     if (!obj->getScripts().empty())
     {
@@ -2830,6 +2864,46 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
             }
         }
         gui->spacing();
+    }
+
+    // ── "Add Animator" button ───────────────────────────────────────────────
+    {
+        gui->spacing();
+        if (ImGui::Button("Add Animator", ImVec2(-1, 0)))
+            ImGui::OpenPopup("AddAnimatorPopup");
+
+        if (ImGui::BeginPopup("AddAnimatorPopup"))
+        {
+            std::vector<std::string> animUuids;
+            std::vector<std::string> animNames;
+            for (const auto &kv : manager->fileMap)
+            {
+                if (kv.second.type == "animator")
+                {
+                    animUuids.push_back(kv.first);
+                    animNames.push_back(fs::path(kv.second.path).stem().string());
+                }
+            }
+
+            if (animUuids.empty())
+            {
+                ImGui::TextDisabled("No .animator in Assets/");
+            }
+            else
+            {
+                for (size_t i = 0; i < animUuids.size(); ++i)
+                {
+                    if (ImGui::MenuItem(animNames[i].c_str()))
+                    {
+                        obj->setAnimatorRef(animUuids[i]);
+                        manager->projectSaved = false;
+                        manager->refreshWindowTitle();
+                    }
+                }
+            }
+
+            ImGui::EndPopup();
+        }
     }
 
     // ── "Add Script" button ──────────────────────────────────────────────────
@@ -4228,7 +4302,14 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
                         skel->getTicksPerSecond();
                     animPreviewAnimator->setCurrentTime(startTicks);
                     const kNodeData &initRoot = skel->getRootNode();
-                    animPreviewAnimator->calculateBoneTransform(&initRoot, kMat4(1.0f));
+                    try
+                    {
+                        animPreviewAnimator->calculateBoneTransform(&initRoot, kMat4(1.0f));
+                    }
+                    catch (const std::exception &)
+                    {
+                        // Malformed keyframe channel — leave the bind pose.
+                    }
                 }
             }
             catch (const std::exception &)
@@ -4288,8 +4369,15 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         // shader will read via getFinalBoneMatrices().
         if (animPreviewAnimator->getCurrentAnimation())
         {
-            const kNodeData &root = animPreviewAnimator->getCurrentAnimation()->getRootNode();
-            animPreviewAnimator->calculateBoneTransform(&root, kMat4(1.0f));
+            try
+            {
+                const kNodeData &root = animPreviewAnimator->getCurrentAnimation()->getRootNode();
+                animPreviewAnimator->calculateBoneTransform(&root, kMat4(1.0f));
+            }
+            catch (const std::exception &)
+            {
+                // Keep the last successfully computed pose.
+            }
         }
     }
 

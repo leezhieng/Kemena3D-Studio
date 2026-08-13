@@ -29,6 +29,7 @@ void SDLCALL MainMenu::saveWorkspaceCallback(void *userdata, const char *const *
 		const char *path = filelist[0];
 		SDL_Log("Saving layout to: %s", path);
 		ImGui::SaveIniSettingsToDisk(path);
+		savePanelStateToFile(path);
 	}
 }
 
@@ -376,6 +377,12 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 				manager->openProject();
 			if (gui->menuItem("Save Project", "", false, manager->projectOpened))
 			{
+				fs::path workspacePath = manager->projectPath / savedWorkspaceFileName;
+				std::error_code ec;
+				fs::create_directories(workspacePath.parent_path(), ec);
+				gui->saveIniSettingsToDisk(workspacePath.string());
+				savePanelStateToFile(workspacePath.string());
+				SDL_Log("Saved workspace to: %s", workspacePath.string().c_str());
 			}
 			gui->separator();
 			if (gui->menuItem("Publish...", "", false, manager->projectOpened))
@@ -861,7 +868,7 @@ void *MainMenu::readOpen(ImGuiContext *, ImGuiSettingsHandler *, const char *nam
 	return nullptr;
 }
 
-void MainMenu::readLine(ImGuiContext *, ImGuiSettingsHandler *, void *, const char *line)
+static void applyPanelStateLine(const char *line)
 {
 	int tmp;
 	if (sscanf_s(line, "WorldOpened=%d", &tmp) == 1)
@@ -884,6 +891,11 @@ void MainMenu::readLine(ImGuiContext *, ImGuiSettingsHandler *, void *, const ch
 		showPanel.animationEditor = (tmp != 0);
 }
 
+void MainMenu::readLine(ImGuiContext *, ImGuiSettingsHandler *, void *, const char *line)
+{
+	applyPanelStateLine(line);
+}
+
 void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer *out_buf)
 {
 	out_buf->appendf("[Panels]\n");
@@ -897,6 +909,36 @@ void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer 
 	out_buf->appendf("AnimatorEditorOpened=%d\n", showPanel.animatorEditor ? 1 : 0);
 	out_buf->appendf("AnimationEditorOpened=%d\n", showPanel.animationEditor ? 1 : 0);
 	out_buf->append("\n");
+}
+
+void MainMenu::savePanelStateToFile(const kString &path)
+{
+	std::ofstream f(path, std::ios::app);
+	if (!f.is_open())
+		return;
+
+	f << "\n[Panels]\n";
+	f << "WorldOpened=" << (showPanel.world ? 1 : 0) << "\n";
+	f << "InspectorOpened=" << (showPanel.inspector ? 1 : 0) << "\n";
+	f << "HierarchyOpened=" << (showPanel.hierarchy ? 1 : 0) << "\n";
+	f << "ConsoleOpened=" << (showPanel.console ? 1 : 0) << "\n";
+	f << "ProjectOpened=" << (showPanel.project ? 1 : 0) << "\n";
+	f << "ShaderEditorOpened=" << (showPanel.shaderEditor ? 1 : 0) << "\n";
+	f << "GameOpened=" << (showPanel.game ? 1 : 0) << "\n";
+	f << "AnimatorEditorOpened=" << (showPanel.animatorEditor ? 1 : 0) << "\n";
+	f << "AnimationEditorOpened=" << (showPanel.animationEditor ? 1 : 0) << "\n";
+	f << "\n";
+}
+
+void MainMenu::loadPanelStateFromFile(const kString &path)
+{
+	std::ifstream f(path);
+	if (!f.is_open())
+		return;
+
+	std::string line;
+	while (std::getline(f, line))
+		applyPanelStateLine(line.c_str());
 }
 
 void MainMenu::registerPanelStateHandler()

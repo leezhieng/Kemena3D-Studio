@@ -85,6 +85,7 @@ int main()
 	// Editor manager
 	Manager *manager = new Manager(window, world, rendererWorld);
 	manager->setScene(scene);
+	manager->setGui(gui);
 
 	// Assign the prefab's dedicated renderer to the manager so it can drive
 	// the isolated prefab viewport rendering.
@@ -153,19 +154,11 @@ int main()
 		}
 	};
 
-	// Load default editor layout from embedded resource
+	// Register the custom panel-state handler and load the default editor
+	// layout. When a project is opened, Manager::loadProjectWorkspace() loads
+	// that project's Config/workspace.ini (or falls back to this default).
 	mainmenu->registerPanelStateHandler();
-	{
-		HRSRC hRes = FindResource(NULL, "LAYOUT_DEFAULT", RT_RCDATA);
-		if (hRes)
-		{
-			HGLOBAL hData = LoadResource(NULL, hRes);
-			DWORD size = SizeofResource(NULL, hRes);
-			const char *data = static_cast<const char *>(LockResource(hData));
-			if (data && size > 0)
-				gui->loadIniSettingsFromMemory(data, size);
-		}
-	}
+	manager->loadDefaultWorkspace();
 
 	// Default skybox — shared helper so the inspector's "Apply Default
 	// Skybox" button and the per-frame scene-change guard can reuse it.
@@ -253,8 +246,17 @@ int main()
 		{
 			showPanel = ShowPanel();
 			gui->loadIniSettingsFromDisk(layoutFileName);
+			MainMenu::loadPanelStateFromFile(layoutFileName);
 
 			isReloadLayout = false;
+		}
+
+		if (isReloadDefaultLayout)
+		{
+			showPanel = ShowPanel();
+			manager->loadDefaultWorkspace();
+
+			isReloadDefaultLayout = false;
 		}
 
 		// A world load (triggered by a menu action during a previous frame's

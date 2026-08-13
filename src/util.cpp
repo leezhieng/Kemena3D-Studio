@@ -184,25 +184,46 @@ static void scaleSceneUniform(aiScene *s, float scale)
 
 // Forwards Assimp warning-severity log lines into a std::vector<std::string>.
 // Only attached for Warn severity, so anything it receives is a real warning.
+//
+// IMPORTANT: This stream owns its captured warnings internally rather than
+// holding a raw pointer to a caller-provided vector.  The raw-pointer approach
+// caused use-after-free crashes (access violation in push_back) when the
+// caller's vector was destroyed, moved, or reallocated while the stream was
+// still attached to the global Assimp DefaultLogger.  Callers retrieve the
+// captured warnings via moveTo() after the import completes.
 namespace
 {
     class WarnCaptureStream : public Assimp::LogStream
     {
     public:
-        explicit WarnCaptureStream(std::vector<std::string> *out) : out(out) {}
+        WarnCaptureStream() = default;
+
         void write(const char *message) override
         {
-            if (!out || !message)
+            if (!message)
                 return;
             std::string s(message);
             while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
                 s.pop_back();
             if (!s.empty())
-                out->push_back(s);
+                warnings.push_back(std::move(s));
+        }
+
+        /// Append captured warnings to the caller-provided vector (if non-null).
+        /// Safe to call multiple times — each call drains the internal buffer.
+        void moveTo(std::vector<std::string> *out)
+        {
+            if (out && !warnings.empty())
+            {
+                out->insert(out->end(),
+                            std::make_move_iterator(warnings.begin()),
+                            std::make_move_iterator(warnings.end()));
+                warnings.clear();
+            }
         }
 
     private:
-        std::vector<std::string> *out;
+        std::vector<std::string> warnings;
     };
 }
 
@@ -215,7 +236,10 @@ bool convertMeshToGlbEx(const fs::path &inputPath, const fs::path &outputPath,
     // Optionally capture Assimp warnings into warningsOut. The DefaultLogger is a
     // global singleton; create one only if the app hasn't, and kill only what we
     // created. (Imports never run concurrently — they're gated behind a modal.)
-    WarnCaptureStream warnStream(warningsOut);
+    // Capture warnings internally — the stream owns its buffer so we never
+    // risk a dangling-pointer crash, even if the caller-supplied vector is
+    // destroyed or the DefaultLogger outlives this call.
+    WarnCaptureStream warnStream;
     bool createdLogger = false;
     if (warningsOut)
     {
@@ -227,6 +251,7 @@ bool convertMeshToGlbEx(const fs::path &inputPath, const fs::path &outputPath,
         }
         Assimp::DefaultLogger::get()->attachStream(&warnStream, Assimp::Logger::Warn);
     }
+
     struct WarnGuard
     {
         WarnCaptureStream *s;
@@ -258,6 +283,11 @@ bool convertMeshToGlbEx(const fs::path &inputPath, const fs::path &outputPath,
         flags |= aiProcess_CalcTangentSpace; // needed for normal mapping
 
     const aiScene *scene = importer.ReadFile(inputPath.string(), flags);
+
+    // Transfer any warnings captured during ReadFile to the caller *before*
+    // we check for failure — warnings are useful for diagnosing load issues.
+    warnStream.moveTo(warningsOut);
+
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
     {
         if (errorOut)
@@ -298,6 +328,9 @@ bool convertMeshToGlbEx(const fs::path &inputPath, const fs::path &outputPath,
     Assimp::Exporter exporter;
     aiReturn ret = exporter.Export(toExport, "glb2", outputPath.string());
     delete owned;
+
+    // Append any warnings emitted during Export (uncommon but safe).
+    warnStream.moveTo(warningsOut);
 
     if (ret != AI_SUCCESS)
     {
@@ -638,15 +671,16 @@ bool convertAudioToWav(const fs::path &inputPath, const fs::path &outputPath)
 
     // Register custom decoding backends so the importer can handle Opus and
     // Vorbis files via libopus/libvorbis, not just the built-in stb_vorbis.
-    {
-        ma_decoding_backend_vtable* customBackends[] = {
-            ma_decoding_backend_libvorbis,
-            ma_decoding_backend_libopus,
-        };
-        config.ppCustomBackendVTables = customBackends;
-        config.customBackendCount     = sizeof(customBackends) / sizeof(customBackends[0]);
-        config.pCustomBackendUserData = nullptr;
-    }
+    // NOTE: customBackends must live as long as config — do NOT put this in
+    // a nested scope, or config.ppCustomBackendVTables becomes a dangling
+    // pointer and ma_decoder_init_file will crash on a garbage vtable.
+    ma_decoding_backend_vtable* customBackends[] = {
+        ma_decoding_backend_libvorbis,
+        ma_decoding_backend_libopus,
+    };
+    config.ppCustomBackendVTables = customBackends;
+    config.customBackendCount     = sizeof(customBackends) / sizeof(customBackends[0]);
+    config.pCustomBackendUserData = nullptr;
 
     ma_decoder decoder;
     ma_result result = ma_decoder_init_file(inputPath.string().c_str(), &config, &decoder);

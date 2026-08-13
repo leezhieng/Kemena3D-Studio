@@ -1,6 +1,7 @@
 #include "manager.h"
 #include "util.h"
 #include "panel_script_editor.h" // for panelScriptEditor->notifyAssetMoved()
+#include "mainmenu.h" // for showPanel / savedWorkspaceFileName
 
 #include <kemena/kpackage.h>
 
@@ -307,6 +308,9 @@ bool Manager::executeNewProject(const kString& name, const fs::path& dir, bool c
     currentDir.clear();
     currentDir.push_back("Assets");
 
+    // Load this project's workspace layout (falls back to the default).
+    loadProjectWorkspace();
+
     // Save the project name to config immediately
     saveProjectConfig();
 
@@ -434,6 +438,9 @@ bool Manager::openProject()
     currentDir.clear();
     currentDir.push_back("Assets");
 
+    // Load this project's workspace layout (falls back to the default).
+    loadProjectWorkspace();
+
     // Create other essential folders if don't exist
     std::error_code ec;
 
@@ -523,6 +530,9 @@ bool Manager::openProjectFromPath(const kString &path)
     projectPath = path;
     currentDir.clear();
     currentDir.push_back("Assets");
+
+    // Load this project's workspace layout (falls back to the default).
+    loadProjectWorkspace();
 
     std::error_code ec;
     fs::create_directories(fullPath / "Assets", ec);
@@ -1206,7 +1216,7 @@ kString Manager::checkAssetType(const fs::path &p)
 
     if (ext == ".txt" || ext == ".ini" || ext == ".xml" || ext == ".json")
         return "text";
-    else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tif" || ext == ".tiff" || ext == ".tga")
+    else if (ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".png" || ext == ".gif" || ext == ".tga")
         return "image";
     else if (ext == ".as")
         return "script";
@@ -4873,6 +4883,10 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         if (obj.contains("material_uuid"))
             result->setMaterialUuid(obj["material_uuid"].get<std::string>());
 
+        // Assigned animator asset UUID.
+        if (obj.contains("animator_ref"))
+            result->setAnimatorRef(obj["animator_ref"].get<std::string>());
+
         // Per-sub-mesh overrides for import-derived sub-meshes. Each entry holds
         // only the fields the user changed (material, active, visible, static,
         // shadows). The material UUID is applied later by reapplyStoredMaterials
@@ -5283,6 +5297,44 @@ void Manager::loadWorld(const kString &path)
         panelHierarchy->refreshList();
 
     std::cout << "World loaded: " << loadPath << "\n";
+}
+
+void Manager::loadDefaultWorkspace()
+{
+    if (!gui)
+        return;
+
+    HRSRC hRes = FindResource(NULL, "LAYOUT_DEFAULT", RT_RCDATA);
+    if (!hRes)
+        return;
+
+    HGLOBAL hData = LoadResource(NULL, hRes);
+    DWORD size = SizeofResource(NULL, hRes);
+    const char *data = static_cast<const char *>(LockResource(hData));
+    if (data && size > 0)
+        gui->loadIniSettingsFromMemory(data, size);
+}
+
+void Manager::loadProjectWorkspace()
+{
+    if (!gui)
+        return;
+
+    // Loading an ImGui layout must be deferred to the start of the next frame
+    // (mirrors MainMenu's workspace Load action). The menu action that opens a
+    // project runs mid-frame, after ImGui has already begun building the UI.
+    fs::path workspacePath = projectPath / savedWorkspaceFileName;
+    if (fs::exists(workspacePath))
+    {
+        layoutFileName = workspacePath.string();
+        isReloadLayout = true;
+        isReloadDefaultLayout = false;
+    }
+    else
+    {
+        isReloadDefaultLayout = true;
+        isReloadLayout = false;
+    }
 }
 
 void Manager::loadDefaultWorldInto(kScene *target)

@@ -142,6 +142,7 @@ public:
     void setScene(kScene *s) { scene = s; }
     kScene *getScene() { return scene; }
     kRenderer *getRenderer() { return renderer; }
+    void setGui(kGuiManager *g) { gui = g; }
     kObject *findObjectByUuid(const kString &uuid);
     void deleteSelectedObjects();
     void duplicateSelectedObjects();
@@ -343,6 +344,8 @@ public:
     void applyDefaultSkybox(kScene *target);
     void loadWorld(const kString &path);
     void loadDefaultWorldInto(kScene *target);
+    void loadDefaultWorkspace();
+    void loadProjectWorkspace();
 
     // --- Prefabs ------------------------------------------------------------
     bool saveSelectedAsPrefab(const kString &prefabName);
@@ -617,6 +620,7 @@ private:
     kWindow *window;
     kWorld *world;
     kRenderer *renderer;
+    kGuiManager *gui = nullptr;
     kScene *scene = nullptr;
     kString initialWindowTitle;
 
