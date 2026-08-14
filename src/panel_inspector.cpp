@@ -732,6 +732,22 @@ void PanelInspector::drawModelViewer(const PanelProject::SelectedProjectAsset &a
         ImGui::SetTooltip("%s", modelViewLightEnabled ? "Disable preview lighting" : "Enable preview lighting");
 
     // -----------------------------------------------------------------------
+    // Scroll wheel = zoom (dolly the orbit camera toward/away from the pivot)
+    // -----------------------------------------------------------------------
+    float wheel = ImGui::GetIO().MouseWheel;
+    if (pvHovered && wheel != 0.0f && modelViewCamera)
+    {
+        // Scale by distance so zooming feels consistent for both tiny and large meshes.
+        modelViewCamDist -= wheel * modelViewCamDist * 0.1f;
+        modelViewCamDist = std::clamp(modelViewCamDist, 0.05f, 1000.0f);
+
+        // The frame pass tightly fits the near/far clips to the framed distance.
+        // Widen them after zooming so the mesh isn't clipped when dollied out.
+        modelViewCamera->setNearClip(std::max(0.001f, modelViewCamDist * 0.01f));
+        modelViewCamera->setFarClip(modelViewCamDist + 1000.0f);
+    }
+
+    // -----------------------------------------------------------------------
     // Left-click drag = rotate model
     // -----------------------------------------------------------------------
     if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !btHover && !isDraggingMVModel)
@@ -4354,6 +4370,13 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
                 animPreviewPlaying = false;
             }
         }
+    }
+
+    // Apply the current frame's pose whenever an animator exists. This runs
+    // even when paused/stopped so pressing Stop snaps the mesh back to the
+    // start frame instead of freezing on the last played pose.
+    if (animPreviewAnimator && animPreviewAnimator->getCurrentAnimation())
+    {
         // Convert frame count to animation time in ticks.  The animation
         // system stores keyframe timestamps in ticks (from Assimp's mTime);
         // setCurrentTime expects the same unit, otherwise interpolation
@@ -4367,17 +4390,14 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         // setCurrentTime only stores the time value — we must explicitly
         // walk the skeleton to produce the final bone matrices that the
         // shader will read via getFinalBoneMatrices().
-        if (animPreviewAnimator->getCurrentAnimation())
+        try
         {
-            try
-            {
-                const kNodeData &root = animPreviewAnimator->getCurrentAnimation()->getRootNode();
-                animPreviewAnimator->calculateBoneTransform(&root, kMat4(1.0f));
-            }
-            catch (const std::exception &)
-            {
-                // Keep the last successfully computed pose.
-            }
+            const kNodeData &root = animPreviewAnimator->getCurrentAnimation()->getRootNode();
+            animPreviewAnimator->calculateBoneTransform(&root, kMat4(1.0f));
+        }
+        catch (const std::exception &)
+        {
+            // Keep the last successfully computed pose.
         }
     }
 
@@ -4457,6 +4477,22 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         animPreviewLightEnabled = !animPreviewLightEnabled;
     if (btHover)
         ImGui::SetTooltip("%s", animPreviewLightEnabled ? "Disable preview lighting" : "Enable preview lighting");
+
+    // -----------------------------------------------------------------------
+    // Scroll wheel = zoom (dolly the orbit camera toward/away from the pivot)
+    // -----------------------------------------------------------------------
+    float wheel = ImGui::GetIO().MouseWheel;
+    if (pvHovered && wheel != 0.0f && animPreviewCamera)
+    {
+        // Scale by distance so zooming feels consistent for both tiny and large meshes.
+        animPreviewCamDist -= wheel * animPreviewCamDist * 0.1f;
+        animPreviewCamDist = std::clamp(animPreviewCamDist, 0.05f, 1000.0f);
+
+        // The frame pass tightly fits the near/far clips to the framed distance.
+        // Widen them after zooming so the mesh isn't clipped when dollied out.
+        animPreviewCamera->setNearClip(std::max(0.001f, animPreviewCamDist * 0.01f));
+        animPreviewCamera->setFarClip(animPreviewCamDist + 1000.0f);
+    }
 
     // -----------------------------------------------------------------------
     // Left-click drag = rotate model
