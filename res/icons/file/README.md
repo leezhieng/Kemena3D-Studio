@@ -3,6 +3,7 @@
 | Asset           | Source                      |
 |----------------|----------------------------------|
 | audio.png | https://www.flaticon.com/free-icon/audio_4349708 |
+| animation.png | https://www.flaticon.com/free-icon/track-and-field_10435789 |
 | file.png | https://www.flaticon.com/free-icon/file_2521752 |
 | folder.png | https://www.flaticon.com/free-icon/folder_3735057 |
 | gui.png | https://www.flaticon.com/free-icon/web_3454767 |

@@ -279,7 +279,7 @@ public:
     /** @brief Saves publish settings to project config. */
     void savePublishSettings();
 
-    /// Pending request to show the Animation Editor panel.
+    /// Pending request to show the Cinematic Editor panel.
     bool pendingOpenAnimationEditor = false;
 
     // --- Navigation baking --------------------------------------------------

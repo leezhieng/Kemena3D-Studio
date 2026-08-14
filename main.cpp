@@ -141,7 +141,7 @@ int main()
 			panelAnimator->openFile(path);
 			manager->setEditorMode(Manager::EditorMode::AnimatorPreview, path, ".animator");
 		}
-		else if (path.size() >= 10 && path.substr(path.size() - 10) == ".animation")
+		else if (path.size() >= 10 && path.substr(path.size() - 10) == ".cinematic")
 		{
 			showPanel.animationEditor = true;
 			panelAnimation->openFile(path);
@@ -1086,7 +1086,7 @@ int main()
 		panelScriptEditor->draw(showPanel.scriptEditor);
 		panelGame->draw(showPanel.game);
 		panelPrefab->draw(showPanel.prefab);
-		// Consume pending Animation Editor open request from inspector
+		// Consume pending Cinematic Editor open request from inspector
 		if (manager->pendingOpenAnimationEditor)
 		{
 			showPanel.animationEditor = true;

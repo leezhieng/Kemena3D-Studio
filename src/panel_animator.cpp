@@ -312,12 +312,11 @@ void PanelAnimator::newGraph()
     selectedState   = -1;
     editingVarIndex = -1;
     showClipManager = false;
-    showVarEditor   = false;
 
     // Add a default entry state
     AnimState entry;
     entry.id        = graph.newNodeId();
-    entry.name      = "Entry";
+    entry.name      = "Default State";
     entry.isDefault = true;
     entry.posX      = 300.f;
     entry.posY      = 200.f;
@@ -617,12 +616,8 @@ void PanelAnimator::drawDragLink(ImDrawList* dl)
     AnimState* from = graph.findState(dragFromState);
     if (!from) return;
 
-    // Need an origin to compute the output pin screen position.
-    // The best we have is the canvas origin from the last drawCanvas call,
-    // which we don't store — so estimate it from the ImGui window.
-    // The canvas is drawn in an InvisibleButton; we use the window's cursor
-    // start position as the origin approximation.
-    ImVec2 origin = ImGui::GetCursorScreenPos() - ImGui::GetContentRegionAvail();
+    // Use the canvas origin captured during the last drawCanvas call.
+    ImVec2 origin = canvasOrigin;
 
     ImVec2 p0 = getOutputPinPos(*from, origin);
     ImVec2 p3 = ImGui::GetIO().MousePos;
@@ -727,13 +722,16 @@ void PanelAnimator::drawStateContextMenu()
                 }
             }
 
-            ImGui::Separator();
-            if (ImGui::MenuItem("Delete State"))
+            if (!state->isDefault)
             {
-                graph.removeState(state->id);
-                graph.dirty = true;
-                selectedState = -1;
-                contextMenuStateId = -1;
+                ImGui::Separator();
+                if (ImGui::MenuItem("Delete State"))
+                {
+                    graph.removeState(state->id);
+                    graph.dirty = true;
+                    selectedState = -1;
+                    contextMenuStateId = -1;
+                }
             }
         }
         ImGui::EndPopup();
@@ -744,129 +742,122 @@ void PanelAnimator::drawStateContextMenu()
 // Variable editor panel
 // ===========================================================================
 
-void PanelAnimator::drawVariableEditor()
+void PanelAnimator::drawVariablesPanel()
 {
-    if (!showVarEditor) return;
+    ImGui::BeginChild("##animvars", ImVec2(360.0f, 0.0f), true);
 
-    ImGui::SetNextWindowSize({ 400, 300 }, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Animator Variables", &showVarEditor))
+    // Add new variable
+    if (ImGui::Button("Add Variable", ImVec2(-1.0f, 0.0f)))
     {
-        // Add new variable
-        if (ImGui::Button("Add Variable"))
+        AnimVariable var;
+        var.name = "NewVar";
+        // Find a unique name
+        int counter = 1;
+        bool unique = false;
+        while (!unique)
         {
-            AnimVariable var;
-            var.name = "NewVar";
-            // Find a unique name
-            int counter = 1;
-            bool unique = false;
-            while (!unique)
+            unique = true;
+            for (const auto& v : graph.variables)
             {
-                unique = true;
-                for (const auto& v : graph.variables)
-                {
-                    if (v.name == var.name) { unique = false; break; }
-                }
-                if (!unique) var.name = "NewVar" + std::to_string(counter++);
+                if (v.name == var.name) { unique = false; break; }
             }
-            graph.variables.push_back(var);
-            editingVarIndex = (int)graph.variables.size() - 1;
+            if (!unique) var.name = "NewVar" + std::to_string(counter++);
+        }
+        graph.variables.push_back(var);
+        editingVarIndex = (int)graph.variables.size() - 1;
+        graph.dirty = true;
+    }
+
+    ImGui::Separator();
+
+    if (graph.variables.empty())
+    {
+        ImGui::TextDisabled("No variables defined. Click 'Add Variable' to create one.");
+    }
+    else
+    {
+        ImGui::Columns(4, "VarColumns");
+        ImGui::Text("Name"); ImGui::NextColumn();
+        ImGui::Text("Type"); ImGui::NextColumn();
+        ImGui::Text("Default"); ImGui::NextColumn();
+        ImGui::Text(""); ImGui::NextColumn();
+        ImGui::Separator();
+
+        int removeIdx = -1;
+        for (int i = 0; i < (int)graph.variables.size(); ++i)
+        {
+            auto& var = graph.variables[i];
+
+            // Name
+            char nameBuf[128];
+            strncpy_s(nameBuf, var.name.c_str(), sizeof(nameBuf));
+            ImGui::PushID(i);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
+            {
+                var.name = nameBuf;
+                graph.dirty = true;
+            }
+            ImGui::NextColumn();
+
+            // Type combo
+            const char* types[] = { "Bool", "Float", "Int", "Trigger" };
+            int typeIdx = (int)var.type;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("##type", &typeIdx, types, IM_ARRAYSIZE(types)))
+            {
+                var.type = (AnimVariableType)typeIdx;
+                graph.dirty = true;
+            }
+            ImGui::NextColumn();
+
+            // Default value
+            ImGui::SetNextItemWidth(-1);
+            if (var.type == AnimVariableType::Bool)
+            {
+                bool bval = (var.defaultValue != 0.0f);
+                if (ImGui::Checkbox("##def", &bval))
+                {
+                    var.defaultValue = bval ? 1.0f : 0.0f;
+                    graph.dirty = true;
+                }
+            }
+            else if (var.type == AnimVariableType::Int)
+            {
+                int ival = (int)var.defaultValue;
+                if (ImGui::DragInt("##def", &ival, 1.0f))
+                {
+                    var.defaultValue = (float)ival;
+                    graph.dirty = true;
+                }
+            }
+            else
+            {
+                if (ImGui::DragFloat("##def", &var.defaultValue, 0.1f))
+                    graph.dirty = true;
+            }
+            ImGui::NextColumn();
+
+            // Remove button
+            if (ImGui::Button("X"))
+                removeIdx = i;
+            ImGui::NextColumn();
+
+            ImGui::PopID();
+        }
+
+        if (removeIdx >= 0)
+        {
+            graph.variables.erase(graph.variables.begin() + removeIdx);
+            if (editingVarIndex == removeIdx) editingVarIndex = -1;
+            else if (editingVarIndex > removeIdx) editingVarIndex--;
             graph.dirty = true;
         }
 
-        ImGui::SameLine();
-        if (ImGui::Button("Close"))
-            showVarEditor = false;
-
-        ImGui::Separator();
-
-        if (graph.variables.empty())
-        {
-            ImGui::TextDisabled("No variables defined. Click 'Add Variable' to create one.");
-        }
-        else
-        {
-            ImGui::Columns(4, "VarColumns");
-            ImGui::Text("Name"); ImGui::NextColumn();
-            ImGui::Text("Type"); ImGui::NextColumn();
-            ImGui::Text("Default"); ImGui::NextColumn();
-            ImGui::Text(""); ImGui::NextColumn();
-            ImGui::Separator();
-
-            int removeIdx = -1;
-            for (int i = 0; i < (int)graph.variables.size(); ++i)
-            {
-                auto& var = graph.variables[i];
-
-                // Name
-                char nameBuf[128];
-                strncpy_s(nameBuf, var.name.c_str(), sizeof(nameBuf));
-                ImGui::PushID(i);
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
-                {
-                    var.name = nameBuf;
-                    graph.dirty = true;
-                }
-                ImGui::NextColumn();
-
-                // Type combo
-                const char* types[] = { "Bool", "Float", "Int", "Trigger" };
-                int typeIdx = (int)var.type;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::Combo("##type", &typeIdx, types, IM_ARRAYSIZE(types)))
-                {
-                    var.type = (AnimVariableType)typeIdx;
-                    graph.dirty = true;
-                }
-                ImGui::NextColumn();
-
-                // Default value
-                ImGui::SetNextItemWidth(-1);
-                if (var.type == AnimVariableType::Bool)
-                {
-                    bool bval = (var.defaultValue != 0.0f);
-                    if (ImGui::Checkbox("##def", &bval))
-                    {
-                        var.defaultValue = bval ? 1.0f : 0.0f;
-                        graph.dirty = true;
-                    }
-                }
-                else if (var.type == AnimVariableType::Int)
-                {
-                    int ival = (int)var.defaultValue;
-                    if (ImGui::DragInt("##def", &ival, 1.0f))
-                    {
-                        var.defaultValue = (float)ival;
-                        graph.dirty = true;
-                    }
-                }
-                else
-                {
-                    if (ImGui::DragFloat("##def", &var.defaultValue, 0.1f))
-                        graph.dirty = true;
-                }
-                ImGui::NextColumn();
-
-                // Remove button
-                if (ImGui::Button("X"))
-                    removeIdx = i;
-                ImGui::NextColumn();
-
-                ImGui::PopID();
-            }
-
-            if (removeIdx >= 0)
-            {
-                graph.variables.erase(graph.variables.begin() + removeIdx);
-                if (editingVarIndex == removeIdx) editingVarIndex = -1;
-                else if (editingVarIndex > removeIdx) editingVarIndex--;
-                graph.dirty = true;
-            }
-
-            ImGui::Columns(1);
-        }
+        ImGui::Columns(1);
     }
-    ImGui::End();
+
+    ImGui::EndChild();
 }
 
 // ===========================================================================
@@ -956,11 +947,6 @@ void PanelAnimator::drawToolbar()
     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
     ImGui::SameLine();
 
-    // Variables button
-    if (ImGui::Button("Variables"))
-        showVarEditor = !showVarEditor;
-
-    ImGui::SameLine();
     if (ImGui::Button("Clip Manager"))
         showClipManager = !showClipManager;
 
@@ -1004,6 +990,7 @@ void PanelAnimator::drawCanvas()
     if (canvasSize.x < 10 || canvasSize.y < 10) return;
 
     ImVec2 canvasTL = ImGui::GetCursorScreenPos();
+    canvasOrigin     = canvasTL;
 
     // Invisible button captures input
     ImGui::InvisibleButton("##animCanvas", canvasSize,
@@ -1145,14 +1132,10 @@ void PanelAnimator::drawCanvas()
         AnimState* st = graph.findState(selectedState);
         if (st)
         {
-            // Don't move the default entry state
-            if (!st->isDefault)
-            {
-                ImVec2 cp = screenToCanvas(mouse, canvasTL) - dragStateOffset;
-                st->posX = cp.x;
-                st->posY = cp.y;
-                graph.dirty = true;
-            }
+            ImVec2 cp = screenToCanvas(mouse, canvasTL) - dragStateOffset;
+            st->posX = cp.x;
+            st->posY = cp.y;
+            graph.dirty = true;
         }
     }
 
@@ -1252,12 +1235,16 @@ void PanelAnimator::drawCanvas()
         }
     }
 
-    // Delete key
+    // Delete key (never remove the default state)
     if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Delete) && selectedState >= 0)
     {
-        graph.removeState(selectedState);
-        graph.dirty  = true;
-        selectedState = -1;
+        AnimState* st = graph.findState(selectedState);
+        if (st && !st->isDefault)
+        {
+            graph.removeState(selectedState);
+            graph.dirty  = true;
+            selectedState = -1;
+        }
     }
 
     dl->PopClipRect();
@@ -1345,9 +1332,10 @@ void PanelAnimator::draw(bool& isOpened)
 
     drawToolbar();
     ImGui::Separator();
+    drawVariablesPanel();
+    ImGui::SameLine();
     drawCanvas();
     drawStateContextMenu();
-    drawVariableEditor();
     drawClipManager();
 
     ImGui::End();

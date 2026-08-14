@@ -42,6 +42,7 @@ class PanelProject
 		ImTextureRef iconScript;   ///< Icon for script assets.
 		ImTextureRef iconAudio;    ///< Icon for audio assets.
 		ImTextureRef iconVideo;    ///< Icon for video assets.
+		ImTextureRef iconAnimation; ///< Icon for .animation clip assets.
 		ImTextureRef iconModel;    ///< Icon for 3D model/mesh assets.
 		ImTextureRef iconPrefab;   ///< Icon for prefab assets.
 		ImTextureRef iconWorld;    ///< Icon for world/scene assets.

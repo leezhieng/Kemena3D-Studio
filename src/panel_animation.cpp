@@ -127,53 +127,43 @@ nlohmann::json AnimationDoc::toJson() const
     j["uuid"] = uuid;
     j["name"] = name;
     j["type"] = type;
+    j["duration"] = duration;
+    j["fps"]      = fps;
 
-    if (type == "mesh")
+    json tracksArr = json::array();
+    for (const auto& t : tracks)
     {
-        j["meshUuid"]   = meshUuid;
-        j["startFrame"] = startFrame;
-        j["endFrame"]   = endFrame;
+        json tj;
+        tj["objectUuid"] = t.objectUuid;
+        tj["objectName"] = t.objectName;
+        tj["property"]   = trackPropName(t.property);
+
+        json kfs = json::array();
+        for (const auto& k : t.keyframes)
+        {
+            json kj;
+            kj["time"]  = k.time;
+            kj["value"] = { k.value.x, k.value.y, k.value.z };
+            kj["easing"] = easingName(k.easing);
+            kj["leftTangent"]  = { k.leftTangent.x, k.leftTangent.y, k.leftTangent.z };
+            kj["rightTangent"] = { k.rightTangent.x, k.rightTangent.y, k.rightTangent.z };
+            kfs.push_back(kj);
+        }
+        tj["keyframes"] = kfs;
+        tracksArr.push_back(tj);
     }
-    else
+    j["tracks"] = tracksArr;
+
+    json evts = json::array();
+    for (const auto& e : events)
     {
-        j["duration"] = duration;
-        j["fps"]      = fps;
-
-        json tracksArr = json::array();
-        for (const auto& t : tracks)
-        {
-            json tj;
-            tj["objectUuid"] = t.objectUuid;
-            tj["objectName"] = t.objectName;
-            tj["property"]   = trackPropName(t.property);
-
-            json kfs = json::array();
-            for (const auto& k : t.keyframes)
-            {
-                json kj;
-                kj["time"]  = k.time;
-                kj["value"] = { k.value.x, k.value.y, k.value.z };
-                kj["easing"] = easingName(k.easing);
-                kj["leftTangent"]  = { k.leftTangent.x, k.leftTangent.y, k.leftTangent.z };
-                kj["rightTangent"] = { k.rightTangent.x, k.rightTangent.y, k.rightTangent.z };
-                kfs.push_back(kj);
-            }
-            tj["keyframes"] = kfs;
-            tracksArr.push_back(tj);
-        }
-        j["tracks"] = tracksArr;
-
-        json evts = json::array();
-        for (const auto& e : events)
-        {
-            json ej;
-            ej["time"]         = e.time;
-            ej["functionName"] = e.functionName;
-            ej["params"]       = e.params;
-            evts.push_back(ej);
-        }
-        j["events"] = evts;
+        json ej;
+        ej["time"]         = e.time;
+        ej["functionName"] = e.functionName;
+        ej["params"]       = e.params;
+        evts.push_back(ej);
     }
+    j["events"] = evts;
 
     return j;
 }
@@ -181,65 +171,56 @@ nlohmann::json AnimationDoc::toJson() const
 void AnimationDoc::fromJson(const nlohmann::json& j)
 {
     uuid = j.value("uuid", std::string());
-    name = j.value("name", std::string("NewAnimation"));
-    type = j.value("type", std::string("scene"));
+    name = j.value("name", std::string("NewCinematic"));
+    type = "scene";
 
-    if (type == "mesh")
-    {
-        meshUuid   = j.value("meshUuid", std::string());
-        startFrame = j.value("startFrame", 0);
-        endFrame   = j.value("endFrame", 30);
-    }
-    else
-    {
-        duration = j.value("duration", 5.0f);
-        fps      = j.value("fps", 30.0f);
+    duration = j.value("duration", 5.0f);
+    fps      = j.value("fps", 30.0f);
 
-        tracks.clear();
-        if (j.contains("tracks"))
+    tracks.clear();
+    if (j.contains("tracks"))
+    {
+        for (const auto& tj : j["tracks"])
         {
-            for (const auto& tj : j["tracks"])
-            {
-                AnimTrack t;
-                t.objectUuid = tj.value("objectUuid", std::string());
-                t.objectName = tj.value("objectName", std::string());
-                std::string propStr = tj.value("property", std::string("Position"));
-                if (propStr == "Rotation")      t.property = AnimTrackProperty::Rotation;
-                else if (propStr == "Scale")    t.property = AnimTrackProperty::Scale;
-                else if (propStr == "Event")    t.property = AnimTrackProperty::Event;
-                else                            t.property = AnimTrackProperty::Position;
+            AnimTrack t;
+            t.objectUuid = tj.value("objectUuid", std::string());
+            t.objectName = tj.value("objectName", std::string());
+            std::string propStr = tj.value("property", std::string("Position"));
+            if (propStr == "Rotation")      t.property = AnimTrackProperty::Rotation;
+            else if (propStr == "Scale")    t.property = AnimTrackProperty::Scale;
+            else if (propStr == "Event")    t.property = AnimTrackProperty::Event;
+            else                            t.property = AnimTrackProperty::Position;
 
-                if (tj.contains("keyframes"))
+            if (tj.contains("keyframes"))
+            {
+                for (const auto& kj : tj["keyframes"])
                 {
-                    for (const auto& kj : tj["keyframes"])
-                    {
-                        AnimKeyframe kf;
-                        kf.time  = kj.value("time", 0.0f);
-                        kf.easing = easingFromName(kj.value("easing", std::string("Linear")));
-                        if (kj.contains("value") && kj["value"].is_array() && kj["value"].size() >= 3)
-                            kf.value = { kj["value"][0].get<float>(), kj["value"][1].get<float>(), kj["value"][2].get<float>() };
-                        if (kj.contains("leftTangent") && kj["leftTangent"].is_array() && kj["leftTangent"].size() >= 3)
-                            kf.leftTangent = { kj["leftTangent"][0].get<float>(), kj["leftTangent"][1].get<float>(), kj["leftTangent"][2].get<float>() };
-                        if (kj.contains("rightTangent") && kj["rightTangent"].is_array() && kj["rightTangent"].size() >= 3)
-                            kf.rightTangent = { kj["rightTangent"][0].get<float>(), kj["rightTangent"][1].get<float>(), kj["rightTangent"][2].get<float>() };
-                        t.keyframes.push_back(kf);
-                    }
+                    AnimKeyframe kf;
+                    kf.time  = kj.value("time", 0.0f);
+                    kf.easing = easingFromName(kj.value("easing", std::string("Linear")));
+                    if (kj.contains("value") && kj["value"].is_array() && kj["value"].size() >= 3)
+                        kf.value = { kj["value"][0].get<float>(), kj["value"][1].get<float>(), kj["value"][2].get<float>() };
+                    if (kj.contains("leftTangent") && kj["leftTangent"].is_array() && kj["leftTangent"].size() >= 3)
+                        kf.leftTangent = { kj["leftTangent"][0].get<float>(), kj["leftTangent"][1].get<float>(), kj["leftTangent"][2].get<float>() };
+                    if (kj.contains("rightTangent") && kj["rightTangent"].is_array() && kj["rightTangent"].size() >= 3)
+                        kf.rightTangent = { kj["rightTangent"][0].get<float>(), kj["rightTangent"][1].get<float>(), kj["rightTangent"][2].get<float>() };
+                    t.keyframes.push_back(kf);
                 }
-                tracks.push_back(t);
             }
+            tracks.push_back(t);
         }
+    }
 
-        events.clear();
-        if (j.contains("events"))
+    events.clear();
+    if (j.contains("events"))
+    {
+        for (const auto& ej : j["events"])
         {
-            for (const auto& ej : j["events"])
-            {
-                AnimEventKeyframe ev;
-                ev.time         = ej.value("time", 0.0f);
-                ev.functionName = ej.value("functionName", std::string());
-                ev.params       = ej.value("params", std::string());
-                events.push_back(ev);
-            }
+            AnimEventKeyframe ev;
+            ev.time         = ej.value("time", 0.0f);
+            ev.functionName = ej.value("functionName", std::string());
+            ev.params       = ej.value("params", std::string());
+            events.push_back(ev);
         }
     }
 
@@ -369,7 +350,7 @@ void PanelAnimation::newDoc()
 {
     doc       = AnimationDoc{};
     doc.uuid  = generateUuid();
-    doc.name  = "NewAnimation";
+    doc.name  = "NewCinematic";
     doc.type  = "scene";
     doc.dirty = false;
     filePath.clear();
@@ -426,8 +407,8 @@ void SDLCALL PanelAnimation::saveAnimCallback(void* userdata,
     PanelAnimation* self = static_cast<PanelAnimation*>(userdata);
 
     std::string path = filelist[0];
-    if (path.size() < 10 || path.substr(path.size() - 10) != ".animation")
-        path += ".animation";
+    if (path.size() < 10 || path.substr(path.size() - 10) != ".cinematic")
+        path += ".cinematic";
 
     self->filePath = path;
     self->saveDoc();
@@ -440,11 +421,11 @@ void PanelAnimation::saveDocAs()
     fs::path assetsDir = fs::path(manager->projectPath.c_str()) / "Assets" / "Animations";
     fs::create_directories(assetsDir);
 
-    std::string defaultName = (doc.name.empty() ? "NewAnimation" : doc.name) + ".animation";
+    std::string defaultName = (doc.name.empty() ? "NewCinematic" : doc.name) + ".cinematic";
 
     SDL_DialogFileFilter filters[] = {
-        { "Animation files", "animation" },
-        { "All files",       "*"        }
+        { "Cinematic files", "cinematic" },
+        { "All files",       "*"         }
     };
 
     SDL_ShowSaveFileDialog(
@@ -484,34 +465,6 @@ std::vector<kObject*> PanelAnimation::getSceneObjects() const
     return result;
 }
 
-void PanelAnimation::promptSelectMesh()
-{
-    if (!manager->projectOpened) return;
-
-    fs::path assetsPath = fs::path(manager->projectPath.c_str()) / "Assets";
-    std::vector<fs::path> meshFiles;
-    if (fs::exists(assetsPath))
-    {
-        for (const auto& entry : fs::recursive_directory_iterator(assetsPath))
-        {
-            if (entry.is_regular_file())
-            {
-                auto ext = entry.path().extension().string();
-                if (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx")
-                    meshFiles.push_back(entry.path());
-            }
-        }
-    }
-
-    if (meshFiles.empty())
-    {
-        ImGui::OpenPopup("##NoMeshFiles");
-        return;
-    }
-
-    ImGui::OpenPopup("Select Mesh");
-}
-
 void PanelAnimation::promptAddObjectTrack()
 {
     if (doc.type != "scene") return;
@@ -536,8 +489,8 @@ void PanelAnimation::draw(bool& isOpened)
 
     ImGui::SetNextWindowSize({ 1000, 700 }, ImGuiCond_FirstUseEver);
 
-    kString title = doc.dirty ? "Animation *" : "Animation";
-    title += "###AnimationEditor";
+    kString title = doc.dirty ? "Cinematic *" : "Cinematic";
+    title += "###CinematicEditor";
 
     ImGuiWindowFlags wflags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     if (!ImGui::Begin(title.c_str(), &isOpened, wflags))
@@ -571,12 +524,6 @@ void PanelAnimation::draw(bool& isOpened)
     }
 
     // Popups
-    if (ImGui::BeginPopup("##NoMeshFiles"))
-    {
-        ImGui::Text("No mesh files found in project Assets.");
-        ImGui::EndPopup();
-    }
-
     if (ImGui::BeginPopup("##AddObjectTrack"))
     {
         ImGui::Text("Select Object:");
@@ -641,45 +588,6 @@ void PanelAnimation::draw(bool& isOpened)
         ImGui::EndPopup();
     }
 
-    if (ImGui::BeginPopup("Select Mesh"))
-    {
-        ImGui::Text("Select a mesh file:");
-        ImGui::Separator();
-
-        fs::path assetsPath = fs::path(manager->projectPath.c_str()) / "Assets";
-        std::vector<fs::path> meshFiles;
-        if (fs::exists(assetsPath))
-        {
-            for (const auto& entry : fs::recursive_directory_iterator(assetsPath))
-            {
-                if (entry.is_regular_file())
-                {
-                    auto ext = entry.path().extension().string();
-                    if (ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx")
-                        meshFiles.push_back(entry.path());
-                }
-            }
-        }
-
-        for (const auto& mp : meshFiles)
-        {
-            std::string relPath = fs::relative(mp, assetsPath).string();
-            if (ImGui::Selectable(relPath.c_str()))
-            {
-                std::string genericRel = fs::relative(mp, assetsPath).generic_string();
-                auto it = manager->uuidMap.find(genericRel);
-                if (it != manager->uuidMap.end())
-                {
-                    doc.meshUuid = it->second;
-                    doc.type     = "mesh";
-                    doc.dirty    = true;
-                }
-            }
-        }
-
-        ImGui::EndPopup();
-    }
-
     ImGui::End();
 }
 
@@ -705,8 +613,8 @@ void PanelAnimation::drawToolbar()
             fs::create_directories(animDir);
 
         SDL_DialogFileFilter filters[] = {
-            { "Animation files", "animation" },
-            { "All files",       "*" }
+            { "Cinematic files", "cinematic" },
+            { "All files",       "*"         }
         };
 
         SDL_ShowOpenFileDialog(
@@ -739,7 +647,7 @@ void PanelAnimation::drawToolbar()
     bool hasDoc = !filePath.empty() || doc.dirty;
     if (!hasDoc)
     {
-        ImGui::TextDisabled("No animation loaded");
+        ImGui::TextDisabled("No cinematic loaded");
     }
     else
     {
@@ -753,23 +661,7 @@ void PanelAnimation::drawToolbar()
         }
         ImGui::SameLine();
 
-        if (doc.type == "mesh")
-        {
-            ImGui::TextColored({0.3f, 0.6f, 1.0f, 1.0f}, "Mesh Animation");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Change to Scene"))
-            {
-                doc = AnimationDoc{};
-                doc.uuid = generateUuid();
-                doc.name = nameBuf;
-                doc.type = "scene";
-                doc.dirty = true;
-            }
-        }
-        else
-        {
-            ImGui::TextColored({0.3f, 1.0f, 0.5f, 1.0f}, "Scene Animation");
-        }
+        ImGui::TextColored({0.3f, 1.0f, 0.5f, 1.0f}, "Cinematic");
     }
 
     ImGui::EndDisabled();
@@ -804,42 +696,13 @@ void PanelAnimation::drawTimelineTab()
     bool hasContent = !filePath.empty() || doc.dirty;
     if (!hasContent)
     {
-        ImVec2 textSize = ImGui::CalcTextSize("Open or create an .animation file to begin editing");
+        ImVec2 textSize = ImGui::CalcTextSize("Open or create a .cinematic file to begin editing");
         ImGui::SetCursorPos({ (avail.x - textSize.x) * 0.5f, (avail.y - textSize.y) * 0.5f });
-        ImGui::TextDisabled("Open or create an .animation file to begin editing");
+        ImGui::TextDisabled("Open or create a .cinematic file to begin editing");
         return;
     }
 
-    if (doc.type == "mesh")
-    {
-        ImGui::TextWrapped("Mesh Animation: %s  Frames [%d - %d]",
-            doc.meshUuid.c_str(), doc.startFrame, doc.endFrame);
-
-        ImGui::Separator();
-
-        if (ImGui::Button("Select Mesh..."))
-            promptSelectMesh();
-
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100.f);
-        ImGui::DragInt("Start Frame", &doc.startFrame, 1, 0, 1000);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100.f);
-        ImGui::DragInt("End Frame", &doc.endFrame, 1, 0, 1000);
-
-        ImGui::Separator();
-
-        ImGui::Text("Bones (loaded from mesh):");
-        for (const auto& bc : doc.boneClips)
-        {
-            ImGui::BulletText("%s  [%d - %d]", bc.boneName.c_str(), bc.startFrame, bc.endFrame);
-        }
-        if (doc.boneClips.empty())
-            ImGui::TextDisabled("No skeletal data — load a skinned mesh");
-        return;
-    }
-
-    // Scene animation timeline
+    // Cinematic timeline
     ImGui::SetNextItemWidth(80.f);
     ImGui::DragFloat("Duration", &doc.duration, 0.1f, 0.5f, 120.0f, "%.1fs");
     ImGui::SameLine();
@@ -1234,9 +1097,7 @@ void PanelAnimation::drawGraphEditorTab()
     bool hasContent = !filePath.empty() || doc.dirty;
     if (!hasContent || doc.type != "scene")
     {
-        const char* msg = (doc.type == "mesh")
-            ? "Graph editor is only available for scene animations"
-            : "Open or create a scene .animation file to edit curves";
+        const char* msg = "Open or create a .cinematic file to edit curves";
         ImVec2 textSize = ImGui::CalcTextSize(msg);
         ImGui::SetCursorPos({ (avail.x - textSize.x) * 0.5f, (avail.y - textSize.y) * 0.5f });
         ImGui::TextDisabled("%s", msg);

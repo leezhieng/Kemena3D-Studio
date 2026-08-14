@@ -77,39 +77,19 @@ struct AnimTrack
     std::vector<AnimKeyframe> keyframes;   ///< Sorted by time.
 };
 
-/**
- * @param meshUuid mesh asset UUID (for mesh-animations)
- * @param startFrame / endFrame frame range (for mesh-animations, baked)
- */
-struct AnimBoneClip
-{
-    std::string boneName;
-    // For mesh animations: the animation data is stored in the mesh file.
-    // We just reference the range.
-    int startFrame = 0;
-    int endFrame   = 0;
-};
-
 // ===========================================================================
 // Top-level animation document
 // ===========================================================================
 
 /**
- * @brief Full .animation document loaded into the editor.
+ * @brief Full .cinematic document loaded into the editor.
  */
 struct AnimationDoc
 {
     std::string uuid;
     std::string name;
-    std::string type = "scene";  ///< "mesh" or "scene"
+    std::string type = "scene";  ///< Cinematic documents are always scene animations.
 
-    // --- Mesh animation properties ---
-    std::string meshUuid;     ///< Mesh asset UUID for skeleton animation.
-    int         startFrame = 0;
-    int         endFrame   = 30;
-    std::vector<AnimBoneClip> boneClips; ///< Per-bone clip info (populated from mesh).
-
-    // --- Scene animation properties ---
     float       duration = 5.0f;  ///< Total animation length in seconds.
     float       fps      = 30.0f; ///< Timeline frames-per-second display.
     std::vector<AnimTrack> tracks; ///< Per-object per-property tracks.
@@ -144,15 +124,14 @@ struct AnimationDoc
 };
 
 // ===========================================================================
-// Animation Editor Panel
+// Cinematic Editor Panel
 // ===========================================================================
 
 /**
- * @brief Animation editing panel with Timeline and Graph (curve) tabs.
+ * @brief Cinematic editing panel with Timeline and Graph (curve) tabs.
  *
- * Works with .animation files — supports both mesh-skeleton animations
- * (read-only timeline display of bone keyframes) and scene-object animations
- * (fully editable keyframe tracks for position/rotation/scale plus script events).
+ * Works with .cinematic files — editable scene-object animation keyframe tracks
+ * for position/rotation/scale plus script events.
  */
 class PanelAnimation
 {
@@ -163,7 +142,7 @@ public:
 
     void draw(bool& isOpened);
 
-    /** @brief Open a .animation file into the editor. */
+    /** @brief Open a .cinematic file into the editor. */
     void openFile(const std::string& path);
 
     void saveCurrent() { saveDoc(); }
@@ -256,9 +235,6 @@ private:
 
     /** @brief Delete the selected keyframe. */
     void deleteSelectedKeyframe();
-
-    /** @brief Prompt for mesh asset to load animation data. */
-    void promptSelectMesh();
 
     /** @brief Scan the scene for objects to offer in the add-track dialog. */
     std::vector<kObject*> getSceneObjects() const;

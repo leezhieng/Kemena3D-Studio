@@ -139,6 +139,22 @@ bool convertMeshToGlbEx(const fs::path& inputPath, const fs::path& outputPath,
 bool convertMeshToGlb(const fs::path& inputPath, const fs::path& outputPath);
 
 /**
+ * @brief Determine the largest animation frame index present in a model file.
+ *
+ * Loads @p inputPath with Assimp and inspects every animation clip. For each
+ * clip the longest tick span is taken from both the clip's duration and its
+ * channel keyframes, converted to seconds using the clip's tick rate, then
+ * converted to editor timeline frames using @p fps (30 by default, matching
+ * the mesh-animation preview).
+ *
+ * @param inputPath Path to the source model file (e.g. an FBX with animations).
+ * @param fps       Editor timeline frames-per-second used for the conversion.
+ * @return The inclusive end-frame index, or 30 when the file has no animation
+ *         (or cannot be loaded), preserving the previous default behaviour.
+ */
+int getMaxAnimationFrames(const fs::path& inputPath, float fps = 30.0f);
+
+/**
  * @brief Per-texture import settings that affect the generated .dds bytes.
  *
  * Colour-space (sRGB), wrap and filter modes are *not* baked into the file —

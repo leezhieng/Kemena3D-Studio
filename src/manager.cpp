@@ -580,13 +580,17 @@ void Manager::loadRecentProjects()
         std::ifstream f(configFile);
         json j = json::parse(f);
         recentProjects.clear();
-        // Filter out empties and duplicates — older builds occasionally
-        // recorded a blank entry when project creation was interrupted.
+        // Filter out empties, duplicates and paths that no longer exist —
+        // older builds occasionally recorded a blank entry when project
+        // creation was interrupted, and folders can be moved/deleted between
+        // sessions.
         std::set<kString> seen;
         for (auto &entry : j["projects"])
         {
             kString p = entry.get<std::string>();
             if (p.empty() || !seen.insert(p).second)
+                continue;
+            if (!fs::exists(p))
                 continue;
             recentProjects.push_back(std::move(p));
         }
@@ -1239,6 +1243,8 @@ kString Manager::checkAssetType(const fs::path &p)
     else if (ext == ".animator")
         return "animator";
     else if (ext == ".animation")
+        return "animation";
+    else if (ext == ".cinematic")
         return "animation";
 
     return "unknown"; // Unknown
@@ -3778,13 +3784,13 @@ void Manager::createNewAnimation()
         return;
 
     fs::path dir = getCurrentDirPath();
-    kString baseName = "New Animation";
-    fs::path filePath = dir / (baseName + ".animation");
+    kString baseName = "New Cinematic";
+    fs::path filePath = dir / (baseName + ".cinematic");
     int counter = 1;
     while (fs::exists(filePath))
-        filePath = dir / (baseName + " " + std::to_string(counter++) + ".animation");
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".cinematic");
 
-    // Write a default .animation file (scene type).
+    // Write a default .cinematic file (scene animation).
     nlohmann::json j;
     j["uuid"]       = generateUuid();
     j["name"]       = filePath.stem().string();
@@ -3797,7 +3803,7 @@ void Manager::createNewAnimation()
     std::ofstream f(filePath);
     if (!f.is_open())
     {
-        std::cerr << "Failed to create animation file: " << filePath << "\n";
+        std::cerr << "Failed to create cinematic file: " << filePath << "\n";
         return;
     }
     f << j.dump(4);
@@ -3852,6 +3858,10 @@ void Manager::createNewAnimationFromMesh(const kString &meshUuid, const fs::path
     while (fs::exists(filePath))
         filePath = dir / (baseName + " " + std::to_string(counter++) + ".animation");
 
+    // End the clip at the source file's longest animation instead of assuming
+    // 30 frames. Fallback remains 30 when the source has no animation.
+    int endFrame = getMaxAnimationFrames(meshPath);
+
     // Write a mesh-linked .animation file.
     nlohmann::json j;
     j["uuid"]       = generateUuid();
@@ -3859,7 +3869,7 @@ void Manager::createNewAnimationFromMesh(const kString &meshUuid, const fs::path
     j["type"]       = "mesh";
     j["meshUuid"]   = meshUuid;
     j["startFrame"] = 0;
-    j["endFrame"]   = 30;
+    j["endFrame"]   = endFrame;
 
     std::ofstream f(filePath);
     if (!f.is_open())

@@ -51,6 +51,9 @@ PanelProject::PanelProject(kGuiManager* setGuiManager, Manager* setManager, kAss
 	kTexture2D* tex_video = assetManager->loadTexture2DFromResource("ICON_VIDEO_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconVideo = (ImTextureRef)(intptr_t)tex_video->getTextureID();
 
+	kTexture2D* tex_animation = assetManager->loadTexture2DFromResource("ICON_ANIMATION_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+	iconAnimation = (ImTextureRef)(intptr_t)tex_animation->getTextureID();
+
 	kTexture2D* tex_model = assetManager->loadTexture2DFromResource("ICON_MODEL_FILE", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconModel = (ImTextureRef)(intptr_t)tex_model->getTextureID();
 
@@ -797,7 +800,9 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 			else if (ext == ".animator")
 				icon = iconLogic;    // Graph-editor visual, use logic icon
 			else if (ext == ".animation")
-				icon = iconModel;    // Animation data, model-adjacent
+				icon = iconAnimation;    // Character animation data
+			else if (ext == ".cinematic")
+				icon = iconLogic;    // Cinematic curve/graph visual
 			else
 				icon = iconOther;
 
@@ -937,7 +942,9 @@ void PanelProject::refreshThumbnailList()
 							else if (ext == ".animator")
 								icon = iconLogic;
 							else if (ext == ".animation")
-								icon = iconModel;
+								icon = iconAnimation;
+							else if (ext == ".cinematic")
+								icon = iconLogic;
 							else
 								icon = iconOther;
 
@@ -1122,7 +1129,7 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 				ImGui::Separator();
 				if (ImGui::MenuItem("Animator"))
 					{ manager->createNewAnimator();   needRefreshList = true; }
-				if (ImGui::MenuItem("Animation Clip"))
+				if (ImGui::MenuItem("Cinematic Clip"))
 					{ manager->createNewAnimation();  needRefreshList = true; }
 				ImGui::EndMenu();
 			}

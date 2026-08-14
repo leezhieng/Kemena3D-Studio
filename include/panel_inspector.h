@@ -251,6 +251,8 @@ private:
 	std::string animPreviewMeshUuid;     ///< Mesh UUID linked to this animation.
 	int animPreviewStartFrame = 0;       ///< First frame of the animation clip.
 	int animPreviewEndFrame   = 30;      ///< Last frame of the animation clip.
+	int animPreviewStartFrameDraft = 0;  ///< Unsaved Start Frame value shown in the inspector.
+	int animPreviewEndFrameDraft   = 30; ///< Unsaved End Frame value shown in the inspector.
 
 	bool animPreviewLightEnabled = false; ///< Whether the preview light is enabled.
 	float animPreviewLightYaw   = 45.0f; ///< Preview light azimuth, in degrees.

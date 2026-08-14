@@ -4178,10 +4178,13 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
     if (animPath.empty() || !fs::exists(animPath))
         { drawAssetThumbnail(gui, asset); return; }
 
-    std::ifstream f(animPath);
-    if (!f.is_open()) { drawAssetThumbnail(gui, asset); return; }
     nlohmann::json j;
-    try { f >> j; }
+    try
+    {
+        std::ifstream f(animPath);
+        if (!f.is_open()) { drawAssetThumbnail(gui, asset); return; }
+        f >> j;
+    }
     catch (...) { drawAssetThumbnail(gui, asset); return; }
 
     std::string animType = j.value("type", std::string("scene"));
@@ -4199,7 +4202,7 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         snprintf(infoBuf, sizeof(infoBuf), "Duration: %.1fs\nFPS: %.0f\nTracks: %d\nEvents: %d",
                  dur, fps, numTracks, numEvents);
         ImGui::TextUnformatted(infoBuf);
-        if (ImGui::Button("Open in Animation Editor", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
+        if (ImGui::Button("Open in Cinematic Editor", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
         {
             if (manager->panelAnimation)
             {
@@ -4223,6 +4226,8 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         animPreviewMeshUuid = meshUuid;
         animPreviewStartFrame = startF;
         animPreviewEndFrame   = endF;
+        animPreviewStartFrameDraft = startF;
+        animPreviewEndFrameDraft   = endF;
         animPreviewLightEnabled = false;
         animPreviewRotX = 24.09f;
         animPreviewRotY = 26.57f;
@@ -4562,15 +4567,51 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
              meshUuid.substr(0, 12).c_str(), animPreviewStartFrame, animPreviewEndFrame);
     ImGui::TextUnformatted(infoBuf);
 
-    // Open in Animation Editor
+    // Start/End frame editing — these values live here in the inspector now
+    // that mesh-extracted .animation files no longer open in the editor.
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
-    if (ImGui::Button("Open in Animation Editor", ImVec2(sz, 0)))
+    ImGui::SetNextItemWidth((sz - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
+    ImGui::DragInt("Start Frame", &animPreviewStartFrameDraft, 1, 0, 1000);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth((sz - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
+    ImGui::DragInt("End Frame", &animPreviewEndFrameDraft, 1, 0, 1000);
+
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    if (ImGui::Button("Apply", ImVec2((sz - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 0)))
     {
-        if (manager->panelAnimation)
+        if (animPreviewEndFrameDraft < animPreviewStartFrameDraft)
+            animPreviewEndFrameDraft = animPreviewStartFrameDraft;
+
+        animPreviewStartFrame = animPreviewStartFrameDraft;
+        animPreviewEndFrame   = animPreviewEndFrameDraft;
+
+        if (animPreviewFrame < (float)animPreviewStartFrame)
+            animPreviewFrame = (float)animPreviewStartFrame;
+        if (animPreviewFrame > (float)animPreviewEndFrame)
+            animPreviewFrame = (float)animPreviewEndFrame;
+        animPreviewPlaying = false;
+
+        try
         {
-            manager->panelAnimation->openFile(animPath.string());
-            manager->pendingOpenAnimationEditor = true;
+            nlohmann::json outJ;
+            {
+                std::ifstream in(animPath);
+                if (in.is_open())
+                    in >> outJ;
+            }
+            outJ["startFrame"] = animPreviewStartFrame;
+            outJ["endFrame"]   = animPreviewEndFrame;
+            std::ofstream out(animPath);
+            if (out.is_open())
+                out << outJ.dump(4);
         }
+        catch (...) {}
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Revert", ImVec2((sz - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 0)))
+    {
+        animPreviewStartFrameDraft = animPreviewStartFrame;
+        animPreviewEndFrameDraft   = animPreviewEndFrame;
     }
 }
 

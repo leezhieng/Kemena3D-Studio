@@ -635,7 +635,7 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					showPanel.game = !showPanel.game;
 				if (gui->menuItem("Animator Editor", "", showPanel.animatorEditor))
 					showPanel.animatorEditor = !showPanel.animatorEditor;
-				if (gui->menuItem("Animation Editor", "", showPanel.animationEditor))
+				if (gui->menuItem("Cinematic Editor", "", showPanel.animationEditor))
 					showPanel.animationEditor = !showPanel.animationEditor;
 				ImGui::EndMenu();
 			}

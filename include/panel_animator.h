@@ -188,6 +188,7 @@ private:
     bool   isPanning    = false;
     ImVec2 panStartMouse;
     ImVec2 panStartOffset;
+    ImVec2 canvasOrigin  = { 0.f, 0.f }; ///< Cached canvas top-left (screen space) for link preview.
 
     // -----------------------------------------------------------------------
     // Interaction state
@@ -206,7 +207,6 @@ private:
 
     // Variable editor
     int   editingVarIndex   = -1;   ///< Index into graph.variables being edited; -1 = none.
-    bool  showVarEditor     = false;
 
     // Clip manager UI
     bool  showClipManager   = false;
@@ -230,7 +230,7 @@ private:
     void drawLinks(ImDrawList* dl, ImVec2 origin);
     void drawDragLink(ImDrawList* dl);
     void drawStateContextMenu();
-    void drawVariableEditor();
+    void drawVariablesPanel();
     void drawClipManager();
 
     // Coordinate helpers

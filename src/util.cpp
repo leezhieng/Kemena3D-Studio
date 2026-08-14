@@ -350,6 +350,51 @@ bool convertMeshToGlb(const fs::path &inputPath, const fs::path &outputPath)
     return convertMeshToGlbEx(inputPath, outputPath, MeshImportOptions{});
 }
 
+int getMaxAnimationFrames(const fs::path &inputPath, float fps)
+{
+    if (fps <= 0.0f)
+        fps = 30.0f;
+
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(inputPath.string(), 0);
+    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || scene->mNumAnimations == 0)
+        return 30;
+
+    double maxFrames = 0.0;
+
+    for (unsigned int a = 0; a < scene->mNumAnimations; ++a)
+    {
+        const aiAnimation *anim = scene->mAnimations[a];
+        if (!anim)
+            continue;
+
+        double maxTicks = (anim->mDuration > 0.0) ? (double)anim->mDuration : 0.0;
+
+        // mDuration normally covers the longest channel, but be defensive:
+        // some exporters leave it stale, so also scan every keyframe.
+        for (unsigned int c = 0; c < anim->mNumChannels; ++c)
+        {
+            const aiNodeAnim *ch = anim->mChannels[c];
+            if (!ch)
+                continue;
+
+            for (unsigned int k = 0; k < ch->mNumPositionKeys; ++k)
+                maxTicks = std::max(maxTicks, (double)ch->mPositionKeys[k].mTime);
+            for (unsigned int k = 0; k < ch->mNumRotationKeys; ++k)
+                maxTicks = std::max(maxTicks, (double)ch->mRotationKeys[k].mTime);
+            for (unsigned int k = 0; k < ch->mNumScalingKeys; ++k)
+                maxTicks = std::max(maxTicks, (double)ch->mScalingKeys[k].mTime);
+        }
+
+        const double ticksPerSecond = (anim->mTicksPerSecond > 0.0)
+            ? (double)anim->mTicksPerSecond
+            : 1.0;
+        maxFrames = std::max(maxFrames, maxTicks / ticksPerSecond * (double)fps);
+    }
+
+    return std::max(0, (int)std::lround(maxFrames));
+}
+
 // DXT5-compress a single mip level (RGBA8, tightly packed) into a block buffer.
 // Partial edge blocks are padded with zeros, matching the DDS block layout.
 static std::vector<unsigned char> dxt5CompressLevel(const unsigned char *rgba, int w, int h, int quality)
