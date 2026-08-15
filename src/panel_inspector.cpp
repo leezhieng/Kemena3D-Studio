@@ -4776,12 +4776,15 @@ void PanelInspector::draw(bool &opened)
 
     gui->windowStart("Inspector", &opened);
 
-    // Animator state editing takes priority when a state node is selected in the
-    // animator editor — its properties are shown here instead of a canvas context menu.
+    // Animator editing takes priority only while the animator editor is the
+    // focused panel (or its animation picker popup is open). When another
+    // panel is focused, its own selection is shown here instead.
     if (manager->panelAnimator != nullptr && manager->panelAnimator->visible &&
-        manager->panelAnimator->hasSelectedState())
+        (manager->panelAnimator->focused || manager->panelAnimator->isAnimPickerOpen()) &&
+        (manager->panelAnimator->hasSelectedState() ||
+         manager->panelAnimator->hasSelectedTransition()))
     {
-        manager->panelAnimator->drawSelectedStateInspector();
+        manager->panelAnimator->drawSelectedInspector();
         gui->windowEnd();
         if (!manager->projectOpened)
             gui->endDisabled();

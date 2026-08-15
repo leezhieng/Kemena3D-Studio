@@ -49,6 +49,15 @@ struct AnimCondition
 };
 
 /**
+ * @brief How a transition blends between its source and destination states.
+ */
+enum class AnimBlendMode
+{
+    Instant   = 0,  ///< Snap to the destination clip immediately.
+    CrossFade = 1   ///< Blend from source to destination over blendDuration seconds.
+};
+
+/**
  * @brief A transition linking two animation states.
  */
 struct AnimTransition
@@ -59,6 +68,9 @@ struct AnimTransition
     std::vector<AnimCondition> conditions;   ///< All conditions (AND logic).
     bool                hasExitTime = false; ///< If true, requires the source anim to play for exitTime seconds before checking conditions.
     float               exitTime    = 0.0f; ///< Seconds before the transition is considered.
+
+    AnimBlendMode       blendMode     = AnimBlendMode::CrossFade; ///< Blending style used for the transition.
+    float               blendDuration = 0.25f;                   ///< Cross-fade duration in seconds.
 };
 
 /**
@@ -177,8 +189,23 @@ public:
     /** @brief Id of the currently selected state node, or -1 when none. */
     int getSelectedState() const { return selectedState; }
 
+    /** @brief True when a transition link is currently selected in the graph. */
+    bool hasSelectedTransition() const { return selectedTransition >= 0; }
+
+    /** @brief Id of the currently selected transition link, or -1 when none. */
+    int getSelectedTransition() const { return selectedTransition; }
+
     /** @brief Draw the editing form for the selected state (called from the Inspector panel). */
     void drawSelectedStateInspector();
+
+    /** @brief Draw the editing form for the selected transition (called from the Inspector panel). */
+    void drawSelectedTransitionInspector();
+
+    /** @brief Draw whichever animator element (transition or state) is selected in the Inspector panel. */
+    void drawSelectedInspector();
+
+    /** @brief True while the animation picker popup is open. */
+    bool isAnimPickerOpen() const;
 
 private:
     // -----------------------------------------------------------------------
@@ -203,15 +230,18 @@ private:
     // -----------------------------------------------------------------------
     // Interaction state
     // -----------------------------------------------------------------------
-    int  selectedState    = -1;
-    bool isDraggingState  = false;
+    int  selectedState       = -1;
+    int  selectedTransition  = -1;   ///< Id of the selected transition link; -1 = none.
+    bool isDraggingState     = false;
     ImVec2 dragStateOffset;
 
     // Connection drag
     bool  isDraggingLink  = false;
     int   dragFromState   = -1;
-// Context menu
-ImVec2 contextMenuPos;
+    bool  dragFromOutput  = false;   ///< True when the link drag started from an output (right) pin.
+
+    // Context menu
+    ImVec2 contextMenuPos;
 
 
     // Variable editor
@@ -219,6 +249,10 @@ ImVec2 contextMenuPos;
 
     // Clip manager UI
     bool  showClipManager   = false;
+
+    // Animation picker popup state
+    char        animPickerSearch[128] = {0};
+    std::string animPickerSelected;
 
     // -----------------------------------------------------------------------
     // Node size constants
@@ -241,6 +275,9 @@ ImVec2 contextMenuPos;
     void drawStateContextMenu();
     void drawVariablesPanel();
     void drawClipManager();
+    void drawAnimPickerPopup(AnimState* state);
+    void collectAnimationAssets(std::vector<std::string>& uuids,
+                                std::vector<std::string>& names) const;
 
     // Coordinate helpers
     ImVec2 canvasToScreen(ImVec2 cp, ImVec2 origin) const;
@@ -253,6 +290,9 @@ ImVec2 contextMenuPos;
     /** @brief Hit-test: find which state's pin is under the cursor. */
     int hitTestInputPins(ImVec2 mouse, ImVec2 origin) const;
     int hitTestOutputPins(ImVec2 mouse, ImVec2 origin) const;
+
+    /** @brief Hit-test: find which transition link is under the cursor. */
+    int hitTestLinks(ImVec2 mouse, ImVec2 origin) const;
 
     // File I/O
     void newGraph();

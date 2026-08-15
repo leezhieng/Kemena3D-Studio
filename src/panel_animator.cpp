@@ -7,6 +7,8 @@
 #include <chrono>
 #include <random>
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -18,6 +20,11 @@ using json = nlohmann::json;
 static ImU32 toImU32(ImVec4 c)
 {
     return IM_COL32((int)(c.x * 255), (int)(c.y * 255), (int)(c.z * 255), (int)(c.w * 255));
+}
+
+static char asciiToLower(unsigned char c)
+{
+    return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : (char)c;
 }
 
 static ImVec2 operator+(ImVec2 a, ImVec2 b) { return { a.x + b.x, a.y + b.y }; }
@@ -182,6 +189,8 @@ nlohmann::json AnimatorGraph::toJson() const
         tj["toStateId"]   = t.toStateId;
         tj["hasExitTime"] = t.hasExitTime;
         tj["exitTime"]    = t.exitTime;
+        tj["blendMode"]     = (int)t.blendMode;
+        tj["blendDuration"] = t.blendDuration;
 
         json condsArr = json::array();
         for (const auto& c : t.conditions)
@@ -261,6 +270,8 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
             tr.toStateId   = t.value("toStateId", -1);
             tr.hasExitTime = t.value("hasExitTime", false);
             tr.exitTime    = t.value("exitTime", 0.0f);
+            tr.blendMode     = (AnimBlendMode)t.value("blendMode", (int)AnimBlendMode::CrossFade);
+            tr.blendDuration = t.value("blendDuration", 0.25f);
 
             if (t.contains("conditions"))
             {
@@ -309,9 +320,14 @@ void PanelAnimator::newGraph()
     graph.name  = "NewAnimator";
     graph.dirty = false;
     filePath.clear();
-    selectedState   = -1;
-    editingVarIndex = -1;
-    showClipManager = false;
+    selectedState      = -1;
+    selectedTransition = -1;
+    editingVarIndex    = -1;
+    showClipManager    = false;
+    isDraggingLink     = false;
+    dragFromState      = -1;
+    dragFromOutput     = false;
+    isDraggingState    = false;
 
     // Add a default entry state
     AnimState entry;
@@ -338,8 +354,13 @@ void PanelAnimator::loadGraph(const std::string& path)
         graph.fromJson(j);
         filePath = path;
         graph.dirty = false;
-        selectedState   = -1;
-        editingVarIndex = -1;
+        selectedState      = -1;
+        selectedTransition = -1;
+        editingVarIndex    = -1;
+        isDraggingLink     = false;
+        dragFromState      = -1;
+        dragFromOutput     = false;
+        isDraggingState    = false;
     }
     catch (...) {}
 }
@@ -433,8 +454,6 @@ int PanelAnimator::hitTestInputPins(ImVec2 mouse, ImVec2 origin) const
 {
     for (const auto& s : graph.states)
     {
-        // Skip the default entry state for input pin test (it has no input)
-        if (s.isDefault) continue;
         ImVec2 p = getInputPinPos(s, origin);
         float dx = mouse.x - p.x, dy = mouse.y - p.y;
         float r = PIN_RADIUS * canvasZoom * 2.5f;
@@ -455,6 +474,66 @@ int PanelAnimator::hitTestOutputPins(ImVec2 mouse, ImVec2 origin) const
             return s.id;
     }
     return -1;
+}
+
+int PanelAnimator::hitTestLinks(ImVec2 mouse, ImVec2 origin) const
+{
+    const int   segments  = 24;
+    const float hitRadius = 9.0f;
+    float bestDist2 = hitRadius * hitRadius;
+    int   bestId    = -1;
+
+    auto findStateById = [&](int id) -> const AnimState*
+    {
+        for (const auto& s : graph.states)
+            if (s.id == id) return &s;
+        return nullptr;
+    };
+
+    for (const auto& trans : graph.transitions)
+    {
+        const AnimState* from = findStateById(trans.fromStateId);
+        const AnimState* to   = findStateById(trans.toStateId);
+        if (!from || !to) continue;
+
+        ImVec2 p0 = getOutputPinPos(*from, origin);
+        ImVec2 p3 = getInputPinPos(*to, origin);
+        float cx = (p3.x - p0.x) * 0.5f;
+        ImVec2 p1 = { p0.x + cx, p0.y };
+        ImVec2 p2 = { p3.x - cx, p3.y };
+
+        ImVec2 prev = p0;
+        for (int i = 1; i <= segments; ++i)
+        {
+            float t = (float)i / (float)segments;
+            float u = 1.0f - t;
+            float uu = u * u;
+            float tt = t * t;
+            ImVec2 pt = {
+                uu * u * p0.x + 3.0f * uu * t * p1.x + 3.0f * u * tt * p2.x + tt * t * p3.x,
+                uu * u * p0.y + 3.0f * uu * t * p1.y + 3.0f * u * tt * p2.y + tt * t * p3.y
+            };
+
+            float dx = pt.x - prev.x;
+            float dy = pt.y - prev.y;
+            float len2 = dx * dx + dy * dy;
+            float proj = len2 > 0.0001f
+                ? ((mouse.x - prev.x) * dx + (mouse.y - prev.y) * dy) / len2
+                : 0.0f;
+            proj = ImClamp(proj, 0.0f, 1.0f);
+
+            float qx = prev.x + proj * dx;
+            float qy = prev.y + proj * dy;
+            float dist2 = (mouse.x - qx) * (mouse.x - qx) + (mouse.y - qy) * (mouse.y - qy);
+            if (dist2 < bestDist2)
+            {
+                bestDist2 = dist2;
+                bestId    = trans.id;
+            }
+            prev = pt;
+        }
+    }
+    return bestId;
 }
 
 // ===========================================================================
@@ -525,8 +604,7 @@ void PanelAnimator::drawNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
         dl->AddText({ topLeft.x + 6.f * zoom, bodyY }, IM_COL32(140, 140, 140, 255), "No animation");
     }
 
-    // Input pin (left) — hidden on the default entry state
-    if (!state.isDefault)
+    // Input pin (left)
     {
         ImVec2 inPos = getInputPinPos(state, origin);
         dl->AddCircleFilled(inPos, pinR, IM_COL32(100, 180, 255, 255));
@@ -577,8 +655,9 @@ void PanelAnimator::drawLinks(ImDrawList* dl, ImVec2 origin)
         if (condStr.empty())
             condStr = "(no condition)";
 
-        ImU32 col = IM_COL32(180, 220, 255, 220);
-        dl->AddBezierCubic(p0, p1, p2, p3, col, 2.f * zoom);
+        bool isSelected = (trans.id == selectedTransition);
+        ImU32 col = isSelected ? IM_COL32(255, 220, 90, 255) : IM_COL32(180, 220, 255, 220);
+        dl->AddBezierCubic(p0, p1, p2, p3, col, (isSelected ? 3.5f : 2.f) * zoom);
 
         // Tooltip on hover (check a point near the center of the bezier)
         ImVec2 mid = { (p0.x + p3.x) * 0.5f, (p0.y + p3.y) * 0.5f };
@@ -619,7 +698,8 @@ void PanelAnimator::drawDragLink(ImDrawList* dl)
     // Use the canvas origin captured during the last drawCanvas call.
     ImVec2 origin = canvasOrigin;
 
-    ImVec2 p0 = getOutputPinPos(*from, origin);
+    ImVec2 p0 = dragFromOutput ? getOutputPinPos(*from, origin)
+                               : getInputPinPos(*from, origin);
     ImVec2 p3 = ImGui::GetIO().MousePos;
     float  cx = (p3.x - p0.x) * 0.5f;
     ImVec2 p1 = { p0.x + cx, p0.y };
@@ -688,38 +768,60 @@ void PanelAnimator::drawSelectedStateInspector()
         graph.dirty = true;
     }
 
-    // Assign animation clip
-    if (!graph.clips.empty())
+    // Assign animation via a picker window (same pattern as "Select Texture").
+    ImGui::Spacing();
     {
-        ImGui::Spacing();
-        int currentClip = -1;
-        std::vector<const char*> clipNames;
-        std::vector<std::string> clipUuids;
-        clipNames.push_back("(none)");
-        clipUuids.push_back("");
-        int idx = 0;
-        for (const auto& [cid, clip] : graph.clips)
-        {
-            if (cid == state->animationUuid)
-                currentClip = idx + 1;
-            clipNames.push_back(clip.name.c_str());
-            clipUuids.push_back(cid);
-            ++idx;
-        }
-        if (currentClip < 0) currentClip = 0;
+        std::vector<std::string> animUuids, animNames;
+        collectAnimationAssets(animUuids, animNames);
 
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("Animation", &currentClip, clipNames.data(), (int)clipNames.size()))
+        std::string caption = "(None)";
+        for (size_t i = 0; i < animUuids.size(); ++i)
         {
-            state->animationUuid = clipUuids[currentClip];
-            graph.dirty = true;
+            if (animUuids[i] == state->animationUuid)
+            {
+                caption = animNames[i];
+                break;
+            }
         }
-    }
-    else
-    {
-        ImGui::Spacing();
-        ImGui::TextDisabled("No animation clips referenced yet.");
-        ImGui::TextDisabled("Add one from the animator toolbar or right-click the canvas.");
+
+        if (ImGui::Button((caption + "##AnimPick").c_str(), ImVec2(-FLT_MIN, 0)))
+        {
+            animPickerSelected = state->animationUuid;
+            animPickerSearch[0] = '\0';
+            ImGui::OpenPopup("Select Animation##animpick");
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Click to select an animation asset");
+
+        // Accept a .animation asset dropped directly onto the picker button.
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+            {
+                std::string dropped((const char*)payload->Data);
+                auto nl = dropped.find('\n');
+                if (nl != std::string::npos)
+                    dropped = dropped.substr(0, nl);
+
+                auto it = manager->fileMap.find(dropped);
+                if (it != manager->fileMap.end() && it->second.type == "animation" &&
+                    fs::path(it->second.path.c_str()).extension() == ".animation")
+                {
+                    state->animationUuid = dropped;
+                    if (graph.clips.find(dropped) == graph.clips.end())
+                    {
+                        AnimClipRef ref;
+                        ref.uuid = dropped;
+                        ref.name = fs::path(it->second.path.c_str()).stem().string();
+                        graph.clips[dropped] = ref;
+                    }
+                    graph.dirty = true;
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+
+        drawAnimPickerPopup(state);
     }
 
     // Speed
@@ -764,6 +866,358 @@ void PanelAnimator::drawSelectedStateInspector()
             selectedState = -1;
         }
         ImGui::PopStyleColor(2);
+    }
+}
+
+// ===========================================================================
+// Transition inspector (shown in the Inspector panel for the selected link)
+// ===========================================================================
+
+void PanelAnimator::drawSelectedTransitionInspector()
+{
+    if (selectedTransition < 0) return;
+
+    AnimTransition* trans = graph.findTransition(selectedTransition);
+    if (!trans)
+    {
+        selectedTransition = -1;
+        return;
+    }
+
+    AnimState* from = graph.findState(trans->fromStateId);
+    AnimState* to   = graph.findState(trans->toStateId);
+
+    ImGui::TextUnformatted("Animator Transition");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), "   (id %d)", trans->id);
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::Text("From: %s", from ? from->name.c_str() : "(missing)");
+    ImGui::Text("To:   %s", to ? to->name.c_str() : "(missing)");
+    ImGui::Spacing();
+
+    // -----------------------------------------------------------------------
+    // Blending settings
+    // -----------------------------------------------------------------------
+    ImGui::TextUnformatted("Blending");
+    ImGui::Separator();
+
+    const char* blendModes[] = { "Instant", "Cross Fade" };
+    int mode = (int)trans->blendMode;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("Blend Mode", &mode, blendModes, IM_ARRAYSIZE(blendModes)))
+    {
+        trans->blendMode = (AnimBlendMode)mode;
+        graph.dirty = true;
+    }
+
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::DragFloat("Blend Duration", &trans->blendDuration, 0.01f, 0.0f, 10.0f, "%.2fs"))
+        graph.dirty = true;
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Timing");
+    ImGui::Separator();
+
+    if (ImGui::Checkbox("Has Exit Time", &trans->hasExitTime))
+        graph.dirty = true;
+    if (trans->hasExitTime)
+    {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat("Exit Time", &trans->exitTime, 0.01f, 0.0f, 100.0f, "%.2fs"))
+            graph.dirty = true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Conditions
+    // -----------------------------------------------------------------------
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Conditions (AND)");
+    ImGui::Separator();
+
+    if (trans->conditions.empty())
+        ImGui::TextDisabled("No conditions. This transition always evaluates to true.");
+
+    int removeCond = -1;
+    for (int i = 0; i < (int)trans->conditions.size(); ++i)
+    {
+        AnimCondition& cond = trans->conditions[i];
+        ImGui::PushID(i);
+
+        // Resolve the type of the variable this condition references.
+        AnimVariableType condVarType = AnimVariableType::Float;
+
+        if (graph.variables.empty())
+        {
+            ImGui::TextDisabled("(no variables available)");
+        }
+        else
+        {
+            std::vector<const char*> varNames;
+            int currentVar = -1;
+            for (int v = 0; v < (int)graph.variables.size(); ++v)
+            {
+                varNames.push_back(graph.variables[v].name.c_str());
+                if (graph.variables[v].name == cond.variableName)
+                {
+                    currentVar = v;
+                    condVarType = graph.variables[v].type;
+                }
+            }
+            if (currentVar < 0)
+            {
+                currentVar = 0;
+                cond.variableName = graph.variables[currentVar].name;
+                condVarType = graph.variables[currentVar].type;
+            }
+
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::Combo("##condVar", &currentVar, varNames.data(), (int)varNames.size()))
+            {
+                cond.variableName = graph.variables[currentVar].name;
+                condVarType       = graph.variables[currentVar].type;
+                // Reset to a valid default comparison for the new variable type.
+                cond.comparison = (condVarType == AnimVariableType::Bool ||
+                                   condVarType == AnimVariableType::Trigger)
+                                      ? AnimCondition::IsTrue
+                                      : AnimCondition::Greater;
+                graph.dirty = true;
+            }
+        }
+
+        // Build comparison options based on the referenced variable type.
+        std::vector<AnimCondition::Cmp> cmpOptions;
+        std::vector<const char*>        cmpLabels;
+        switch (condVarType)
+        {
+            case AnimVariableType::Bool:
+                cmpOptions = { AnimCondition::IsTrue, AnimCondition::IsFalse };
+                cmpLabels  = { "is true", "is false" };
+                break;
+            case AnimVariableType::Trigger:
+                cmpOptions = { AnimCondition::IsTrue };
+                cmpLabels  = { "Trigger" };
+                break;
+            case AnimVariableType::Int:
+            case AnimVariableType::Float:
+            default:
+                cmpOptions = { AnimCondition::Greater, AnimCondition::Less, AnimCondition::Equal,
+                               AnimCondition::NotEqual, AnimCondition::GreaterEqual, AnimCondition::LessEqual };
+                cmpLabels  = { ">", "<", "==", "!=", ">=", "<=" };
+                break;
+        }
+
+        // If the stored comparison is not valid for this type, clamp it to the
+        // first available option before showing the combo.
+        int cmpIdx = 0;
+        for (int c = 0; c < (int)cmpOptions.size(); ++c)
+            if (cmpOptions[c] == cond.comparison) { cmpIdx = c; break; }
+        cond.comparison = cmpOptions[cmpIdx];
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##condCmp", &cmpIdx, cmpLabels.data(), (int)cmpLabels.size()))
+        {
+            cond.comparison = cmpOptions[cmpIdx];
+            graph.dirty = true;
+        }
+
+        // The threshold input matches the variable type. Bool and Trigger
+        // conditions have no threshold value to enter.
+        if (condVarType == AnimVariableType::Int)
+        {
+            int ival = (int)cond.threshold;
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragInt("##condThr", &ival, 1.0f))
+            {
+                cond.threshold = (float)ival;
+                graph.dirty = true;
+            }
+        }
+        else if (condVarType == AnimVariableType::Float)
+        {
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat("##condThr", &cond.threshold, 0.01f))
+                graph.dirty = true;
+        }
+
+        if (ImGui::Button("Remove##cond"))
+            removeCond = i;
+
+        ImGui::PopID();
+    }
+
+    if (removeCond >= 0)
+    {
+        trans->conditions.erase(trans->conditions.begin() + removeCond);
+        graph.dirty = true;
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Add Condition", ImVec2(-1, 0)))
+    {
+        AnimCondition cond;
+        if (!graph.variables.empty())
+        {
+            cond.variableName = graph.variables[0].name;
+            AnimVariableType t = graph.variables[0].type;
+            cond.comparison = (t == AnimVariableType::Bool || t == AnimVariableType::Trigger)
+                                  ? AnimCondition::IsTrue
+                                  : AnimCondition::Greater;
+        }
+        else
+        {
+            cond.comparison = AnimCondition::Greater;
+        }
+        trans->conditions.push_back(cond);
+        graph.dirty = true;
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.86f, 0.24f, 0.24f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.69f, 0.19f, 0.19f, 1.00f));
+    if (ImGui::Button("Delete Transition", ImVec2(-1, 0)))
+    {
+        graph.removeTransition(trans->id);
+        graph.dirty = true;
+        selectedTransition = -1;
+    }
+    ImGui::PopStyleColor(2);
+}
+
+void PanelAnimator::drawSelectedInspector()
+{
+    if (selectedTransition >= 0)
+        drawSelectedTransitionInspector();
+    else
+        drawSelectedStateInspector();
+}
+
+// ===========================================================================
+// Animation asset picker
+// ===========================================================================
+
+bool PanelAnimator::isAnimPickerOpen() const
+{
+    return ImGui::IsPopupOpen("Select Animation##animpick");
+}
+
+void PanelAnimator::collectAnimationAssets(std::vector<std::string>& uuids,
+                                           std::vector<std::string>& names) const
+{
+    uuids.clear();
+    names.clear();
+
+    for (const auto& [uuid, info] : manager->fileMap)
+    {
+        if (info.type != "animation") continue;
+        fs::path assetPath(info.path.c_str());
+        if (assetPath.extension() != ".animation") continue;
+
+        uuids.push_back(uuid);
+        names.push_back(assetPath.stem().string());
+    }
+
+    // Keep graph-only clip references selectable too.
+    for (const auto& [uuid, clip] : graph.clips)
+    {
+        if (std::find(uuids.begin(), uuids.end(), uuid) != uuids.end())
+            continue;
+        uuids.push_back(uuid);
+        names.push_back(clip.name);
+    }
+}
+
+void PanelAnimator::drawAnimPickerPopup(AnimState* state)
+{
+    if (!state) return;
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(420, 440), ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("Select Animation##animpick", nullptr))
+    {
+        if (ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##animsearch", "Search...", animPickerSearch, sizeof(animPickerSearch));
+
+        std::string filter = animPickerSearch;
+        std::transform(filter.begin(), filter.end(), filter.begin(),
+                       [](unsigned char c) { return asciiToLower(c); });
+
+        std::vector<std::string> animUuids, animNames;
+        collectAnimationAssets(animUuids, animNames);
+
+        bool doApply = false;
+
+        float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y;
+        ImGui::BeginChild("##animgrid", ImVec2(0, -footer), true);
+        {
+            // "(None)" clears the animation.
+            {
+                bool selected = animPickerSelected.empty();
+                if (ImGui::Selectable("(None)", selected, ImGuiSelectableFlags_AllowDoubleClick))
+                {
+                    animPickerSelected.clear();
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        doApply = true;
+                }
+            }
+
+            for (size_t i = 0; i < animUuids.size(); ++i)
+            {
+                if (!filter.empty())
+                {
+                    std::string ln = animNames[i];
+                    std::transform(ln.begin(), ln.end(), ln.begin(),
+                                   [](unsigned char c) { return asciiToLower(c); });
+                    if (ln.find(filter) == std::string::npos)
+                        continue;
+                }
+
+                bool selected = (animUuids[i] == animPickerSelected);
+                if (ImGui::Selectable(animNames[i].c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick))
+                {
+                    animPickerSelected = animUuids[i];
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        doApply = true;
+                }
+            }
+        }
+        ImGui::EndChild();
+
+        if (ImGui::Button("Select", ImVec2(120, 0)))
+            doApply = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0)))
+            ImGui::CloseCurrentPopup();
+
+        if (doApply)
+        {
+            state->animationUuid = animPickerSelected;
+
+            if (!animPickerSelected.empty() &&
+                graph.clips.find(animPickerSelected) == graph.clips.end())
+            {
+                AnimClipRef ref;
+                ref.uuid = animPickerSelected;
+                auto it = manager->fileMap.find(animPickerSelected);
+                ref.name = (it != manager->fileMap.end())
+                               ? fs::path(it->second.path.c_str()).stem().string()
+                               : animPickerSelected;
+                graph.clips[animPickerSelected] = ref;
+            }
+
+            graph.dirty = true;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
     }
 }
 
@@ -1033,6 +1487,84 @@ void PanelAnimator::drawCanvas()
     ImVec2 mouseDelta  = ImGui::GetIO().MouseDelta;
     ImGuiIO& io        = ImGui::GetIO();
 
+    // Accept .animation assets dropped from the Project panel onto a node.
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+        {
+            std::string dropped((const char*)payload->Data);
+            auto nl = dropped.find('\n');
+            if (nl != std::string::npos)
+                dropped = dropped.substr(0, nl);
+
+            auto it = manager->fileMap.find(dropped);
+            if (it != manager->fileMap.end() && it->second.type == "animation" &&
+                fs::path(it->second.path.c_str()).extension() == ".animation")
+            {
+                // Find the node currently under the mouse cursor.
+                AnimState* target = nullptr;
+                for (int i = (int)graph.states.size() - 1; i >= 0; --i)
+                {
+                    AnimState& st = graph.states[i];
+                    ImVec2 nTL = canvasToScreen({ st.posX, st.posY }, canvasTL);
+                    float nw = NODE_WIDTH * canvasZoom;
+                    float bodyH = (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f) * canvasZoom;
+                    float totalH = NODE_HEADER_H * canvasZoom + bodyH;
+
+                    if (mouse.x >= nTL.x && mouse.x <= nTL.x + nw &&
+                        mouse.y >= nTL.y && mouse.y <= nTL.y + totalH)
+                    {
+                        target = &st;
+                        break;
+                    }
+                }
+
+                if (target)
+                {
+                    // Dropped onto an existing node: apply the animation to it.
+                    target->animationUuid = dropped;
+                    if (graph.clips.find(dropped) == graph.clips.end())
+                    {
+                        AnimClipRef ref;
+                        ref.uuid = dropped;
+                        ref.name = fs::path(it->second.path.c_str()).stem().string();
+                        graph.clips[dropped] = ref;
+                    }
+                    selectedState      = target->id;
+                    selectedTransition = -1;
+                    graph.dirty = true;
+                }
+                else
+                {
+                    // Dropped onto empty canvas: create a new state with this animation.
+                    std::string clipName = fs::path(it->second.path.c_str()).stem().string();
+
+                    AnimState st;
+                    st.id            = graph.newNodeId();
+                    st.name          = clipName.empty() ? "New State" : clipName;
+                    st.animationUuid = dropped;
+                    ImVec2 canvasPos  = screenToCanvas(mouse, canvasTL);
+                    st.posX = canvasPos.x;
+                    st.posY = canvasPos.y;
+                    graph.states.push_back(st);
+
+                    if (graph.clips.find(dropped) == graph.clips.end())
+                    {
+                        AnimClipRef ref;
+                        ref.uuid = dropped;
+                        ref.name = clipName;
+                        graph.clips[dropped] = ref;
+                    }
+
+                    selectedState      = st.id;
+                    selectedTransition = -1;
+                    graph.dirty = true;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(canvasTL, canvasTL + canvasSize, true);
 
@@ -1118,19 +1650,22 @@ void PanelAnimator::drawCanvas()
     {
         if (hovOutPin >= 0)
         {
-            // Start dragging a link from this output pin
+            // Start dragging a link from this output (right) pin.
             isDraggingLink = true;
             dragFromState  = hovOutPin;
+            dragFromOutput = true;
         }
         else if (hovInPin >= 0)
         {
-            // Starting from input pin (reverse direction) — start drag too
+            // Start dragging from an input (left) pin. The connection is
+            // completed in reverse: output pin -> this input pin.
             isDraggingLink = true;
             dragFromState  = hovInPin;
+            dragFromOutput = false;
         }
         else
         {
-            // Check if we hit a state header → start move
+            // Check if we hit a state node → select/move it.
             bool hitState = false;
             // Iterate in reverse so top nodes (drawn last) are picked first
             for (int i = (int)graph.states.size() - 1; i >= 0; --i)
@@ -1144,14 +1679,30 @@ void PanelAnimator::drawCanvas()
                 if (mouse.x >= nTopLeft.x && mouse.x <= nTopLeft.x + nw &&
                     mouse.y >= nTopLeft.y && mouse.y <= nTopLeft.y + hdrH + bodyH)
                 {
-                    selectedState    = state.id;
-                    isDraggingState  = true;
-                    dragStateOffset  = screenToCanvas(mouse, canvasTL) - ImVec2(state.posX, state.posY);
+                    selectedState      = state.id;
+                    selectedTransition = -1;
+                    isDraggingState    = true;
+                    dragStateOffset    = screenToCanvas(mouse, canvasTL) - ImVec2(state.posX, state.posY);
                     hitState = true;
                     break;
                 }
             }
-            if (!hitState) selectedState = -1;
+
+            if (!hitState)
+            {
+                // Clicking empty space may select a transition link.
+                int linkHit = hitTestLinks(mouse, canvasTL);
+                if (linkHit >= 0)
+                {
+                    selectedTransition = linkHit;
+                    selectedState      = -1;
+                }
+                else
+                {
+                    selectedState      = -1;
+                    selectedTransition = -1;
+                }
+            }
         }
     }
 
@@ -1176,31 +1727,27 @@ void PanelAnimator::drawCanvas()
         {
             isDraggingLink = false;
 
-            // Complete the link if we released on a valid pin
+            // Complete the link if we released on a valid pin. The direction
+            // was recorded when the drag started, so either output->input or
+            // input->output works regardless of which node was dragged from.
             int targetOut = hitTestOutputPins(mouse, canvasTL);
             int targetIn  = hitTestInputPins(mouse, canvasTL);
 
             int fromState = dragFromState;
             int toState   = -1;
 
-            // Determine direction: if we started from an output, connect to an input
-            // Check if dragFromState output pin was clicked
-            AnimState* dragFrom = graph.findState(dragFromState);
-            if (dragFrom)
+            if (dragFromOutput)
             {
-                ImVec2 outPos = getOutputPinPos(*dragFrom, canvasTL);
-                float dOut = (mouse.x - outPos.x) * (mouse.x - outPos.x) + (mouse.y - outPos.y) * (mouse.y - outPos.y);
-                float r = PIN_RADIUS * canvasZoom * 3.f;
-                bool startedFromOutput = (dOut <= r * r);
-
-                if (startedFromOutput && targetIn >= 0 && targetIn != dragFromState)
+                // Dragged from a right (output) pin: connect it to a left (input) pin.
+                if (targetIn >= 0 && targetIn != dragFromState)
+                    toState = targetIn;
+            }
+            else
+            {
+                // Dragged from a left (input) pin: connect the target right
+                // (output) pin into the state this input belongs to.
+                if (targetOut >= 0 && targetOut != dragFromState)
                 {
-                    fromState = dragFromState;
-                    toState   = targetIn;
-                }
-                else if (!startedFromOutput && targetOut >= 0 && targetOut != dragFromState)
-                {
-                    // Started from input, connecting to an output (reverse direction)
                     fromState = targetOut;
                     toState   = dragFromState;
                 }
@@ -1218,9 +1765,9 @@ void PanelAnimator::drawCanvas()
 
                 if (!exists)
                 {
-                    // Don't allow transitions TO the default entry state or FROM states that aren't the entry
+                    // Transitions may point to any state, including the default.
                     AnimState* toSt = graph.findState(toState);
-                    if (toSt && !toSt->isDefault)
+                    if (toSt)
                     {
                         AnimTransition trans;
                         trans.id          = graph.newLinkId();
@@ -1250,7 +1797,8 @@ void PanelAnimator::drawCanvas()
             if (mouse.x >= nTL.x && mouse.x <= nTL.x + nw &&
                 mouse.y >= nTL.y && mouse.y <= nTL.y + totalH)
             {
-                selectedState = state.id;
+                selectedState      = state.id;
+                selectedTransition = -1;
                 hitState = true;
                 break;
             }
@@ -1262,15 +1810,24 @@ void PanelAnimator::drawCanvas()
         }
     }
 
-    // Delete key (never remove the default state)
-    if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Delete) && selectedState >= 0)
+    // Delete key: remove the selected transition, otherwise the selected state.
+    if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Delete))
     {
-        AnimState* st = graph.findState(selectedState);
-        if (st && !st->isDefault)
+        if (selectedTransition >= 0)
         {
-            graph.removeState(selectedState);
-            graph.dirty  = true;
-            selectedState = -1;
+            graph.removeTransition(selectedTransition);
+            graph.dirty        = true;
+            selectedTransition = -1;
+        }
+        else if (selectedState >= 0)
+        {
+            AnimState* st = graph.findState(selectedState);
+            if (st && !st->isDefault)
+            {
+                graph.removeState(selectedState);
+                graph.dirty    = true;
+                selectedState  = -1;
+            }
         }
     }
 
