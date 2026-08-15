@@ -84,6 +84,10 @@ def _generator_in_cache(cache_file, vs_generator):
     content = cache_file.read_text(errors="ignore")
     return f"CMAKE_GENERATOR:INTERNAL={vs_generator}" in content
 
+def is_multi_config(generator):
+    """Return True for generators that select the config at build time (VS, Xcode)."""
+    return generator.startswith("Visual Studio") or generator == "Xcode"
+
 def rebuild_jolt_md(kemena3d_source_dir, modes, vs_generator="Visual Studio 18 2026"):
     """Rebuild JoltPhysics with /MD (MultiThreadedDLL) to match the kemena3d SDK CRT."""
     jolt_cmake = Path(kemena3d_source_dir) / "Dependencies/jolt/Build"
@@ -107,10 +111,11 @@ def rebuild_jolt_md(kemena3d_source_dir, modes, vs_generator="Visual Studio 18 2
                 continue
 
         print(f"\n[INFO] Rebuilding Jolt ({mode}) with /MD CRT...")
+        # NOTE: vs_generator is always multi-config, so CMAKE_BUILD_TYPE is set at
+        # build time via --config and must NOT be passed at configure time.
         run_cmd(
             f'cmake -S "{jolt_cmake}" -B "{build_dir}" '
             f'-G "{vs_generator}" '
-            f'-DCMAKE_BUILD_TYPE={mode} '
             f'-DUSE_STATIC_MSVC_RUNTIME_LIBRARY=OFF '
             f'-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL '
             f'-DTARGET_UNIT_TESTS=OFF '
@@ -128,11 +133,15 @@ def build_with_cmake(generator, build_mode, extra_args, sdk_dir, make_program=No
 
     make_arg = f'-DCMAKE_MAKE_PROGRAM="{make_program}" ' if make_program else ""
 
+    # Only single-config generators (e.g. MinGW Makefiles) need CMAKE_BUILD_TYPE at
+    # configure time; multi-config generators (Visual Studio) select it via --config.
+    build_type_arg = "" if is_multi_config(generator) else f"-DCMAKE_BUILD_TYPE={build_mode} "
+
     # Configure
     run_cmd(
         f'cmake -S "{SCRIPT_DIR}" -B "{build_dir}" -G "{generator}" '
         f'{make_arg}'
-        f'-DCMAKE_BUILD_TYPE={build_mode} '
+        f'{build_type_arg}'
         f'-DKEMENA3D_SDK_DIR="{sdk_dir}" '
         f'{extra_args}'
     )
@@ -186,14 +195,16 @@ def main():
     # CMake generator and args
     link_static = "ON" if link_type == "1" else "OFF"
     make_program = None
+    # NOTE: USE_MINGW is consumed only by the SDK's CMakeLists, not the Studio's,
+    # so it must NOT be passed here or CMake reports it as an unused CLI variable.
     if compiler in ("1", "2"):
         generator = COMPILER_GENERATOR.get(compiler, "Visual Studio 18 2026")
-        extra_args = f"-DUSE_MINGW=OFF -DKEMENA3D_LINK_STATIC={link_static}"
+        extra_args = f"-DKEMENA3D_LINK_STATIC={link_static}"
     else:
         generator = "MinGW Makefiles"
         make_program = find_mingw_make()
         print(f"[INFO] Using make program: {make_program}")
-        extra_args = f"-DUSE_MINGW=ON -DKEMENA3D_LINK_STATIC={link_static}"
+        extra_args = f"-DKEMENA3D_LINK_STATIC={link_static}"
 
     # Build modes
     if config == "1":

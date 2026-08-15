@@ -629,7 +629,7 @@ void PanelAnimator::drawDragLink(ImDrawList* dl)
 }
 
 // ===========================================================================
-// Context menu (right-click on state)
+// Context menu (right-click on canvas)
 // ===========================================================================
 
 void PanelAnimator::drawStateContextMenu()
@@ -654,87 +654,116 @@ void PanelAnimator::drawStateContextMenu()
         }
         ImGui::EndPopup();
     }
+}
 
-    // Right-click on a specific state
-    if (ImGui::BeginPopup("##AnimStateCtxMenu"))
+// ===========================================================================
+// State inspector (shown in the Inspector panel for the selected state)
+// ===========================================================================
+
+void PanelAnimator::drawSelectedStateInspector()
+{
+    if (selectedState < 0) return;
+
+    AnimState* state = graph.findState(selectedState);
+    if (!state)
     {
-        AnimState* state = graph.findState(contextMenuStateId);
-        if (state)
+        selectedState = -1;
+        return;
+    }
+
+    // Header
+    ImGui::TextUnformatted("Animator State");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), "   (id %d)", state->id);
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Edit state name
+    char nameBuf[128];
+    strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+    {
+        state->name = nameBuf;
+        graph.dirty = true;
+    }
+
+    // Assign animation clip
+    if (!graph.clips.empty())
+    {
+        ImGui::Spacing();
+        int currentClip = -1;
+        std::vector<const char*> clipNames;
+        std::vector<std::string> clipUuids;
+        clipNames.push_back("(none)");
+        clipUuids.push_back("");
+        int idx = 0;
+        for (const auto& [cid, clip] : graph.clips)
         {
-            ImGui::TextUnformatted(state->name.c_str());
-            ImGui::Separator();
-
-            // Edit state name
-            static char nameBuf[128];
-            strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
-            ImGui::SetNextItemWidth(150.f);
-            if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
-            {
-                state->name = nameBuf;
-                graph.dirty = true;
-            }
-
-            // Assign animation clip
-            if (!graph.clips.empty())
-            {
-                ImGui::Separator();
-                int currentClip = -1;
-                std::vector<const char*> clipNames;
-                std::vector<std::string> clipUuids;
-                clipNames.push_back("(none)");
-                clipUuids.push_back("");
-                int idx = 0;
-                for (const auto& [cid, clip] : graph.clips)
-                {
-                    if (cid == state->animationUuid)
-                        currentClip = idx + 1;
-                    clipNames.push_back(clip.name.c_str());
-                    clipUuids.push_back(cid);
-                    ++idx;
-                }
-                if (currentClip < 0) currentClip = 0;
-
-                ImGui::SetNextItemWidth(150.f);
-                if (ImGui::Combo("Animation", &currentClip, clipNames.data(), (int)clipNames.size()))
-                {
-                    state->animationUuid = clipUuids[currentClip];
-                    graph.dirty = true;
-                }
-            }
-
-            // Speed
-            ImGui::SetNextItemWidth(100.f);
-            if (ImGui::DragFloat("Speed", &state->speed, 0.05f, 0.0f, 10.0f))
-                graph.dirty = true;
-
-            // Loop
-            if (ImGui::Checkbox("Loop", &state->loop))
-                graph.dirty = true;
-
-            // Set as default
-            if (!state->isDefault)
-            {
-                if (ImGui::Button("Set as Default"))
-                {
-                    for (auto& s : graph.states) s.isDefault = false;
-                    state->isDefault = true;
-                    graph.dirty = true;
-                }
-            }
-
-            if (!state->isDefault)
-            {
-                ImGui::Separator();
-                if (ImGui::MenuItem("Delete State"))
-                {
-                    graph.removeState(state->id);
-                    graph.dirty = true;
-                    selectedState = -1;
-                    contextMenuStateId = -1;
-                }
-            }
+            if (cid == state->animationUuid)
+                currentClip = idx + 1;
+            clipNames.push_back(clip.name.c_str());
+            clipUuids.push_back(cid);
+            ++idx;
         }
-        ImGui::EndPopup();
+        if (currentClip < 0) currentClip = 0;
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("Animation", &currentClip, clipNames.data(), (int)clipNames.size()))
+        {
+            state->animationUuid = clipUuids[currentClip];
+            graph.dirty = true;
+        }
+    }
+    else
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("No animation clips referenced yet.");
+        ImGui::TextDisabled("Add one from the animator toolbar or right-click the canvas.");
+    }
+
+    // Speed
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::DragFloat("Speed", &state->speed, 0.05f, 0.0f, 10.0f))
+        graph.dirty = true;
+
+    // Loop
+    ImGui::Spacing();
+    if (ImGui::Checkbox("Loop", &state->loop))
+        graph.dirty = true;
+
+    // Default state indicator / set as default
+    ImGui::Spacing();
+    if (state->isDefault)
+    {
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "This is the default state");
+    }
+    else
+    {
+        if (ImGui::Button("Set as Default", ImVec2(-1, 0)))
+        {
+            for (auto& s : graph.states) s.isDefault = false;
+            state->isDefault = true;
+            graph.dirty = true;
+        }
+    }
+
+    // Delete (never remove the default state)
+    if (!state->isDefault)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.86f, 0.24f, 0.24f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.69f, 0.19f, 0.19f, 1.00f));
+        if (ImGui::Button("Delete State", ImVec2(-1, 0)))
+        {
+            graph.removeState(state->id);
+            graph.dirty = true;
+            selectedState = -1;
+        }
+        ImGui::PopStyleColor(2);
     }
 }
 
@@ -1205,10 +1234,10 @@ void PanelAnimator::drawCanvas()
         }
     }
 
-    // Right-click on canvas → context menu
+    // Right-click on canvas → context menu (state settings moved to the Inspector panel)
     if (canvasHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !isDraggingLink)
     {
-        // Check if we right-clicked on a state
+        // Check if we right-clicked on a state → select it so its form appears in the Inspector.
         bool hitState = false;
         for (int i = (int)graph.states.size() - 1; i >= 0; --i)
         {
@@ -1221,9 +1250,7 @@ void PanelAnimator::drawCanvas()
             if (mouse.x >= nTL.x && mouse.x <= nTL.x + nw &&
                 mouse.y >= nTL.y && mouse.y <= nTL.y + totalH)
             {
-                contextMenuStateId = state.id;
-                selectedState      = state.id;
-                ImGui::OpenPopup("##AnimStateCtxMenu");
+                selectedState = state.id;
                 hitState = true;
                 break;
             }
@@ -1313,6 +1340,7 @@ void PanelAnimator::promptAddClip()
 
 void PanelAnimator::draw(bool& isOpened)
 {
+    visible = isOpened;
     if (!isOpened) return;
 
     ImGui::SetNextWindowSize({ 1000, 700 }, ImGuiCond_FirstUseEver);

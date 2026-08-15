@@ -3755,7 +3755,7 @@ void Manager::createNewAnimator()
 
     nlohmann::json entryState;
     entryState["id"]        = 1;
-    entryState["name"]      = "Entry";
+    entryState["name"]      = "Default State";
     entryState["animationUuid"] = "";
     entryState["speed"]     = 1.0f;
     entryState["loop"]      = true;

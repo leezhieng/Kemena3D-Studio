@@ -1,6 +1,7 @@
 #include "panel_inspector.h"
 #include "util.h"
 #include "panel_project.h"
+#include "panel_animator.h"
 #include "commands.h"
 #include <fstream>
 #include <filesystem>
@@ -4774,6 +4775,18 @@ void PanelInspector::draw(bool &opened)
         gui->beginDisabled(true);
 
     gui->windowStart("Inspector", &opened);
+
+    // Animator state editing takes priority when a state node is selected in the
+    // animator editor — its properties are shown here instead of a canvas context menu.
+    if (manager->panelAnimator != nullptr && manager->panelAnimator->visible &&
+        manager->panelAnimator->hasSelectedState())
+    {
+        manager->panelAnimator->drawSelectedStateInspector();
+        gui->windowEnd();
+        if (!manager->projectOpened)
+            gui->endDisabled();
+        return;
+    }
 
     // Project panel selection takes priority when scene selection is empty
     if (manager->panelProject != nullptr && manager->getActiveSelectedObjects().empty() && manager->selectedScene == nullptr)

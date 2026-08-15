@@ -158,6 +158,7 @@ class PanelAnimator
 {
 public:
     bool focused = false;  ///< Set each draw() — used by main.cpp's Ctrl+S routing.
+    bool visible = false;  ///< True while the animator editor window is open.
 
     PanelAnimator(kGuiManager* setGui, Manager* setManager);
 
@@ -169,6 +170,15 @@ public:
 
     /** @brief Save the current animator graph. */
     void saveCurrent() { saveGraph(); }
+
+    /** @brief True when a state node is currently selected in the graph. */
+    bool hasSelectedState() const { return selectedState >= 0; }
+
+    /** @brief Id of the currently selected state node, or -1 when none. */
+    int getSelectedState() const { return selectedState; }
+
+    /** @brief Draw the editing form for the selected state (called from the Inspector panel). */
+    void drawSelectedStateInspector();
 
 private:
     // -----------------------------------------------------------------------
@@ -200,10 +210,9 @@ private:
     // Connection drag
     bool  isDraggingLink  = false;
     int   dragFromState   = -1;
+// Context menu
+ImVec2 contextMenuPos;
 
-    // Context menu
-    ImVec2 contextMenuPos;
-    int    contextMenuStateId = -1; ///< State id right-clicked on canvas (for delete).
 
     // Variable editor
     int   editingVarIndex   = -1;   ///< Index into graph.variables being edited; -1 = none.
