@@ -44,6 +44,9 @@ public:
 	Manager *manager; ///< Editor manager (project, selection, assets).
 	kGuiManager *gui; ///< GUI manager used for ImGui rendering and texture loading.
 
+	/** @brief True while the inspector window owns ImGui focus. */
+	bool focused = false;
+
 private:
 	// Scene object type icons
 	ImTextureRef iconObjMesh = nullptr;	   ///< Icon for mesh scene objects.

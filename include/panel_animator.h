@@ -247,9 +247,6 @@ private:
     // Variable editor
     int   editingVarIndex   = -1;   ///< Index into graph.variables being edited; -1 = none.
 
-    // Clip manager UI
-    bool  showClipManager   = false;
-
     // Animation picker popup state
     char        animPickerSearch[128] = {0};
     std::string animPickerSelected;
@@ -274,7 +271,6 @@ private:
     void drawDragLink(ImDrawList* dl);
     void drawStateContextMenu();
     void drawVariablesPanel();
-    void drawClipManager();
     void drawAnimPickerPopup(AnimState* state);
     void collectAnimationAssets(std::vector<std::string>& uuids,
                                 std::vector<std::string>& names) const;

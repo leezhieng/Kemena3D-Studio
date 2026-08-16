@@ -12,6 +12,7 @@
 
 #include <sstream>
 #include <iomanip>
+#include <memory>
 
 #include <kemena/kwindow.h>
 #include <kemena/kworld.h>
@@ -25,6 +26,8 @@
 #include <kemena/kprefab.h>
 #include <kemena/kterrain.h>
 #include <kemena/kpackage.h>
+#include <kemena/kanimator.h>
+#include <kemena/kskelanimation.h>
 
 #include "commands.h"
 #include <portable-file-dialogs.h>
@@ -112,6 +115,33 @@ struct ThumbnailTask
 struct ObjectInfo
 {
     kObject *object;
+};
+
+// Defined in panel_animator.h. Kept incomplete here so manager.h can be
+// included from panel_animator.h without exposing the mutual-include cycle.
+struct AnimatorGraph;
+
+/**
+ * @brief Runtime instance of an .animator controller attached to a scene object.
+ *
+ * Created by Manager::startAnimators() when the Game panel enters Play mode and
+ * torn down again by Manager::stopAnimators() on Stop. The engine's kAnimator is
+ * driven manually by Manager::stepAnimators() so the graph's state machine
+ * (speed, loop, exit-time transitions and conditions) is honoured regardless of
+ * which renderer draws the scene.
+ */
+struct RuntimeAnimator
+{
+    kString objectUuid;                                            ///< Object this controller drives.
+    std::shared_ptr<AnimatorGraph> graph;                          ///< Parsed .animator controller (owned).
+    kMesh *rootMesh = nullptr;                                     ///< Topmost mesh of the object subtree (non-owned).
+    kAnimator *animator = nullptr;                                 ///< Engine skeletal animator (owned).
+    std::vector<kSkeletalAnimation *> ownedClips;                  ///< Loaded clips (owned).
+    std::unordered_map<std::string, kSkeletalAnimation *> clipForState; ///< animationUuid → clip.
+    std::unordered_map<std::string, std::pair<float, float>> clipFrames; ///< animationUuid → (startFrame, endFrame).
+    int currentStateId = -1;                                       ///< State currently playing.
+    float stateTimeSeconds = 0.0f;                                 ///< Seconds since entering the current state.
+    std::unordered_map<std::string, float> variables;              ///< Controller variable values.
 };
 
 class PanelProject;
@@ -415,6 +445,13 @@ public:
      */
     void updateGameAudio(kCamera *gameCamera);
 
+    // --- Animator controllers (runtime, during Game panel play) --------------
+    void startAnimators();
+    void stopAnimators();
+    void stepAnimators(float dt);
+
+    std::vector<RuntimeAnimator> runtimeAnimators; ///< Active animator controllers for the current play session.
+
     // --- Drag-and-drop helpers ----------------------------------------------
     kObject *instantiateAssetFromUuid(const kString &assetUuid, const kVec3 &positionHint = kVec3(0));
     fs::path findAssetPathByUuid(const kString &assetUuid);
@@ -501,6 +538,29 @@ public:
     // Editor path
     fs::path exePath;
     fs::path baseDir;
+
+    /**
+     * @brief Identifies the most recently focused editor panel.
+     *
+     * Persisted across frames by main.cpp and consumed by PanelInspector to
+     * decide which selection context to display (project asset, scene object,
+     * animator node, shader preview, etc.).
+     *
+     * @note "Logic" corresponds to the Script Editor panel, which edits .logic
+     *       visual-scripting graphs (also the source of generated AngelScript).
+     */
+    enum class FocusedPanel
+    {
+        None,        ///< No tracked panel has focus yet.
+        Project,     ///< Project asset browser.
+        Hierarchy,   ///< Scene-graph tree.
+        Scene,       ///< World viewport.
+        Logic,       ///< Script Editor (.logic visual scripting).
+        Animator,    ///< Animator state-machine editor.
+        Particle,    ///< Particle system editor.
+        Shader,      ///< Shader node-graph editor.
+        Animation,   ///< Cinematic / animation timeline editor.
+    };
 
     // Editor mode — controls what the World panel renders
     enum class EditorMode
@@ -616,6 +676,9 @@ public:
     PivotMode pivotMode = PivotMode::LastSelected;
     ShaderPreviewState shaderPreview;
 
+    /// Most recently focused editor panel; drives what PanelInspector displays.
+    FocusedPanel lastFocusedPanel = FocusedPanel::None;
+
 private:
     kWindow *window;
     kWorld *world;
@@ -626,6 +689,23 @@ private:
 
     kString checkAssetType(const fs::path &p);
     void startBatchImport(const std::vector<ImportTask> &tasks);
+
+    /**
+     * @brief Resolves an audio asset UUID to a playable filesystem path.
+     *
+     * Search order:
+     *   1. Converted copy in Library/ImportedAssets (any supported extension).
+     *   2. Live asset registry (assets.json) -> Assets/<relative path>.
+     *   3. Stale-UUID recovery via Library/Metadata/<uuid>.json, which records
+     *      the original source location even after an asset has been re-imported
+     *      with a new UUID.  This keeps audio working in freshly cloned projects
+     *      where Library/ImportedAssets is never committed to git.
+     *
+     * @param audioUuid  The kAudioSource::audioFile UUID to resolve.
+     * @return           Absolute-ish path (relative to projectPath) if found,
+     *                   otherwise an empty path.
+     */
+    fs::path resolveAudioFileByUuid(const kString &audioUuid);
 };
 
 #endif // FILEMANAGER_H

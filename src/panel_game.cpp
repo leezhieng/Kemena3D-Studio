@@ -198,6 +198,11 @@ void PanelGame::pressPlay()
             }
         }
 
+        // Remember whether the project was already dirty before entering play.
+        // Scene edits made while playing are temporary (restored on Stop) and
+        // must not leave the project flagged as unsaved.
+        projectSavedBeforePlay = manager->projectSaved;
+
         captureSnapshot();
         // Spawn physics bodies for every object that opted in. Must happen
         // AFTER captureSnapshot so the snapshot records the editor-authored
@@ -207,6 +212,8 @@ void PanelGame::pressPlay()
         manager->startScripts();
         // Start all active, play-on-awake audio sources in the world.
         manager->startGameAudio();
+        // Instantiate .animator controllers attached to scene objects.
+        manager->startAnimators();
         playState = GamePlayState::Playing;
     }
     else if (playState == GamePlayState::Paused)
@@ -232,8 +239,16 @@ void PanelGame::pressStop()
         manager->stopPhysicsSimulation();
         // Dispatch OnDestroy() and release every script instance.
         manager->stopScripts();
+        // Tear down animator controllers and restore the bind pose.
+        manager->stopAnimators();
         restoreSnapshot();
+
+        // Restore the dirty flag captured before Play. Any scene edits made
+        // during play were rolled back by the snapshot above, so they must not
+        // keep the project marked as unsaved.
         playState = GamePlayState::Stopped;
+        manager->projectSaved = projectSavedBeforePlay;
+        manager->refreshWindowTitle();
     }
 }
 

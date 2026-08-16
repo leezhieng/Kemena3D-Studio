@@ -94,6 +94,7 @@ public:
 private:
     GamePlayState playState = GamePlayState::Stopped;        ///< Current play state.
     std::vector<ObjectTransformSnapshot> sceneSnapshot;      ///< Saved transforms for restore on stop.
+    bool projectSavedBeforePlay = true;                      ///< projectSaved value captured when Play was pressed.
 
     kOffscreenRenderer* gameRenderer = nullptr; ///< Offscreen renderer the game view is drawn into.
     int lastRendererW = 0;                      ///< Last offscreen render target width, for resize detection.

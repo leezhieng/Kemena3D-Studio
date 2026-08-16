@@ -36,6 +36,12 @@ int main()
 	// produces kemena3d_crash.log (the Release GUI build has no console).
 	installCrashHandler();
 
+	{
+		std::ofstream f("D:\\Projects\\Kemena3D\\animator_debug.log", std::ios::app);
+		if (f.is_open())
+			f << "[startup] Kemena3DStudio launched" << std::endl;
+	}
+
 	// Create window and renderers.
 	// Three separate kRenderer instances are created:
 	//   rendererWorld  — renders the game scene into the World panel viewport
@@ -917,6 +923,10 @@ int main()
 					world->updateScripts(gameDt);
 				}
 
+				// Advance .animator controllers (no-op when stopped; frozen
+				// when paused because gameDt is 0).
+				manager->stepAnimators(gameDt);
+
 				// While stopped, watch script source files and recompile on save.
 				if (panelGame->getPlayState() == GamePlayState::Stopped)
 					manager->pollScriptChanges(deltaTime);
@@ -1110,6 +1120,28 @@ int main()
 			// If focus changed, rebuild the hierarchy tree.
 			if (manager->hierarchyShowsPrefab != oldPrefabFocus)
 				panelHierarchy->refreshList();
+		}
+
+		// Track the last focused panel to drive what the Inspector displays.
+		// The Inspector reads this on the next frame, so whichever panel the
+		// user interacted with most recently becomes the active context.
+		{
+			if (panelProject->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Project;
+			else if (panelHierarchy->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Hierarchy;
+			else if (panelWorld->enabled && panelWorld->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Scene;
+			else if (panelScriptEditor->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Logic;
+			else if (panelAnimator->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Animator;
+			else if (panelParticle->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Particle;
+			else if (panelShaderEditor->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Shader;
+			else if (panelAnimation->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Animation;
 		}
 
 		// If there's a need to import assets

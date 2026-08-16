@@ -4762,8 +4762,9 @@ void PanelInspector::draw(bool &opened)
     if (!opened)
         return;
 
-    // Shader editor active: take over the inspector with preview (always interactive)
-    if (manager->shaderPreview.active)
+    // Shader editor active and last focused: take over the inspector with the
+    // live shader preview. Focusing another panel hands the inspector back.
+    if (manager->shaderPreview.active && manager->lastFocusedPanel == Manager::FocusedPanel::Shader)
     {
         gui->windowStart("Inspector", &opened);
         drawShaderPreview();
@@ -4775,12 +4776,15 @@ void PanelInspector::draw(bool &opened)
         gui->beginDisabled(true);
 
     gui->windowStart("Inspector", &opened);
+    focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    // Animator editing takes priority only while the animator editor is the
-    // focused panel (or its animation picker popup is open). When another
-    // panel is focused, its own selection is shown here instead.
+    // Animator editing takes priority while the animator editor is focused,
+    // its animation picker popup is open, or the inspector itself is focused.
+    // This keeps the animator state/transition form visible while the user
+    // edits it in the inspector panel.
     if (manager->panelAnimator != nullptr && manager->panelAnimator->visible &&
-        (manager->panelAnimator->focused || manager->panelAnimator->isAnimPickerOpen()) &&
+        (manager->lastFocusedPanel == Manager::FocusedPanel::Animator ||
+         manager->panelAnimator->focused || manager->panelAnimator->isAnimPickerOpen() || focused) &&
         (manager->panelAnimator->hasSelectedState() ||
          manager->panelAnimator->hasSelectedTransition()))
     {
@@ -4791,8 +4795,14 @@ void PanelInspector::draw(bool &opened)
         return;
     }
 
-    // Project panel selection takes priority when scene selection is empty
-    if (manager->panelProject != nullptr && manager->getActiveSelectedObjects().empty() && manager->selectedScene == nullptr)
+    // The Project panel drives the inspector when it was the last focused
+    // panel. As a fallback, also show the project selection when no scene
+    // object or scene is selected and no other panel owns an explicit context.
+    bool projectFocused = (manager->lastFocusedPanel == Manager::FocusedPanel::Project);
+    bool fallbackProject = !projectFocused &&
+                           manager->getActiveSelectedObjects().empty() &&
+                           manager->selectedScene == nullptr;
+    if (manager->panelProject != nullptr && (projectFocused || fallbackProject))
     {
         auto asset = manager->panelProject->getProjectSelection();
         if (asset.count > 1)
@@ -4843,6 +4853,19 @@ void PanelInspector::draw(bool &opened)
                 else if (asset.fileType == "material")
                     drawMaterialInspector(asset);
             }
+            gui->windowEnd();
+            if (!manager->projectOpened)
+                gui->endDisabled();
+            return;
+        }
+        if (projectFocused)
+        {
+            // The project is the active context but no asset is selected.
+            gui->spacing();
+            const char *text = "No asset selected";
+            float tw = gui->calcTextSize(text).x;
+            gui->setCursorPosX(gui->getCursorPosX() + (gui->getContentRegionAvail().x - tw) * 0.5f);
+            gui->textDisabled(text);
             gui->windowEnd();
             if (!manager->projectOpened)
                 gui->endDisabled();

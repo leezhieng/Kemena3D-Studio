@@ -323,7 +323,6 @@ void PanelAnimator::newGraph()
     selectedState      = -1;
     selectedTransition = -1;
     editingVarIndex    = -1;
-    showClipManager    = false;
     isDraggingLink     = false;
     dragFromState      = -1;
     dragFromOutput     = false;
@@ -758,15 +757,20 @@ void PanelAnimator::drawSelectedStateInspector()
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Edit state name
+    // Edit state name (disabled for the default state)
+    bool isDefaultState = state->isDefault;
     char nameBuf[128];
     strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
     ImGui::SetNextItemWidth(-FLT_MIN);
+    if (isDefaultState)
+        ImGui::BeginDisabled();
     if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
     {
         state->name = nameBuf;
         graph.dirty = true;
     }
+    if (isDefaultState)
+        ImGui::EndDisabled();
 
     // Assign animation via a picker window (same pattern as "Select Texture").
     ImGui::Spacing();
@@ -1344,69 +1348,6 @@ void PanelAnimator::drawVariablesPanel()
 }
 
 // ===========================================================================
-// Clip manager
-// ===========================================================================
-
-void PanelAnimator::drawClipManager()
-{
-    if (!showClipManager) return;
-
-    ImGui::SetNextWindowSize({ 400, 300 }, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Animation Clip Manager", &showClipManager))
-    {
-        if (ImGui::Button("Add Clip Reference"))
-            promptAddClip();
-
-        ImGui::SameLine();
-        if (ImGui::Button("Close"))
-            showClipManager = false;
-
-        ImGui::Separator();
-
-        if (graph.clips.empty())
-        {
-            ImGui::TextDisabled("No animation clips referenced. Add an .animation asset.");
-        }
-        else
-        {
-            std::string removeUuid;
-            for (auto& [uuid, clip] : graph.clips)
-            {
-                ImGui::PushID(uuid.c_str());
-                ImGui::TextUnformatted(clip.name.c_str());
-                ImGui::SameLine(200);
-                ImGui::TextDisabled("%s", uuid.c_str());
-
-                // Check if any state uses this clip
-                bool inUse = false;
-                for (const auto& s : graph.states)
-                    if (s.animationUuid == uuid) { inUse = true; break; }
-
-                if (inUse)
-                    ImGui::TextColored({0.5f, 1.f, 0.5f, 1.f}, " (in use)");
-                else
-                {
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Remove"))
-                        removeUuid = uuid;
-                }
-                ImGui::PopID();
-            }
-
-            if (!removeUuid.empty())
-            {
-                graph.clips.erase(removeUuid);
-                // Clear references in states
-                for (auto& s : graph.states)
-                    if (s.animationUuid == removeUuid) s.animationUuid.clear();
-                graph.dirty = true;
-            }
-        }
-    }
-    ImGui::End();
-}
-
-// ===========================================================================
 // Toolbar
 // ===========================================================================
 
@@ -1425,13 +1366,6 @@ void PanelAnimator::drawToolbar()
     ImGui::SameLine();
     if (ImGui::Button("Save As...") && hasProject)
         saveGraphAs();
-
-    ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
-
-    if (ImGui::Button("Clip Manager"))
-        showClipManager = !showClipManager;
 
     ImGui::SameLine();
     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
@@ -1921,7 +1855,6 @@ void PanelAnimator::draw(bool& isOpened)
     ImGui::SameLine();
     drawCanvas();
     drawStateContextMenu();
-    drawClipManager();
 
     ImGui::End();
 }

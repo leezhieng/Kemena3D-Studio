@@ -272,6 +272,8 @@ class PanelProject
 		/** @brief Renders the rename modal dialog and applies the rename on confirmation. */
 		void drawRenameModal();
 
+		bool focused = false; ///< True while the project window owns ImGui focus (set each draw()).
+
 		Manager* manager;  ///< Owning editor manager providing shared editor state.
 		kGuiManager* gui;  ///< GUI manager used for rendering and icon loading.
 };

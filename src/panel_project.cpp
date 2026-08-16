@@ -337,6 +337,7 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 	gui->beginDisabled(!manager->projectOpened);
 
 	gui->windowStart("Project", opened);
+	focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 	{
 		gui->pushStyleColor(ImGuiCol_Button, kVec4(0, 0, 0, 0));
 		gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0, 0, 0, 0));
@@ -525,6 +526,7 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 
 void PanelProject::draw(bool& opened)
 {
+	focused = false;
 	if (manager->projectOpened)
 	{
 		if (needRefreshList)

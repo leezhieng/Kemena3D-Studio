@@ -101,6 +101,10 @@ endif()
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
         /W3
+        # Treat source and execution charsets as UTF-8. Without this MSVC assumes
+        # the active code page (e.g. 936/GBK) and emits C4819 for UTF-8 files
+        # containing non-ASCII characters (e.g. ©, –, emoji in comments).
+        /utf-8
         $<$<CONFIG:Debug>:/Zi>
         # Emit debug info in Release too so the crash reporter can resolve
         # symbols in the no-console GUI build. /Zi does not affect /O2 codegen.
@@ -110,6 +114,11 @@ if(MSVC)
     # WIN32_EXECUTABLE uses /SUBSYSTEM:WINDOWS which expects WinMain; override the
     # entry point so the standard int main() is used instead.
     target_link_options(${PROJECT_NAME} PRIVATE
+        # Suppress LNK4099 ("PDB not found with ...") for prebuilt third-party
+        # static libraries (assimp, Jolt, Recast, ...) whose .pdb files are not
+        # shipped next to the .lib in the SDK output. The warning is benign and
+        # only means those libs link without debug info.
+        /IGNORE:4099
         $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>
         # Generate a .pdb for Release (paired with /Zi) without bloating the exe.
         $<$<CONFIG:Release>:/DEBUG>
@@ -149,8 +158,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(MSVC)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         SDL3-static
-        $<$<CONFIG:Debug>:assimp-vc143-mtd>
-        $<$<CONFIG:Release>:assimp-vc143-mt>
+        $<$<CONFIG:Debug>:assimp-vc${MSVC_TOOLSET_VERSION}-mtd>
+        $<$<CONFIG:Release>:assimp-vc${MSVC_TOOLSET_VERSION}-mt>
         $<$<CONFIG:Debug>:angelscriptd>
         $<$<CONFIG:Release>:angelscript>
         imgui

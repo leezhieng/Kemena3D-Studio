@@ -28,6 +28,7 @@
 #include <functional>
 #include <ctime>
 #include <cstdlib>
+#include <cmath>
 
 namespace fs = std::filesystem;
 
@@ -902,10 +903,28 @@ void Manager::checkAssetChange()
                 fs::path thumbnailPath = libraryFolder / "Thumbnails" / (fileUuid + ".png");
                 fs::path metaPath = libraryFolder / "Metadata" / (fileUuid + ".json");
 
-                // Write / overwrite metadata whenever it's missing or the file changed
+                // Write / overwrite metadata whenever it's missing or the file changed.
+                // Preserve any existing user-chosen import settings (scaleFactor,
+                // tangents, importAnimation, etc.) so a source change or a fresh
+                // re-import on another machine doesn't silently reset them.
                 if (!fs::exists(metaPath) || needImport)
                 {
                     nlohmann::json meta;
+                    if (fs::exists(metaPath))
+                    {
+                        try
+                        {
+                            std::ifstream existing(metaPath);
+                            existing >> meta;
+                            if (!meta.is_object())
+                                meta = nlohmann::json::object();
+                        }
+                        catch (...)
+                        {
+                            meta = nlohmann::json::object();
+                        }
+                    }
+
                     meta["type"] = fileType;
                     meta["last_change"] = static_cast<int64_t>(std::time(nullptr));
                     meta["src_checksum"] = checksum;
@@ -1018,7 +1037,9 @@ void Manager::refreshWindowTitle()
         else
             window->setWindowTitle(initialWindowTitle + " - " + projectName + " - " + worldName + ".world");
 
-        if (!projectSaved)
+        // While the game panel is running, scene edits are temporary (reverted
+        // on Stop) and must not mark the window title dirty.
+        if (!projectSaved && !(panelGame && panelGame->getPlayState() != GamePlayState::Stopped))
             window->setWindowTitle(window->getWindowTitle() + "*");
     }
 }
@@ -1270,11 +1291,30 @@ void Manager::startBatchImport(const std::vector<ImportTask> &tasks)
 		{
 			if (task.type == "mesh")
 			{
-				// Use the Ex variant (same defaults as convertMeshToGlb) so we can
-				// capture the detailed failure reason and surface it in the console.
+				// Load the per-asset import settings (scale / tangents / animation)
+				// from Library/Metadata/<uuid>.json so a re-import on another
+				// machine honours the settings chosen in the inspector instead of
+				// silently falling back to defaults.
+				MeshImportOptions opt;
+				fs::path metaPath = projectPath / "Library" / "Metadata" / (task.uuid + ".json");
+				if (!task.uuid.empty() && fs::exists(metaPath))
+				{
+					try
+					{
+						std::ifstream mf(metaPath);
+						nlohmann::json mj;
+						mf >> mj;
+						opt.scaleFactor = mj.value("scaleFactor", 1.0f);
+						opt.tangents = mj.value("tangents", 0);
+						opt.importAnimation = mj.value("importAnimation", true);
+					}
+					catch (...)
+					{
+					}
+				}
+
 				std::string err;
-				task.success = convertMeshToGlbEx(task.inputPath, task.outputPath,
-				                                  MeshImportOptions{}, &err, &task.warnings);
+				task.success = convertMeshToGlbEx(task.inputPath, task.outputPath, opt, &err, &task.warnings);
 				if (!task.success)
 					task.errorMsg = err.empty() ? "mesh import failed" : err;
 			}
@@ -2479,6 +2519,65 @@ void Manager::createParticle()
             if (panelHierarchy) panelHierarchy->refreshList(); });
 }
 
+fs::path Manager::resolveAudioFileByUuid(const kString &audioUuid)
+{
+    if (audioUuid.empty() || projectPath.empty())
+        return {};
+
+    static const char *kAudioExts[] = {".wav", ".ogg", ".mp3", ".flac"};
+
+    // 1) Converted copy under Library/ImportedAssets.
+    for (const char *ext : kAudioExts)
+    {
+        fs::path cand = projectPath / "Library" / "ImportedAssets" / (audioUuid + ext);
+        if (fs::exists(cand))
+            return cand;
+    }
+
+    // 2) Live registry (assets.json -> Assets/<relative path>).
+    auto it = fileMap.find(audioUuid);
+    if (it != fileMap.end() && it->second.type == "audio")
+    {
+        fs::path srcPath = projectPath / "Assets" / it->second.path;
+        if (fs::exists(srcPath))
+            return srcPath;
+    }
+
+    // 3) Stale-UUID recovery via Library/Metadata/<uuid>.json. When an audio
+    //    asset was re-imported with a new UUID while a scene still references
+    //    the old one, assets.json no longer contains the old UUID, but the old
+    //    metadata file still records the original source path.
+    fs::path metaPath = projectPath / "Library" / "Metadata" / (audioUuid + ".json");
+    if (fs::exists(metaPath))
+    {
+        try
+        {
+            json meta;
+            std::ifstream in(metaPath);
+            if (in)
+            {
+                in >> meta;
+                if (meta.is_object() && meta.value("type", std::string("")) == "audio")
+                {
+                    fs::path srcDir  = meta.value("src_path", std::string(""));
+                    fs::path srcFile = meta.value("src_file", std::string(""));
+                    if (!srcDir.empty() && !srcFile.empty())
+                    {
+                        fs::path srcPath = projectPath / srcDir / srcFile;
+                        if (fs::exists(srcPath))
+                            return srcPath;
+                    }
+                }
+            }
+        }
+        catch (...)
+        {
+        }
+    }
+
+    return {};
+}
+
 void Manager::startAudioPreview(kAudioSource &src)
 {
     // If already previewing this same source, stop it (toggle off).
@@ -2493,29 +2592,7 @@ void Manager::startAudioPreview(kAudioSource &src)
         stopAudioPreview();
 
     // Resolve the stored audio-file UUID to an actual filesystem path.
-    // Prefer the converted file in Library/ImportedAssets, fall back to the
-    // original source file in Assets/.
-    fs::path audioPath;
-    if (!src.audioFile.empty())
-    {
-        // Try the converted Library file first (any extension)
-        static const char* kAudioExts[] = {".wav", ".ogg", ".mp3", ".flac"};
-        for (const char* ext : kAudioExts)
-        {
-            fs::path cand = projectPath / "Library" / "ImportedAssets" / (src.audioFile + ext);
-            if (fs::exists(cand))
-            {
-                audioPath = cand;
-                break;
-            }
-        }
-        if (audioPath.empty())
-        {
-            auto it = fileMap.find(src.audioFile);
-            if (it != fileMap.end() && it->second.type == "audio")
-                audioPath = projectPath / "Assets" / it->second.path;
-        }
-    }
+    fs::path audioPath = resolveAudioFileByUuid(src.audioFile);
 
     if (audioPath.empty() || !fs::exists(audioPath))
     {
@@ -2564,29 +2641,9 @@ void Manager::startAudioPreviewByUuid(const kString &audioUuid)
     if (audioPreviewClip)
         stopAudioPreview();
 
-    // Resolve to the audio file. Try Library/ImportedAssets first (any extension),
-    // then fall back to the original asset in Assets/.
-    auto resolveAudioPath = [&](const kString &uuid) -> fs::path
-    {
-        static const char* kAudioExts[] = {".wav", ".ogg", ".mp3", ".flac"};
-        for (const char* ext : kAudioExts)
-        {
-            fs::path cand = projectPath / "Library" / "ImportedAssets" / (uuid + ext);
-            if (fs::exists(cand))
-                return cand;
-        }
-        // Fall back to the original asset in Assets/.
-        auto it = fileMap.find(uuid);
-        if (it != fileMap.end() && it->second.type == "audio")
-        {
-            fs::path srcPath = projectPath / "Assets" / it->second.path;
-            if (fs::exists(srcPath))
-                return srcPath;
-        }
-        return fs::path();
-    };
-
-    fs::path libPath = resolveAudioPath(audioUuid);
+    // Resolve to the audio file (Library/ImportedAssets, registry, or
+    // stale-UUID metadata recovery).
+    fs::path libPath = resolveAudioFileByUuid(audioUuid);
     if (libPath.empty())
     {
         std::cerr << "Audio preview: cannot resolve audio file for UUID " << audioUuid
@@ -2692,23 +2749,7 @@ void Manager::startGameAudio()
                 continue;
 
             // Resolve the audio file path (same logic as startAudioPreview).
-            fs::path audioPath;
-            static const char *kAudioExts[] = {".wav", ".ogg", ".mp3", ".flac"};
-            for (const char *ext : kAudioExts)
-            {
-                fs::path cand = projectPath / "Library" / "ImportedAssets" / (src.audioFile + ext);
-                if (fs::exists(cand))
-                {
-                    audioPath = cand;
-                    break;
-                }
-            }
-            if (audioPath.empty())
-            {
-                auto it = fileMap.find(src.audioFile);
-                if (it != fileMap.end() && it->second.type == "audio")
-                    audioPath = projectPath / "Assets" / it->second.path;
-            }
+            fs::path audioPath = resolveAudioFileByUuid(src.audioFile);
 
             if (audioPath.empty() || !fs::exists(audioPath))
             {
@@ -5124,6 +5165,7 @@ void Manager::loadWorld(const kString &path)
 
     // Old baked nav meshes are keyed by now-stale object UUIDs — drop them.
     clearAllNavMeshes();
+    stopAnimators();
 
     json data;
     try
@@ -8212,4 +8254,418 @@ void Manager::reimportAsset(const kString &uuid)
 
     // Trigger re-import
     checkAssetChange();
+}
+
+// ===========================================================================
+// Animator controller runtime
+// ===========================================================================
+
+static kMesh *findFirstMeshInSubtree(kObject *node)
+{
+    if (!node)
+        return nullptr;
+    if (node->getType() == NODE_TYPE_MESH)
+        return static_cast<kMesh *>(node);
+    for (kObject *child : node->getChildren())
+    {
+        kMesh *mesh = findFirstMeshInSubtree(child);
+        if (mesh)
+            return mesh;
+    }
+    return nullptr;
+}
+
+static void collectBoneMeshes(kMesh *mesh, std::vector<kMesh *> &out)
+{
+    if (!mesh)
+        return;
+    if (mesh->getBoneCount() > 0)
+        out.push_back(mesh);
+    for (kObject *child : mesh->getChildren())
+        if (child && child->getType() == NODE_TYPE_MESH)
+            collectBoneMeshes(static_cast<kMesh *>(child), out);
+}
+
+static void animatorDebugLog(const std::string &msg)
+{
+    std::cerr << msg << "\n";
+    std::ofstream f("D:\\Projects\\Kemena3D\\animator_debug.log", std::ios::app);
+    if (f.is_open())
+        f << msg << std::endl;
+}
+
+static float readMeshScaleFactor(const fs::path &projectPath, const std::string &uuid)
+{
+    if (uuid.empty())
+        return 1.0f;
+
+    fs::path metaPath = projectPath / "Library" / "Metadata" / (uuid + ".json");
+    if (!fs::exists(metaPath))
+        return 1.0f;
+
+    try
+    {
+        std::ifstream mf(metaPath);
+        nlohmann::json mj;
+        mf >> mj;
+        return mj.value("scaleFactor", 1.0f);
+    }
+    catch (...)
+    {
+    }
+    return 1.0f;
+}
+
+static AnimState *findDefaultAnimatorState(AnimatorGraph &graph)
+{
+    for (auto &s : graph.states)
+        if (s.isDefault)
+            return &s;
+    if (!graph.states.empty())
+        return &graph.states[0];
+    return nullptr;
+}
+
+static void enterAnimatorState(RuntimeAnimator &rt, AnimState *state)
+{
+    if (!state)
+        return;
+    rt.currentStateId = state->id;
+    rt.stateTimeSeconds = 0.0f;
+    auto it = rt.clipForState.find(state->animationUuid);
+    if (it != rt.clipForState.end() && rt.animator)
+        rt.animator->playAnimation(it->second);
+}
+
+static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *state, float animSeconds)
+{
+    if (!state)
+        return nullptr;
+
+    for (auto &t : rt.graph->transitions)
+    {
+        if (t.fromStateId != state->id)
+            continue;
+        if (t.hasExitTime && animSeconds < t.exitTime)
+            continue;
+
+        bool conditionsMet = true;
+        for (auto &c : t.conditions)
+        {
+            if (!c.evaluate(rt.variables))
+            {
+                conditionsMet = false;
+                break;
+            }
+        }
+
+        if (conditionsMet)
+        {
+            AnimState *target = rt.graph->findState(t.toStateId);
+            if (target && target->id != state->id)
+                return target;
+        }
+    }
+    return nullptr;
+}
+
+static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
+{
+    kString ref = obj->getAnimatorRef();
+    if (ref.empty())
+        return false;
+
+    fs::path animPath = mgr->findAssetPathByUuid(ref);
+    if (animPath.empty() || !fs::exists(animPath))
+    {
+        animatorDebugLog("[Animator] build: animator path missing for ref=" + ref);
+        return false;
+    }
+    animatorDebugLog("[Animator] build: obj=" + obj->getUuid() + " animPath=" + animPath.string());
+
+    nlohmann::json j;
+    try
+    {
+        std::ifstream f(animPath);
+        if (!f.is_open())
+            return false;
+        f >> j;
+    }
+    catch (...)
+    {
+        return false;
+    }
+
+    RuntimeAnimator rt;
+    rt.objectUuid = obj->getUuid();
+    rt.graph = std::make_shared<AnimatorGraph>();
+    rt.graph->fromJson(j);
+
+    kMesh *rootMesh = findFirstMeshInSubtree(obj);
+    if (!rootMesh)
+        return false;
+
+    kAssetManager *am = mgr->getAssetManager();
+    if (!am)
+        return false;
+
+    for (auto &v : rt.graph->variables)
+        rt.variables[v.name] = v.defaultValue;
+
+    // Load the clip referenced by each state. Clips for one model resolve to
+    // the same imported GLB; one load per animation UUID is sufficient.
+    for (auto &st : rt.graph->states)
+    {
+        if (st.animationUuid.empty())
+            continue;
+        if (rt.clipForState.count(st.animationUuid))
+            continue;
+
+        fs::path clipPath = mgr->findAssetPathByUuid(st.animationUuid);
+        if (clipPath.empty() || !fs::exists(clipPath))
+            continue;
+
+        nlohmann::json aj;
+        try
+        {
+            std::ifstream af(clipPath);
+            if (!af.is_open())
+                continue;
+            af >> aj;
+        }
+        catch (...)
+        {
+            continue;
+        }
+
+        std::string meshUuid = aj.value("meshUuid", std::string());
+        if (meshUuid.empty())
+            continue;
+
+        float startFrame = aj.value("startFrame", 0.0f);
+        float endFrame   = aj.value("endFrame", 30.0f);
+        rt.clipFrames[st.animationUuid] = { startFrame, endFrame };
+
+        fs::path glbPath = mgr->projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
+        if (!fs::exists(glbPath))
+            continue;
+
+        try
+        {
+            kSkeletalAnimation *clip = am->loadAnimation(glbPath.string(), rootMesh);
+            if (!clip)
+                continue;
+            // stepAnimators drives time manually; zero speed stops the main
+            // kRenderer from advancing the same clip a second time each frame.
+            clip->setSpeed(0.0f);
+
+            // Compensate for unit-scale differences between the animation asset
+            // and the mesh it is bound to. Both are imported independently and
+            // may use different scaleFactor settings; without this, a clip
+            // imported at scale 1.0 bound to a mesh imported at scale 0.02
+            // produces wildly wrong translations and the mesh looks exploded.
+            float meshScale = readMeshScaleFactor(mgr->projectPath, rootMesh->getRefName());
+            float animScale = readMeshScaleFactor(mgr->projectPath, meshUuid);
+            if (meshScale > 0.0f && animScale > 0.0f)
+            {
+                float ratio = meshScale / animScale;
+                if (std::fabs(ratio - 1.0f) > 1e-5f)
+                    clip->applyTranslationScale(ratio);
+                std::string dbg = "[Animator] clip=" + st.animationUuid +
+                                  " tps=" + std::to_string(clip->getTicksPerSecond()) +
+                                  " dur=" + std::to_string(clip->getDuration()) +
+                                  " meshScale=" + std::to_string(meshScale) +
+                                  " animScale=" + std::to_string(animScale) +
+                                  " ratio=" + std::to_string(ratio);
+                animatorDebugLog(dbg);
+            }
+
+            rt.ownedClips.push_back(clip);
+            rt.clipForState[st.animationUuid] = clip;
+        }
+        catch (const std::exception &)
+        {
+            // GLB without a skeletal clip — treat the state as unplayable.
+        }
+    }
+
+    if (rt.clipForState.empty())
+        return false;
+
+    rt.rootMesh = rootMesh;
+    rt.animator = new kAnimator(nullptr);
+
+    // Enter a playable state immediately so the renderer never observes a
+    // kAnimator whose currentAnimation is nullptr.
+    AnimState *defaultState = findDefaultAnimatorState(*rt.graph);
+    if (defaultState && rt.clipForState.count(defaultState->animationUuid) == 0)
+    {
+        for (auto &st : rt.graph->states)
+            if (rt.clipForState.count(st.animationUuid))
+            {
+                defaultState = &st;
+                break;
+            }
+    }
+    if (!defaultState)
+    {
+        delete rt.animator;
+        for (kSkeletalAnimation *clip : rt.ownedClips)
+            delete clip;
+        return false;
+    }
+    enterAnimatorState(rt, defaultState);
+
+    std::vector<kMesh *> boneMeshes;
+    collectBoneMeshes(rootMesh, boneMeshes);
+    for (kMesh *m : boneMeshes)
+        m->setAnimator(rt.animator);
+
+    mgr->runtimeAnimators.push_back(std::move(rt));
+    return true;
+}
+
+static void startAnimatorsRecursive(Manager *mgr, kObject *node)
+{
+    if (!node)
+        return;
+    if (!node->getAnimatorRef().empty())
+        buildRuntimeAnimator(mgr, node);
+    for (kObject *child : node->getChildren())
+        startAnimatorsRecursive(mgr, child);
+}
+
+static void detachRuntimeAnimatorFromMesh(kMesh *mesh, kAnimator *animator)
+{
+    if (!mesh)
+        return;
+    if (mesh->getAnimator() == animator)
+    {
+        mesh->setAnimator(nullptr);
+        mesh->setSkinned(false);
+    }
+    for (kObject *child : mesh->getChildren())
+        if (child && child->getType() == NODE_TYPE_MESH)
+            detachRuntimeAnimatorFromMesh(static_cast<kMesh *>(child), animator);
+}
+
+void Manager::startAnimators()
+{
+    stopAnimators();
+
+    animatorDebugLog("[Animator] startAnimators: projectOpened=" + std::to_string(projectOpened ? 1 : 0));
+
+    if (!projectOpened || !world)
+        return;
+
+    for (kScene *s : world->getScenes())
+    {
+        if (!s || !s->getRootNode())
+            continue;
+        for (kObject *child : s->getRootNode()->getChildren())
+            startAnimatorsRecursive(this, child);
+    }
+
+    animatorDebugLog("[Animator] startAnimators done: runtimeCount=" + std::to_string(runtimeAnimators.size()));
+}
+
+void Manager::stopAnimators()
+{
+    for (auto &rt : runtimeAnimators)
+    {
+        if (rt.animator && rt.rootMesh)
+            detachRuntimeAnimatorFromMesh(rt.rootMesh, rt.animator);
+        delete rt.animator;
+        for (kSkeletalAnimation *clip : rt.ownedClips)
+            delete clip;
+    }
+    runtimeAnimators.clear();
+}
+
+void Manager::stepAnimators(float dt)
+{
+    const float kAnimFps = 30.0f;
+
+    for (auto &rt : runtimeAnimators)
+    {
+        if (!rt.animator)
+            continue;
+
+        AnimState *state = rt.graph->findState(rt.currentStateId);
+        if (!state)
+        {
+            state = findDefaultAnimatorState(*rt.graph);
+            if (!state)
+                continue;
+            enterAnimatorState(rt, state);
+        }
+
+        auto clipIt = rt.clipForState.find(state->animationUuid);
+        if (clipIt == rt.clipForState.end() || !clipIt->second)
+            continue;
+
+        kSkeletalAnimation *clip = clipIt->second;
+        auto frameIt = rt.clipFrames.find(state->animationUuid);
+        float startFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
+        float endFrame   = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
+
+        float startSec = startFrame / kAnimFps;
+        float endSec   = endFrame / kAnimFps;
+
+        rt.stateTimeSeconds += dt;
+        float animSeconds = startSec + rt.stateTimeSeconds * state->speed;
+
+        if (state->loop)
+        {
+            float dur = endSec - startSec;
+            if (dur > 1e-4f)
+                animSeconds = startSec + std::fmod(animSeconds - startSec, dur);
+        }
+        else if (animSeconds >= endSec)
+        {
+            animSeconds = endSec;
+        }
+
+        AnimState *next = evaluateAnimatorTransitions(rt, state, animSeconds);
+        if (next)
+        {
+            enterAnimatorState(rt, next);
+            state = next;
+            clipIt = rt.clipForState.find(state->animationUuid);
+            if (clipIt == rt.clipForState.end() || !clipIt->second)
+                continue;
+            clip = clipIt->second;
+            frameIt = rt.clipFrames.find(state->animationUuid);
+            startFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
+            endFrame   = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
+            animSeconds = startFrame / kAnimFps;
+        }
+
+        float ticks = animSeconds * clip->getTicksPerSecond();
+        rt.animator->setCurrentTime(ticks);
+
+        {
+            static int dbg = 0;
+            if (dbg < 10 || (dbg % 120 == 0))
+            {
+                std::string msg = "[Animator] step dt=" + std::to_string(dt) +
+                                  " stateTime=" + std::to_string(rt.stateTimeSeconds) +
+                                  " animSec=" + std::to_string(animSeconds) +
+                                  " ticks=" + std::to_string(ticks) +
+                                  " tps=" + std::to_string(clip->getTicksPerSecond());
+                animatorDebugLog(msg);
+            }
+            dbg++;
+        }
+
+        try
+        {
+            const kNodeData &root = clip->getRootNode();
+            rt.animator->calculateBoneTransform(&root, kMat4(1.0f));
+        }
+        catch (const std::exception &)
+        {
+            // Keep the last successfully computed pose.
+        }
+    }
 }
