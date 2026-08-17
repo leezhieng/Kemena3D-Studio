@@ -8363,7 +8363,16 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
         {
             AnimState *target = rt.graph->findState(t.toStateId);
             if (target && target->id != state->id)
+            {
+                // Never transition into a state with no playable clip. The
+                // graph would get stuck there (stepAnimators skips states whose
+                // clip failed to load, before transitions are re-evaluated) and
+                // the object would freeze in place. Skip such edges so the
+                // current state keeps playing instead.
+                if (rt.clipForState.count(target->animationUuid) == 0)
+                    continue;
                 return target;
+            }
         }
     }
     return nullptr;

@@ -571,8 +571,8 @@ void PanelInspector::frameModelViewCamera()
     float heAlong = std::abs(dir.x) * he.x + std::abs(dir.y) * he.y + std::abs(dir.z) * he.z;
 
     modelViewCamera->setFOV(fov);
-    modelViewCamera->setNearClip(std::max(0.001f, modelViewCamDist - heAlong - radius * 0.05f));
-    modelViewCamera->setFarClip(modelViewCamDist + heAlong + radius * 0.05f);
+    modelViewCamera->setNearClip(std::max(0.0001f, modelViewCamDist - heAlong - radius * 0.05f));
+    modelViewCamera->setFarClip(modelViewCamDist * 1000.0f);
     // Camera position set per-frame via orbit update in drawModelViewer
 }
 
@@ -744,8 +744,8 @@ void PanelInspector::drawModelViewer(const PanelProject::SelectedProjectAsset &a
 
         // The frame pass tightly fits the near/far clips to the framed distance.
         // Widen them after zooming so the mesh isn't clipped when dollied out.
-        modelViewCamera->setNearClip(std::max(0.001f, modelViewCamDist * 0.01f));
-        modelViewCamera->setFarClip(modelViewCamDist + 1000.0f);
+        modelViewCamera->setNearClip(std::max(0.0001f, modelViewCamDist * 0.01f));
+        modelViewCamera->setFarClip(modelViewCamDist * 1000.0f);
     }
 
     // -----------------------------------------------------------------------
@@ -4156,8 +4156,8 @@ void PanelInspector::frameAnimPreviewCamera()
     float heAlong = std::abs(dir.x) * he.x + std::abs(dir.y) * he.y + std::abs(dir.z) * he.z;
 
     animPreviewCamera->setFOV(fov);
-    animPreviewCamera->setNearClip(std::max(0.001f, animPreviewCamDist - heAlong - radius * 0.05f));
-    animPreviewCamera->setFarClip(animPreviewCamDist + heAlong + radius * 0.05f);
+    animPreviewCamera->setNearClip(std::max(0.0001f, animPreviewCamDist - heAlong - radius * 0.05f));
+    animPreviewCamera->setFarClip(animPreviewCamDist * 1000.0f);
 }
 
 void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAsset &asset)
@@ -4496,8 +4496,8 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
 
         // The frame pass tightly fits the near/far clips to the framed distance.
         // Widen them after zooming so the mesh isn't clipped when dollied out.
-        animPreviewCamera->setNearClip(std::max(0.001f, animPreviewCamDist * 0.01f));
-        animPreviewCamera->setFarClip(animPreviewCamDist + 1000.0f);
+        animPreviewCamera->setNearClip(std::max(0.0001f, animPreviewCamDist * 0.01f));
+        animPreviewCamera->setFarClip(animPreviewCamDist * 1000.0f);
     }
 
     // -----------------------------------------------------------------------
@@ -4778,13 +4778,14 @@ void PanelInspector::draw(bool &opened)
     gui->windowStart("Inspector", &opened);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    // Animator editing takes priority while the animator editor is focused,
-    // its animation picker popup is open, or the inspector itself is focused.
-    // This keeps the animator state/transition form visible while the user
-    // edits it in the inspector panel.
+    // Animator editing takes priority while the animator editor is the last
+    // focused panel, it currently owns focus, or its animation picker popup is
+    // open. The Inspector's own focus is deliberately excluded so that clicking
+    // the Inspector (e.g. after selecting a Project asset) does not yank the
+    // Inspector back to the animator form.
     if (manager->panelAnimator != nullptr && manager->panelAnimator->visible &&
         (manager->lastFocusedPanel == Manager::FocusedPanel::Animator ||
-         manager->panelAnimator->focused || manager->panelAnimator->isAnimPickerOpen() || focused) &&
+         manager->panelAnimator->focused || manager->panelAnimator->isAnimPickerOpen()) &&
         (manager->panelAnimator->hasSelectedState() ||
          manager->panelAnimator->hasSelectedTransition()))
     {
