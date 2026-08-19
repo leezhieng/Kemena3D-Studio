@@ -24,8 +24,8 @@ set(SOURCES
     src/panel_inspector.cpp
     src/panel_project.cpp
     src/panel_world.cpp
-    src/panel_shader_editor.cpp
-    src/panel_script_editor.cpp
+    src/panel_shadergraph.cpp
+    src/panel_logicgraph.cpp
     src/panel_game.cpp
     src/panel_prefab.cpp
     src/panel_terrain.cpp

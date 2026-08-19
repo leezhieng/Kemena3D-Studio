@@ -1,4 +1,4 @@
-#include "panel_shader_editor.h"
+#include "panel_shadergraph.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <SDL3/SDL_dialog.h>
@@ -28,13 +28,13 @@ static ImVec2 operator*(ImVec2 a, float s)  { return { a.x * s,   a.y * s   }; }
 // Construction / file helpers
 // ===========================================================================
 
-PanelShaderEditor::PanelShaderEditor(kGuiManager* setGui, Manager* setManager)
+PanelShaderGraph::PanelShaderGraph(kGuiManager* setGui, Manager* setManager)
     : gui(setGui), manager(setManager)
 {
     newGraph();
 }
 
-std::string PanelShaderEditor::generateUuid()
+std::string PanelShaderGraph::generateUuid()
 {
     using namespace std::chrono;
     auto seed = (uint64_t)duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
@@ -46,7 +46,7 @@ std::string PanelShaderEditor::generateUuid()
     return std::string(buf);
 }
 
-void PanelShaderEditor::newGraph()
+void PanelShaderGraph::newGraph()
 {
     graph       = kShaderGraph{};
     graph.uuid  = generateUuid();
@@ -63,12 +63,12 @@ void PanelShaderEditor::newGraph()
     graph.nodes.push_back(out);
 }
 
-void PanelShaderEditor::openFile(const std::string& path)
+void PanelShaderGraph::openFile(const std::string& path)
 {
     loadGraph(path);
 }
 
-void PanelShaderEditor::loadGraph(const std::string& path)
+void PanelShaderGraph::loadGraph(const std::string& path)
 {
     std::ifstream f(path);
     if (!f.is_open()) return;
@@ -86,7 +86,7 @@ void PanelShaderEditor::loadGraph(const std::string& path)
     catch (...) {}
 }
 
-void PanelShaderEditor::saveGraph()
+void PanelShaderGraph::saveGraph()
 {
     if (filePath.empty()) { saveGraphAs(); return; }
 
@@ -98,13 +98,13 @@ void PanelShaderEditor::saveGraph()
     graph.dirty = false;
 }
 
-void SDLCALL PanelShaderEditor::saveShaderCallback(void* userdata,
+void SDLCALL PanelShaderGraph::saveShaderCallback(void* userdata,
                                                     const char* const* filelist,
                                                     int /*filter*/)
 {
     if (!filelist || !*filelist) return;
 
-    PanelShaderEditor* self = static_cast<PanelShaderEditor*>(userdata);
+    PanelShaderGraph* self = static_cast<PanelShaderGraph*>(userdata);
 
     std::string path = filelist[0];
     if (path.size() < 7 || path.substr(path.size() - 7) != ".shader")
@@ -114,7 +114,7 @@ void SDLCALL PanelShaderEditor::saveShaderCallback(void* userdata,
     self->saveGraph();
 }
 
-void PanelShaderEditor::saveGraphAs()
+void PanelShaderGraph::saveGraphAs()
 {
     if (!manager->projectOpened) return;
 
@@ -138,7 +138,7 @@ void PanelShaderEditor::saveGraphAs()
     );
 }
 
-void PanelShaderEditor::compileAndExport()
+void PanelShaderGraph::compileAndExport()
 {
     lastCompileError.clear();
     compiled = false;
@@ -185,17 +185,17 @@ void PanelShaderEditor::compileAndExport()
 // Coordinate helpers
 // ===========================================================================
 
-ImVec2 PanelShaderEditor::canvasToScreen(ImVec2 cp, ImVec2 origin) const
+ImVec2 PanelShaderGraph::canvasToScreen(ImVec2 cp, ImVec2 origin) const
 {
     return origin + (cp + canvasOffset) * canvasZoom;
 }
 
-ImVec2 PanelShaderEditor::screenToCanvas(ImVec2 sp, ImVec2 origin) const
+ImVec2 PanelShaderGraph::screenToCanvas(ImVec2 sp, ImVec2 origin) const
 {
     return (sp - origin) * (1.f / canvasZoom) - canvasOffset;
 }
 
-ImVec2 PanelShaderEditor::getPinScreenPos(int nodeId, int pinId, ImVec2 origin) const
+ImVec2 PanelShaderGraph::getPinScreenPos(int nodeId, int pinId, ImVec2 origin) const
 {
     const kShaderNode* n = graph.findNode(nodeId);
     if (!n) return { 0, 0 };
@@ -206,7 +206,7 @@ ImVec2 PanelShaderEditor::getPinScreenPos(int nodeId, int pinId, ImVec2 origin) 
     return { 0, 0 };
 }
 
-PanelShaderEditor::HitPin PanelShaderEditor::hitTestPins(ImVec2 mouse, ImVec2 origin) const
+PanelShaderGraph::HitPin PanelShaderGraph::hitTestPins(ImVec2 mouse, ImVec2 origin) const
 {
     for (const auto& n : graph.nodes)
     {
@@ -324,7 +324,7 @@ static bool nodeHasInlineEditor(kShaderNodeType t)
     }
 }
 
-void PanelShaderEditor::drawNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin)
+void PanelShaderGraph::drawNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin)
 {
     const float zoom     = canvasZoom;
     const float nw       = NODE_WIDTH * zoom;
@@ -513,7 +513,7 @@ void PanelShaderEditor::drawNode(ImDrawList* dl, kShaderNode& node, ImVec2 origi
     }
 }
 
-void PanelShaderEditor::drawLinks(ImDrawList* dl, ImVec2 origin)
+void PanelShaderGraph::drawLinks(ImDrawList* dl, ImVec2 origin)
 {
     for (const auto& link : graph.links)
     {
@@ -537,7 +537,7 @@ void PanelShaderEditor::drawLinks(ImDrawList* dl, ImVec2 origin)
     }
 }
 
-void PanelShaderEditor::drawDragLink(ImDrawList* dl)
+void PanelShaderGraph::drawDragLink(ImDrawList* dl)
 {
     if (!isDraggingLink) return;
 
@@ -559,7 +559,7 @@ void PanelShaderEditor::drawDragLink(ImDrawList* dl)
     dl->AddCircleFilled(p3, PIN_RADIUS * canvasZoom, IM_COL32(255, 255, 255, 180));
 }
 
-void PanelShaderEditor::drawNodeContextMenu()
+void PanelShaderGraph::drawNodeContextMenu()
 {
     if (ImGui::BeginPopup("##NodeAddMenu"))
     {
@@ -661,7 +661,7 @@ void PanelShaderEditor::drawNodeContextMenu()
 // Main draw
 // ===========================================================================
 
-void PanelShaderEditor::draw(bool& isOpened)
+void PanelShaderGraph::draw(bool& isOpened)
 {
     if (!isOpened) return;
 
@@ -703,7 +703,7 @@ void PanelShaderEditor::draw(bool& isOpened)
 // Toolbar
 // ---------------------------------------------------------------------------
 
-void PanelShaderEditor::drawToolbar()
+void PanelShaderGraph::drawToolbar()
 {
     bool hasProject = manager->projectOpened;
 
@@ -788,7 +788,7 @@ void PanelShaderEditor::drawToolbar()
 // Canvas
 // ---------------------------------------------------------------------------
 
-void PanelShaderEditor::drawCanvas()
+void PanelShaderGraph::drawCanvas()
 {
     ImVec2 canvasSize = ImGui::GetContentRegionAvail();
     if (canvasSize.x < 10 || canvasSize.y < 10) return;

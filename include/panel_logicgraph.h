@@ -1,5 +1,5 @@
-#ifndef PANEL_SCRIPT_EDITOR_H
-#define PANEL_SCRIPT_EDITOR_H
+#ifndef PANEL_LOGICGRAPH_H
+#define PANEL_LOGICGRAPH_H
 
 #include "kemena/kemena.h"
 #include "kemena/kscriptgraph.h"
@@ -21,7 +21,7 @@ using namespace kemena;
  * that generated script lives outside Assets/ (a temp build artifact) and
  * flows through the normal bytecode pipeline (Manager::buildScripts()).
  */
-class PanelScriptEditor
+class PanelLogicGraph
 {
 public:
     bool focused = false; ///< Set each draw() — used by main.cpp's Ctrl+S routing.
@@ -31,7 +31,7 @@ public:
      * @param setGui     GUI manager used for ImGui rendering context.
      * @param setManager Studio manager (project paths, script build pipeline).
      */
-    PanelScriptEditor(kGuiManager *setGui, Manager *setManager);
+    PanelLogicGraph(kGuiManager *setGui, Manager *setManager);
 
     /** @brief Draws the panel; @p isOpened is cleared when the window closes. */
     void draw(bool &isOpened);
@@ -156,4 +156,4 @@ private:
     std::string statusLine; ///< Last save/compile result shown in the toolbar.
 };
 
-#endif // PANEL_SCRIPT_EDITOR_H
+#endif // PANEL_LOGICGRAPH_H

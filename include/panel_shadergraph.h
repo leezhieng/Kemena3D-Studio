@@ -17,7 +17,7 @@ namespace fs = std::filesystem;
  * the graph to a .shader asset. Owns the active kShaderGraph and all canvas
  * interaction state.
  */
-class PanelShaderEditor
+class PanelShaderGraph
 {
 public:
     bool focused = false;       ///< Set each draw() — used by main.cpp's Ctrl+S routing.
@@ -27,7 +27,7 @@ public:
      * @param setGui GUI/ImGui manager used for drawing.
      * @param setManager Studio manager providing project state and paths.
      */
-    PanelShaderEditor(kGuiManager* setGui, Manager* setManager);
+    PanelShaderGraph(kGuiManager* setGui, Manager* setManager);
 
     /**
      * @brief Draw the panel and process its interaction for one frame.
@@ -195,7 +195,7 @@ private:
 
     /**
      * @brief SDL file-dialog callback that completes a "Save As" operation.
-     * @param userdata Pointer to the owning PanelShaderEditor instance.
+     * @param userdata Pointer to the owning PanelShaderGraph instance.
      * @param filelist Null-terminated list of chosen paths (first is used).
      * @param filter Index of the selected file filter (unused).
      */

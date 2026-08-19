@@ -23,6 +23,14 @@ PanelConsole::PanelConsole(kGuiManager *setGuiManager, Manager *setManager)
             else
                 m->panelConsole->addLog(lvl, "[Script] %s", message ? message : "");
         });
+
+    // Route runtime script print()/log()/printConsole() output to this panel.
+    kScriptManager::setScriptPrintHandler(
+        [m = manager](const char *message)
+        {
+            if (m && m->panelConsole)
+                m->panelConsole->addLog(LogLevel::Info, "[Script] %s", message ? message : "");
+        });
 }
 
 void PanelConsole::addLog(LogLevel level, const char *fmt, ...)

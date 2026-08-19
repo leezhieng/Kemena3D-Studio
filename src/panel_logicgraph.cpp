@@ -1,5 +1,5 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
-#include "panel_script_editor.h"
+#include "panel_logicgraph.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -42,13 +42,32 @@ namespace
             case kScriptNodeType::EventOnDestroy:  return NodeCategory::Event;
             case kScriptNodeType::Branch:          return NodeCategory::Flow;
             case kScriptNodeType::Print:
+            case kScriptNodeType::PrintConsole:
             case kScriptNodeType::SetPosition:
             case kScriptNodeType::SetRotation:
             case kScriptNodeType::SetScale:
             case kScriptNodeType::Translate:
             case kScriptNodeType::Rotate:
             case kScriptNodeType::SetActive:
-            case kScriptNodeType::SetVariable:     return NodeCategory::Action;
+            case kScriptNodeType::SetVariable:
+            case kScriptNodeType::PlaySound:
+            case kScriptNodeType::StopAllSounds:
+            case kScriptNodeType::SetMasterVolume:
+            case kScriptNodeType::SetListenerPosition:
+            case kScriptNodeType::SetListenerDirection:
+            case kScriptNodeType::PlayAnimation:
+            case kScriptNodeType::SetAnimatorSpeed:
+            case kScriptNodeType::SetAnimatorTime:
+            case kScriptNodeType::SetAnimatorBool:
+            case kScriptNodeType::SetAnimatorFloat:
+            case kScriptNodeType::SetAnimatorInt:
+            case kScriptNodeType::SetAnimatorTrigger:
+            case kScriptNodeType::ApplyForce:
+            case kScriptNodeType::ApplyImpulse:
+            case kScriptNodeType::ApplyTorque:
+            case kScriptNodeType::SetLinearVelocity:
+            case kScriptNodeType::SetAngularVelocity:
+            case kScriptNodeType::SetPhysicsGravity: return NodeCategory::Action;
             case kScriptNodeType::GetSelf:
             case kScriptNodeType::GetPosition:
             case kScriptNodeType::GetRotation:
@@ -57,7 +76,19 @@ namespace
             case kScriptNodeType::GetRight:
             case kScriptNodeType::GetUp:
             case kScriptNodeType::GetDeltaTime:
-            case kScriptNodeType::GetVariable:     return NodeCategory::Getter;
+            case kScriptNodeType::GetVariable:
+            case kScriptNodeType::GetAction:
+            case kScriptNodeType::GetActionPressed:
+            case kScriptNodeType::GetActionReleased:
+            case kScriptNodeType::GetAxis:
+            case kScriptNodeType::GetMasterVolume:
+            case kScriptNodeType::GetAnimator:
+            case kScriptNodeType::GetAnimatorSpeed:
+            case kScriptNodeType::GetPhysicsObject:
+            case kScriptNodeType::GetPhysicsVelocity:
+            case kScriptNodeType::GetPhysicsPosition:
+            case kScriptNodeType::GetPhysicsGravity:
+            case kScriptNodeType::IsPhysicsActive: return NodeCategory::Getter;
             case kScriptNodeType::LiteralFloat:
             case kScriptNodeType::LiteralBool:
             case kScriptNodeType::LiteralString:
@@ -102,6 +133,10 @@ namespace
             case kScriptNodeType::LiteralString:
             case kScriptNodeType::GetVariable:
             case kScriptNodeType::SetVariable: return 1;
+            case kScriptNodeType::GetAction:
+            case kScriptNodeType::GetActionPressed:
+            case kScriptNodeType::GetActionReleased:
+            case kScriptNodeType::GetAxis: return 1;
             case kScriptNodeType::LiteralVec3: return 3;
             default:                           return 0;
         }
@@ -122,14 +157,14 @@ namespace
 // Construction / file operations
 // ---------------------------------------------------------------------------
 
-PanelScriptEditor::PanelScriptEditor(kGuiManager *setGui, Manager *setManager)
+PanelLogicGraph::PanelLogicGraph(kGuiManager *setGui, Manager *setManager)
     : gui(setGui), manager(setManager)
 {
-    if (manager) manager->panelScriptEditor = this;
+    if (manager) manager->panelLogicGraph = this;
     newGraph();
 }
 
-void PanelScriptEditor::notifyAssetMoved(const std::string &oldPath, const std::string &newPath)
+void PanelLogicGraph::notifyAssetMoved(const std::string &oldPath, const std::string &newPath)
 {
     if (filePath.empty()) return;
     std::error_code ec;
@@ -142,7 +177,7 @@ void PanelScriptEditor::notifyAssetMoved(const std::string &oldPath, const std::
     }
 }
 
-void PanelScriptEditor::newGraph()
+void PanelLogicGraph::newGraph()
 {
     graph = kScriptGraph{};
     graph.uuid = generateUuid();
@@ -156,12 +191,12 @@ void PanelScriptEditor::newGraph()
     graph.nodes.push_back(graph.makeNode(kScriptNodeType::EventUpdate, 120.0f, 120.0f));
 }
 
-void PanelScriptEditor::openFile(const std::string &path)
+void PanelLogicGraph::openFile(const std::string &path)
 {
     loadGraph(path);
 }
 
-bool PanelScriptEditor::loadGraph(const std::string &path)
+bool PanelLogicGraph::loadGraph(const std::string &path)
 {
     std::ifstream in(path);
     if (!in.is_open())
@@ -187,7 +222,7 @@ bool PanelScriptEditor::loadGraph(const std::string &path)
     return true;
 }
 
-bool PanelScriptEditor::saveGraphAs()
+bool PanelLogicGraph::saveGraphAs()
 {
     std::string defaultDir =
         manager ? (manager->projectPath / "Assets").string() : std::string();
@@ -209,7 +244,7 @@ bool PanelScriptEditor::saveGraphAs()
     return saveGraph();
 }
 
-bool PanelScriptEditor::saveGraph()
+bool PanelLogicGraph::saveGraph()
 {
     if (filePath.empty())
         return saveGraphAs();
@@ -228,7 +263,7 @@ bool PanelScriptEditor::saveGraph()
     return true;
 }
 
-void PanelScriptEditor::regenerateScript()
+void PanelLogicGraph::regenerateScript()
 {
     if (!manager || graph.uuid.empty())
     {
@@ -270,13 +305,13 @@ void PanelScriptEditor::regenerateScript()
 // Coordinate mapping
 // ---------------------------------------------------------------------------
 
-ImVec2 PanelScriptEditor::canvasToScreen(ImVec2 cp, ImVec2 origin) const
+ImVec2 PanelLogicGraph::canvasToScreen(ImVec2 cp, ImVec2 origin) const
 {
     return ImVec2(origin.x + cp.x + canvasOffset.x,
                   origin.y + cp.y + canvasOffset.y);
 }
 
-ImVec2 PanelScriptEditor::screenToCanvas(ImVec2 sp, ImVec2 origin) const
+ImVec2 PanelLogicGraph::screenToCanvas(ImVec2 sp, ImVec2 origin) const
 {
     return ImVec2(sp.x - origin.x - canvasOffset.x,
                   sp.y - origin.y - canvasOffset.y);
@@ -314,7 +349,7 @@ namespace
 // Toolbar
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::drawToolbar()
+void PanelLogicGraph::drawToolbar()
 {
     if (ImGui::Button("New"))
         newGraph();
@@ -360,7 +395,7 @@ void PanelScriptEditor::drawToolbar()
 // Variables panel
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::drawVariablesPanel()
+void PanelLogicGraph::drawVariablesPanel()
 {
     ImGui::BeginChild("##scriptvars", ImVec2(180.0f, 0.0f), true);
     ImGui::TextUnformatted("Variables");
@@ -414,7 +449,7 @@ void PanelScriptEditor::drawVariablesPanel()
 // Node drawing
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin)
+void PanelLogicGraph::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin)
 {
     int rows = (int)std::max(node.inputs.size(), node.outputs.size());
     if (rows < 1) rows = 1;
@@ -574,6 +609,21 @@ void PanelScriptEditor::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 
             }
             break;
         }
+        case kScriptNodeType::GetAction:
+        case kScriptNodeType::GetActionPressed:
+        case kScriptNodeType::GetActionReleased:
+        case kScriptNodeType::GetAxis:
+        {
+            char buf[256];
+            strncpy_s(buf, sizeof(buf), node.valueStr.c_str(), _TRUNCATE);
+            buf[sizeof(buf) - 1] = '\0';
+            if (ImGui::InputText("##action", buf, sizeof(buf)))
+            {
+                node.valueStr = buf;
+                graph.dirty = true;
+            }
+            break;
+        }
         default:
             break;
     }
@@ -586,7 +636,7 @@ void PanelScriptEditor::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 
 // Link drawing
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::drawLinks(ImDrawList *dl)
+void PanelLogicGraph::drawLinks(ImDrawList *dl)
 {
     for (const auto &l : graph.links)
     {
@@ -611,7 +661,7 @@ void PanelScriptEditor::drawLinks(ImDrawList *dl)
 // Add-node context menu
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::drawAddNodeMenu(ImVec2 spawn)
+void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
 {
     struct Entry { const char *label; kScriptNodeType type; };
     auto submenu = [&](const char *cat, const Entry *items, int count) {
@@ -642,6 +692,7 @@ void PanelScriptEditor::drawAddNodeMenu(ImVec2 spawn)
     };
     static const Entry actions[] = {
         {"Print", kScriptNodeType::Print},
+        {"Print Console", kScriptNodeType::PrintConsole},
         {"Set Position", kScriptNodeType::SetPosition},
         {"Set Rotation", kScriptNodeType::SetRotation},
         {"Set Scale", kScriptNodeType::SetScale},
@@ -660,6 +711,44 @@ void PanelScriptEditor::drawAddNodeMenu(ImVec2 spawn)
         {"Get Up", kScriptNodeType::GetUp},
         {"Get Delta Time", kScriptNodeType::GetDeltaTime},
         {"Get Variable", kScriptNodeType::GetVariable},
+    };
+    static const Entry input[] = {
+        {"Get Action", kScriptNodeType::GetAction},
+        {"Get Action Pressed", kScriptNodeType::GetActionPressed},
+        {"Get Action Released", kScriptNodeType::GetActionReleased},
+        {"Get Axis", kScriptNodeType::GetAxis},
+    };
+    static const Entry audio[] = {
+        {"Play Sound", kScriptNodeType::PlaySound},
+        {"Stop All Sounds", kScriptNodeType::StopAllSounds},
+        {"Set Master Volume", kScriptNodeType::SetMasterVolume},
+        {"Get Master Volume", kScriptNodeType::GetMasterVolume},
+        {"Set Listener Position", kScriptNodeType::SetListenerPosition},
+        {"Set Listener Direction", kScriptNodeType::SetListenerDirection},
+    };
+    static const Entry animation[] = {
+        {"Get Animator", kScriptNodeType::GetAnimator},
+        {"Play Animation", kScriptNodeType::PlayAnimation},
+        {"Set Animator Speed", kScriptNodeType::SetAnimatorSpeed},
+        {"Set Animator Time", kScriptNodeType::SetAnimatorTime},
+        {"Get Animator Speed", kScriptNodeType::GetAnimatorSpeed},
+        {"Set Boolean", kScriptNodeType::SetAnimatorBool},
+        {"Set Float", kScriptNodeType::SetAnimatorFloat},
+        {"Set Integer", kScriptNodeType::SetAnimatorInt},
+        {"Set Trigger", kScriptNodeType::SetAnimatorTrigger},
+    };
+    static const Entry physics[] = {
+        {"Get Physics Object", kScriptNodeType::GetPhysicsObject},
+        {"Apply Force", kScriptNodeType::ApplyForce},
+        {"Apply Impulse", kScriptNodeType::ApplyImpulse},
+        {"Apply Torque", kScriptNodeType::ApplyTorque},
+        {"Set Linear Velocity", kScriptNodeType::SetLinearVelocity},
+        {"Set Angular Velocity", kScriptNodeType::SetAngularVelocity},
+        {"Get Physics Velocity", kScriptNodeType::GetPhysicsVelocity},
+        {"Get Physics Position", kScriptNodeType::GetPhysicsPosition},
+        {"Set Physics Gravity", kScriptNodeType::SetPhysicsGravity},
+        {"Get Physics Gravity", kScriptNodeType::GetPhysicsGravity},
+        {"Is Physics Active", kScriptNodeType::IsPhysicsActive},
     };
     static const Entry values[] = {
         {"Float", kScriptNodeType::LiteralFloat},
@@ -687,6 +776,10 @@ void PanelScriptEditor::drawAddNodeMenu(ImVec2 spawn)
     submenu("Flow",     flow,    IM_ARRAYSIZE(flow));
     submenu("Actions",  actions, IM_ARRAYSIZE(actions));
     submenu("Get",      getters, IM_ARRAYSIZE(getters));
+    submenu("Input",    input,   IM_ARRAYSIZE(input));
+    submenu("Audio",    audio,   IM_ARRAYSIZE(audio));
+    submenu("Animation", animation, IM_ARRAYSIZE(animation));
+    submenu("Physics",  physics, IM_ARRAYSIZE(physics));
     submenu("Values",   values,  IM_ARRAYSIZE(values));
     submenu("Math/Logic", math,  IM_ARRAYSIZE(math));
 
@@ -706,7 +799,7 @@ void PanelScriptEditor::drawAddNodeMenu(ImVec2 spawn)
 // Connection
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::tryConnect(int nodeA, int pinA, int nodeB, int pinB)
+void PanelLogicGraph::tryConnect(int nodeA, int pinA, int nodeB, int pinB)
 {
     if (nodeA == nodeB)
         return;
@@ -746,7 +839,7 @@ void PanelScriptEditor::tryConnect(int nodeA, int pinA, int nodeB, int pinB)
 // Canvas
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::drawCanvas()
+void PanelLogicGraph::drawCanvas()
 {
     ImGui::BeginChild("##scriptcanvas", ImVec2(0.0f, 0.0f), true,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -898,13 +991,13 @@ void PanelScriptEditor::drawCanvas()
 // Panel entry point
 // ---------------------------------------------------------------------------
 
-void PanelScriptEditor::draw(bool &isOpened)
+void PanelLogicGraph::draw(bool &isOpened)
 {
     if (!isOpened)
         return;
 
     ImGui::SetNextWindowSize(ImVec2(900.0f, 560.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Script Editor", &isOpened, ImGuiWindowFlags_NoScrollbar))
+    if (!ImGui::Begin("Logic Graph", &isOpened, ImGuiWindowFlags_NoScrollbar))
     {
         focused = false;
         ImGui::End();

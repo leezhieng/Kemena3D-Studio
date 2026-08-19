@@ -1,6 +1,6 @@
 #include "manager.h"
 #include "util.h"
-#include "panel_script_editor.h" // for panelScriptEditor->notifyAssetMoved()
+#include "panel_logicgraph.h" // for panelLogicGraph->notifyAssetMoved()
 #include "mainmenu.h" // for showPanel / savedWorkspaceFileName
 
 #include <kemena/kpackage.h>
@@ -18,6 +18,7 @@
 #include <kemena/kmeshgenerator.h>
 #include <kemena/kshadernode.h>
 #include <kemena/kscriptgraph.h>
+#include <kemena/kinputmanager.h>
 
 #include <miniaudio.h>
 // Custom decoding backends provided by the Kemena3D SDK
@@ -81,10 +82,22 @@ Manager::Manager(kWindow *setWindow, kWorld *setWorld, kRenderer *setRenderer)
     }
 
     loadRecentProjects();
+
+    // The editor drives the named input system during Play mode so AngelScript
+    // and logic-graph scripts can query getAction()/getAxis().
+    inputManager = new kInputManager();
+    inputManager->init();
 }
 
 Manager::~Manager()
 {
+    if (inputManager)
+    {
+        inputManager->shutdown();
+        delete inputManager;
+        inputManager = nullptr;
+    }
+
     if (gameAudioManager)
     {
         // Stop any clips still playing and unload them, then tear down the
@@ -2904,6 +2917,28 @@ void Manager::stopGameAudio()
     gameAudioHasSpatial = false;
 }
 
+void Manager::pauseGameAudio()
+{
+    // Pause every clip without resetting its cursor so Play can resume it later.
+    for (auto &entry : gameAudioEntries)
+    {
+        if (entry.clip)
+            entry.clip->pause();
+    }
+}
+
+void Manager::resumeGameAudio()
+{
+    // Resume clips previously paused by pauseGameAudio(). Clips that finished
+    // naturally while paused (or were never paused) are left untouched; resume()
+    // is a no-op restart only for sounds that are still valid, mirroring play().
+    for (auto &entry : gameAudioEntries)
+    {
+        if (entry.clip && entry.clip->isPaused())
+            entry.clip->resume();
+    }
+}
+
 void Manager::updateGameAudio(kCamera *gameCamera)
 {
     if (!gameAudioManager || gameAudioEntries.empty())
@@ -3518,6 +3553,65 @@ void Manager::savePublishSettings()
     if (f.is_open()) f << cfg.dump(4);
 }
 
+void Manager::loadInputSettings()
+{
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    if (!fs::exists(cfgPath)) return;
+    std::ifstream f(cfgPath);
+    if (!f.is_open()) return;
+    json cfg;
+    try { cfg = json::parse(f); } catch (...) { return; }
+    f.close();
+
+    inputSettings.actions.clear();
+    if (cfg.contains("input_settings") && cfg["input_settings"].is_object())
+    {
+        const json &ijs = cfg["input_settings"];
+        if (ijs.contains("actions") && ijs["actions"].is_array())
+        {
+            for (const auto &a : ijs["actions"])
+            {
+                if (!a.is_object()) continue;
+                InputActionBinding b;
+                b.name = a.value("name", "");
+                b.device = a.value("device", (int)INPUT_BINDING_KEYBOARD);
+                b.binding = a.value("binding", 0);
+                if (!b.name.empty())
+                    inputSettings.actions.push_back(b);
+            }
+        }
+    }
+}
+
+void Manager::saveInputSettings()
+{
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    json cfg;
+    if (fs::exists(cfgPath))
+    {
+        std::ifstream f(cfgPath);
+        if (f.is_open()) { try { cfg = json::parse(f); } catch (...) { cfg = json::object(); } f.close(); }
+    }
+
+    json actionsJson = json::array();
+    for (const auto &a : inputSettings.actions)
+    {
+        json aj;
+        aj["name"] = a.name;
+        aj["device"] = a.device;
+        aj["binding"] = a.binding;
+        actionsJson.push_back(aj);
+    }
+    json ijs = json::object();
+    ijs["actions"] = actionsJson;
+    cfg["input_settings"] = ijs;
+
+    std::ofstream f(cfgPath);
+    if (f.is_open()) f << cfg.dump(4);
+}
+
 // ---------------------------------------------------------------------------
 // Create New Material asset file
 // ---------------------------------------------------------------------------
@@ -4009,8 +4103,8 @@ bool Manager::moveAsset(const fs::path &srcPath, const fs::path &destDir)
     remapAssetRegistryPath(projectPath, srcPath, newPath);
 
     // Keep the Script Editor's open-file path in sync if this file moved.
-    if (panelScriptEditor)
-        panelScriptEditor->notifyAssetMoved(srcPath.string(), newPath.string());
+    if (panelLogicGraph)
+        panelLogicGraph->notifyAssetMoved(srcPath.string(), newPath.string());
 
     // Rebuild Manager::fileMap from the patched assets.json. The moved file now
     // matches an existing path+checksum, so no re-import and the UUID is kept.
@@ -4054,8 +4148,8 @@ bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
 
     // If the renamed file is open in the Script Editor, update its tracked path
     // so a subsequent Save writes to the new file instead of the old name.
-    if (panelScriptEditor)
-        panelScriptEditor->notifyAssetMoved(oldPath.string(), newPath.string());
+    if (panelLogicGraph)
+        panelLogicGraph->notifyAssetMoved(oldPath.string(), newPath.string());
 
     checkAssetChange();
     return true;
@@ -6016,12 +6110,56 @@ void Manager::buildScripts(bool logSummary)
         projectSaved = false;
 }
 
+void Manager::applyInputBindings()
+{
+    if (!inputManager)
+        return;
+
+    // Rebuild digital-action bindings from the project's named input settings.
+    // (Axes are bound in code by the runtime and are not authored here yet.)
+    inputManager->clearActions();
+    for (const auto &a : inputSettings.actions)
+    {
+        switch (a.device)
+        {
+        case INPUT_BINDING_MOUSE:
+            inputManager->bindMouseButton(a.name, (unsigned int)a.binding);
+            break;
+        case INPUT_BINDING_GAMEPAD:
+            inputManager->bindGamepadButton(a.name, (unsigned int)a.binding);
+            break;
+        case INPUT_BINDING_KEYBOARD:
+        default:
+            inputManager->bindKey(a.name, (unsigned int)a.binding);
+            break;
+        }
+    }
+}
+
+void Manager::stepInput()
+{
+    if (inputManager)
+        inputManager->update();
+}
+
 void Manager::startScripts()
 {
     if (!world)
         return;
-    buildScripts();        // checksum-gated compile of attached scripts
-    world->startScripts(); // Awake() + Start() across the scene
+    loadInputSettings();            // refresh bindings authored in Project Settings
+    buildScripts();                 // checksum-gated compile of attached scripts
+    applyInputBindings();           // configure named input from project settings
+    world->setInputManager(inputManager); // scripts resolve getAction()/getAxis() here
+
+    // Route the runtime audio/physics managers to the script host so audio and
+    // physics APIs resolve inside Awake()/Start()/Update()/etc.
+    if (kScriptManager *sm = world->getScriptManager())
+    {
+        sm->setAudioManager(gameAudioManager);
+        sm->setPhysicsManager(physicsManager);
+    }
+
+    world->startScripts();          // Awake() + Start() across the scene
 }
 
 void Manager::stopScripts()
@@ -8352,7 +8490,7 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
         bool conditionsMet = true;
         for (auto &c : t.conditions)
         {
-            if (!c.evaluate(rt.variables))
+            if (!c.evaluate(rt.animator ? rt.animator->getVariables() : rt.variables))
             {
                 conditionsMet = false;
                 break;
@@ -8504,6 +8642,11 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
     rt.rootMesh = rootMesh;
     rt.animator = new kAnimator(nullptr);
 
+    // Scripts set animator controller variables through kAnimator; seed the
+    // runtime values from the graph defaults here.
+    for (const auto &v : rt.graph->variables)
+        rt.animator->setVariable(v.name, v.defaultValue);
+
     // Enter a playable state immediately so the renderer never observes a
     // kAnimator whose currentAnimation is nullptr.
     AnimState *defaultState = findDefaultAnimatorState(*rt.graph);
@@ -8653,20 +8796,6 @@ void Manager::stepAnimators(float dt)
         float ticks = animSeconds * clip->getTicksPerSecond();
         rt.animator->setCurrentTime(ticks);
 
-        {
-            static int dbg = 0;
-            if (dbg < 10 || (dbg % 120 == 0))
-            {
-                std::string msg = "[Animator] step dt=" + std::to_string(dt) +
-                                  " stateTime=" + std::to_string(rt.stateTimeSeconds) +
-                                  " animSec=" + std::to_string(animSeconds) +
-                                  " ticks=" + std::to_string(ticks) +
-                                  " tps=" + std::to_string(clip->getTicksPerSecond());
-                animatorDebugLog(msg);
-            }
-            dbg++;
-        }
-
         try
         {
             const kNodeData &root = clip->getRootNode();
@@ -8675,6 +8804,42 @@ void Manager::stepAnimators(float dt)
         catch (const std::exception &)
         {
             // Keep the last successfully computed pose.
+        }
+
+        {
+            static int dbg = 0;
+            if (dbg < 10 || (dbg % 120 == 0))
+            {
+                // Diagnostic: report whether the pose actually reached the mesh.
+                int nonIdentity = 0;
+                kVec3 sample(0.0f);
+                const auto &finalMats = rt.animator->getFinalBoneMatrices();
+                for (const kMat4 &m : finalMats)
+                {
+                    kVec3 t = kVec3(m[3][0], m[3][1], m[3][2]);
+                    bool moved = std::fabs(t.x) > 1e-5f || std::fabs(t.y) > 1e-5f ||
+                                 std::fabs(t.z) > 1e-5f;
+                    if (moved)
+                    {
+                        nonIdentity++;
+                        if (nonIdentity == 1)
+                            sample = t;
+                    }
+                }
+                std::string msg = "[Animator] step dt=" + std::to_string(dt) +
+                                  " stateTime=" + std::to_string(rt.stateTimeSeconds) +
+                                  " animSec=" + std::to_string(animSeconds) +
+                                  " ticks=" + std::to_string(ticks) +
+                                  " tps=" + std::to_string(clip->getTicksPerSecond()) +
+                                  " skinned=" + std::to_string(rt.rootMesh && rt.rootMesh->getSkinned() ? 1 : 0) +
+                                  " animator=" + std::to_string(rt.rootMesh && rt.rootMesh->getAnimator() ? 1 : 0) +
+                                  " nonIdentityBones=" + std::to_string(nonIdentity) +
+                                  " sample=(" + std::to_string(sample.x) + "," +
+                                                std::to_string(sample.y) + "," +
+                                                std::to_string(sample.z) + ")";
+                animatorDebugLog(msg);
+            }
+            dbg++;
         }
     }
 }

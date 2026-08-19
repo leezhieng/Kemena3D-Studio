@@ -228,6 +228,11 @@ private:
     ImVec2 canvasOrigin  = { 0.f, 0.f }; ///< Cached canvas top-left (screen space) for link preview.
 
     // -----------------------------------------------------------------------
+    // Layout
+    // -----------------------------------------------------------------------
+    float  variablesPanelWidth = 340.f; ///< Current width of the left variables column.
+
+    // -----------------------------------------------------------------------
     // Interaction state
     // -----------------------------------------------------------------------
     int  selectedState       = -1;
@@ -271,6 +276,7 @@ private:
     void drawDragLink(ImDrawList* dl);
     void drawStateContextMenu();
     void drawVariablesPanel();
+    void drawVariablesSplitter();
     void drawAnimPickerPopup(AnimState* state);
     void collectAnimationAssets(std::vector<std::string>& uuids,
                                 std::vector<std::string>& names) const;

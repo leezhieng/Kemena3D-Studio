@@ -169,6 +169,17 @@ void PanelGame::restoreSnapshot()
 
 void PanelGame::pressPlay()
 {
+    // Entering Play mode must return the editor to the GameWorld view when it
+    // is in a particle/animator preview. Otherwise main.cpp's game logic gate
+    // would skip stepAnimators()/physics/scripts even though the Game panel is
+    // rendering the game world — making the animator appear frozen. This also
+    // covers resuming from Pause after the user opened a preview asset.
+    // PrefabPreview is intentionally left alone: it renders through its own
+    // world and already lets the game logic keep running.
+    if (manager->activeMode != Manager::EditorMode::GameWorld &&
+        manager->activeMode != Manager::EditorMode::PrefabPreview)
+        manager->setEditorMode(Manager::EditorMode::GameWorld);
+
     if (playState == GamePlayState::Stopped)
     {
         kWorld *world = manager->getWorld();
@@ -208,16 +219,18 @@ void PanelGame::pressPlay()
         // AFTER captureSnapshot so the snapshot records the editor-authored
         // transforms (not whatever physics moves them to during update).
         manager->startPhysicsSimulation();
+        // Start audio and animators before scripts so Awake()/Start() can
+        // already drive sound playback and animation state.
+        manager->startGameAudio();
+        manager->startAnimators();
         // Compile attached scripts to bytecode and dispatch Awake()/Start().
         manager->startScripts();
-        // Start all active, play-on-awake audio sources in the world.
-        manager->startGameAudio();
-        // Instantiate .animator controllers attached to scene objects.
-        manager->startAnimators();
         playState = GamePlayState::Playing;
     }
     else if (playState == GamePlayState::Paused)
     {
+        // Resume all in-game audio clips that were paused by pressPause().
+        manager->resumeGameAudio();
         playState = GamePlayState::Playing;
     }
 }
@@ -225,7 +238,11 @@ void PanelGame::pressPlay()
 void PanelGame::pressPause()
 {
     if (playState == GamePlayState::Playing)
+    {
+        // Freeze in-game audio in sync with the paused simulation.
+        manager->pauseGameAudio();
         playState = GamePlayState::Paused;
+    }
 }
 
 void PanelGame::pressStop()

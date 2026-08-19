@@ -57,7 +57,7 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 /**
- * @brief Live shader-preview state shared between PanelShaderEditor and PanelInspector.
+ * @brief Live shader-preview state shared between PanelShaderGraph and PanelInspector.
  *
  * Holds the most recently compiled shader so the inspector can show a preview
  * that tracks edits made in the shader editor.
@@ -147,7 +147,7 @@ struct RuntimeAnimator
 class PanelProject;
 class PanelHierarchy;
 class PanelConsole;
-class PanelScriptEditor;
+class PanelLogicGraph;
 class PanelGame;
 class PanelTerrain;
 class PanelAnimator;
@@ -261,7 +261,31 @@ public:
         std::string templateDir;                ///< Global template dir fallback
     };
 
+    /** @brief Physical device type a named input action can be bound to. */
+    enum InputBindingDevice
+    {
+        INPUT_BINDING_KEYBOARD = 0, ///< Keyboard key (K_KEY_*).
+        INPUT_BINDING_MOUSE = 1,    ///< Mouse button (K_MOUSEBUTTON_*).
+        INPUT_BINDING_GAMEPAD = 2,  ///< Gamepad button (K_GAMEPAD_BUTTON_*).
+    };
+
+    /** @brief A single named input action and the physical input it is bound to. */
+    struct InputActionBinding
+    {
+        std::string name;                          ///< Logical action name (e.g. "Jump").
+        int device = INPUT_BINDING_KEYBOARD;       ///< Which device the binding refers to.
+        int binding = 0;                           ///< Device-specific binding code.
+    };
+
+    /** @brief Global named-input (key binding) settings for the project. */
+    struct InputSettings
+    {
+        std::vector<InputActionBinding> actions;   ///< Ordered list of named actions.
+    };
+
     PublishSettings publishSettings;
+    InputSettings inputSettings;
+    kInputManager *inputManager = nullptr; ///< Named input manager for Play mode (owned by Manager).
     bool showPublishDialog = false;
     bool showProjectSettings = false;
 
@@ -308,6 +332,18 @@ public:
 
     /** @brief Saves publish settings to project config. */
     void savePublishSettings();
+
+    /** @brief Loads named input bindings from project config. */
+    void loadInputSettings();
+
+    /** @brief Saves named input bindings to project config. */
+    void saveInputSettings();
+
+    /** @brief Rebuilds the input manager's action bindings from inputSettings. */
+    void applyInputBindings();
+
+    /** @brief Advances the input manager (call once per frame while Playing). */
+    void stepInput();
 
     /// Pending request to show the Cinematic Editor panel.
     bool pendingOpenAnimationEditor = false;
@@ -434,6 +470,12 @@ public:
 
     /** @brief Stops and unloads all in-game audio clips started by startGameAudio(). */
     void stopGameAudio();
+
+    /** @brief Pauses every in-game audio clip (keeps the cursor so it can resume). */
+    void pauseGameAudio();
+
+    /** @brief Resumes every in-game audio clip paused by pauseGameAudio(). */
+    void resumeGameAudio();
 
     /**
      * @brief Called every frame while the game is playing.
@@ -587,7 +629,7 @@ public:
 
     PanelProject *panelProject = nullptr;
     PanelHierarchy *panelHierarchy = nullptr;
-    PanelScriptEditor *panelScriptEditor = nullptr;
+    PanelLogicGraph *panelLogicGraph = nullptr;
     PanelConsole *panelConsole = nullptr;
     PanelGame *panelGame = nullptr;
     PanelTerrain *panelTerrain = nullptr;

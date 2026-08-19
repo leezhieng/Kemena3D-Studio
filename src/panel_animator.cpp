@@ -352,6 +352,7 @@ void PanelAnimator::loadGraph(const std::string& path)
         json j; f >> j;
         graph.fromJson(j);
         filePath = path;
+        graph.name = fs::path(path).stem().string();
         graph.dirty = false;
         selectedState      = -1;
         selectedTransition = -1;
@@ -367,6 +368,8 @@ void PanelAnimator::loadGraph(const std::string& path)
 void PanelAnimator::saveGraph()
 {
     if (filePath.empty()) { saveGraphAs(); return; }
+
+    graph.name = fs::path(filePath).stem().string();
 
     json j = graph.toJson();
     std::ofstream f(filePath);
@@ -1231,7 +1234,7 @@ void PanelAnimator::drawAnimPickerPopup(AnimState* state)
 
 void PanelAnimator::drawVariablesPanel()
 {
-    ImGui::BeginChild("##animvars", ImVec2(360.0f, 0.0f), true);
+    ImGui::BeginChild("##animvars", ImVec2(variablesPanelWidth, 0.0f), true);
 
     // Add new variable
     if (ImGui::Button("Add Variable", ImVec2(-1.0f, 0.0f)))
@@ -1348,6 +1351,45 @@ void PanelAnimator::drawVariablesPanel()
 }
 
 // ===========================================================================
+// Splitter between the variables column and the canvas
+// ===========================================================================
+
+void PanelAnimator::drawVariablesSplitter()
+{
+    const float splitterWidth = 6.f;
+    const float minWidth      = 160.f;
+    const float maxWidth      = 600.f;
+
+    ImGui::SameLine();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (avail.y < 1.f) avail.y = 1.f;
+    ImGui::InvisibleButton("##animvarsplit", ImVec2(splitterWidth, avail.y));
+
+    if (ImGui::IsItemActive())
+    {
+        variablesPanelWidth = ImClamp(variablesPanelWidth + ImGui::GetIO().MouseDelta.x,
+                                      minWidth, maxWidth);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+    // Draw a subtle vertical grab handle.
+    ImDrawList* dl   = ImGui::GetWindowDrawList();
+    ImVec2      rect = ImGui::GetItemRectMin();
+    ImVec2      max  = ImGui::GetItemRectMax();
+    ImU32       col  = ImGui::IsItemHovered() || ImGui::IsItemActive()
+                          ? IM_COL32(120, 160, 220, 255)
+                          : IM_COL32(70, 70, 70, 255);
+    dl->AddRectFilled({ rect.x + 2.f, rect.y },
+                      { max.x - 2.f, max.y }, col);
+
+    ImGui::PopStyleVar();
+    ImGui::SameLine();
+}
+
+// ===========================================================================
 // Toolbar
 // ===========================================================================
 
@@ -1371,22 +1413,7 @@ void PanelAnimator::drawToolbar()
     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
     ImGui::SameLine();
 
-    // Animator name
-    char nameBuf[128];
-    strncpy_s(nameBuf, graph.name.c_str(), sizeof(nameBuf));
-    ImGui::SetNextItemWidth(160.f);
-    if (ImGui::InputText("##AnimName", nameBuf, sizeof(nameBuf)))
-    {
-        graph.name  = nameBuf;
-        graph.dirty = true;
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetItemTooltip("Animator name");
-
     // Zoom controls
-    ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
     ImGui::SetNextItemWidth(80.f);
     ImGui::SliderFloat("Zoom", &canvasZoom, 0.25f, 2.f, "%.2f");
     ImGui::SameLine();
@@ -1852,7 +1879,7 @@ void PanelAnimator::draw(bool& isOpened)
     drawToolbar();
     ImGui::Separator();
     drawVariablesPanel();
-    ImGui::SameLine();
+    drawVariablesSplitter();
     drawCanvas();
     drawStateContextMenu();
 

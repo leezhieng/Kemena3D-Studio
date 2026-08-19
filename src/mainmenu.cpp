@@ -269,6 +269,221 @@ static void drawPublishDialog(Manager *manager)
 // ---------------------------------------------------------------------------
 // Project Settings Dialog
 // ---------------------------------------------------------------------------
+
+// Captures the first non-modifier key currently held down, returning its SDL
+// keycode (the same value space as the K_KEY_* constants).
+static bool captureAnyKey(unsigned int &outKey)
+{
+	int numKeys = 0;
+	const bool *keys = SDL_GetKeyboardState(&numKeys);
+	if (!keys)
+		return false;
+
+	for (int sc = 0; sc < numKeys; ++sc)
+	{
+		if (!keys[sc])
+			continue;
+
+		// Skip modifiers and locks so the user can't bind them accidentally.
+		if (sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_LSHIFT ||
+			sc == SDL_SCANCODE_LALT || sc == SDL_SCANCODE_LGUI ||
+			sc == SDL_SCANCODE_RCTRL || sc == SDL_SCANCODE_RSHIFT ||
+			sc == SDL_SCANCODE_RALT || sc == SDL_SCANCODE_RGUI ||
+			sc == SDL_SCANCODE_CAPSLOCK || sc == SDL_SCANCODE_NUMLOCKCLEAR ||
+			sc == SDL_SCANCODE_SCROLLLOCK)
+			continue;
+
+		SDL_Keycode kc = SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, true);
+		if (kc == SDLK_UNKNOWN)
+			continue;
+
+		outKey = (unsigned int)kc;
+		return true;
+	}
+	return false;
+}
+
+// Human-readable description of a binding.
+static const char *bindingDisplayName(const Manager::InputActionBinding &b)
+{
+	switch (b.device)
+	{
+	case Manager::INPUT_BINDING_MOUSE:
+		switch (b.binding)
+		{
+		case K_MOUSEBUTTON_LEFT: return "Left Mouse";
+		case K_MOUSEBUTTON_MIDDLE: return "Middle Mouse";
+		case K_MOUSEBUTTON_RIGHT: return "Right Mouse";
+		default: return "Unknown Mouse Button";
+		}
+	case Manager::INPUT_BINDING_GAMEPAD:
+		switch (b.binding)
+		{
+		case K_GAMEPAD_BUTTON_SOUTH: return "A / Cross";
+		case K_GAMEPAD_BUTTON_EAST: return "B / Circle";
+		case K_GAMEPAD_BUTTON_WEST: return "X / Square";
+		case K_GAMEPAD_BUTTON_NORTH: return "Y / Triangle";
+		case K_GAMEPAD_BUTTON_START: return "Start";
+		case K_GAMEPAD_BUTTON_BACK: return "Back";
+		case K_GAMEPAD_BUTTON_DPAD_UP: return "D-Pad Up";
+		case K_GAMEPAD_BUTTON_DPAD_DOWN: return "D-Pad Down";
+		case K_GAMEPAD_BUTTON_DPAD_LEFT: return "D-Pad Left";
+		case K_GAMEPAD_BUTTON_DPAD_RIGHT: return "D-Pad Right";
+		case K_GAMEPAD_BUTTON_LEFT_SHOULDER: return "Left Shoulder";
+		case K_GAMEPAD_BUTTON_RIGHT_SHOULDER: return "Right Shoulder";
+		case K_GAMEPAD_BUTTON_LEFT_STICK: return "Left Stick";
+		case K_GAMEPAD_BUTTON_RIGHT_STICK: return "Right Stick";
+		case K_GAMEPAD_BUTTON_GUIDE: return "Guide";
+		default: return "Unknown Button";
+		}
+	default:
+		return SDL_GetKeyName((SDL_Keycode)b.binding);
+	}
+}
+
+// ---- Key Bindings tab ------------------------------------------------------
+static void drawInputBindingsTab(Manager *manager)
+{
+	Manager::InputSettings &is = manager->inputSettings;
+	static int capturingIndex = -1;
+	static char newActionName[64] = "";
+
+	if (capturingIndex >= (int)is.actions.size())
+		capturingIndex = -1;
+
+	// Add a new action.
+	ImGui::SetNextItemWidth(200.0f);
+	ImGui::InputText("##newActionName", newActionName, sizeof(newActionName));
+	ImGui::SameLine();
+	if (ImGui::Button("Add Action") && newActionName[0] != '\0')
+	{
+		Manager::InputActionBinding b;
+		b.name = newActionName;
+		b.device = Manager::INPUT_BINDING_KEYBOARD;
+		b.binding = K_KEY_SPACE;
+		is.actions.push_back(b);
+		newActionName[0] = '\0';
+	}
+
+	ImGui::Separator();
+
+	if (is.actions.empty())
+	{
+		ImGui::TextDisabled("  No input actions defined.");
+		ImGui::TextDisabled("  Add an action (e.g. \"Jump\") then assign a key, mouse or gamepad button.");
+	}
+
+	int removeIndex = -1;
+	for (int i = 0; i < (int)is.actions.size(); ++i)
+	{
+		Manager::InputActionBinding &b = is.actions[i];
+		ImGui::PushID(i);
+
+		// Action name
+		char nameBuf[64];
+		strncpy_s(nameBuf, sizeof(nameBuf), b.name.c_str(), _TRUNCATE);
+		ImGui::SetNextItemWidth(160.0f);
+		if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
+			b.name = nameBuf;
+
+		ImGui::SameLine();
+
+		// Device
+		const char *devices[] = {"Keyboard", "Mouse", "Gamepad"};
+		ImGui::SetNextItemWidth(100.0f);
+		if (ImGui::Combo("##device", &b.device, devices, IM_ARRAYSIZE(devices)))
+		{
+			if (b.device == Manager::INPUT_BINDING_KEYBOARD) b.binding = K_KEY_SPACE;
+			else if (b.device == Manager::INPUT_BINDING_MOUSE) b.binding = K_MOUSEBUTTON_LEFT;
+			else b.binding = K_GAMEPAD_BUTTON_SOUTH;
+		}
+
+		ImGui::SameLine();
+
+		// Binding
+		if (b.device == Manager::INPUT_BINDING_KEYBOARD)
+		{
+			if (capturingIndex == i)
+			{
+				unsigned int key = 0;
+				if (captureAnyKey(key))
+				{
+					b.binding = (int)key;
+					capturingIndex = -1;
+				}
+				ImGui::Button("Press a key...", ImVec2(140, 0));
+			}
+			else
+			{
+				std::string label = std::string("Set ") + SDL_GetKeyName((SDL_Keycode)b.binding);
+				if (ImGui::Button(label.c_str(), ImVec2(140, 0)))
+					capturingIndex = i;
+			}
+		}
+		else if (b.device == Manager::INPUT_BINDING_MOUSE)
+		{
+			const char *mouseButtons[] = {"Left", "Middle", "Right"};
+			const int mouseValues[] = {K_MOUSEBUTTON_LEFT, K_MOUSEBUTTON_MIDDLE, K_MOUSEBUTTON_RIGHT};
+			int mouseIdx = 0;
+			for (int j = 0; j < 3; ++j)
+				if (b.binding == mouseValues[j]) { mouseIdx = j; break; }
+			ImGui::SetNextItemWidth(140.0f);
+			if (ImGui::Combo("##mouse", &mouseIdx, mouseButtons, 3))
+				b.binding = mouseValues[mouseIdx];
+		}
+		else
+		{
+			struct ComboEntry { const char *label; int value; };
+			static const ComboEntry gamepadButtons[] = {
+				{"A / Cross", K_GAMEPAD_BUTTON_SOUTH},
+				{"B / Circle", K_GAMEPAD_BUTTON_EAST},
+				{"X / Square", K_GAMEPAD_BUTTON_WEST},
+				{"Y / Triangle", K_GAMEPAD_BUTTON_NORTH},
+				{"Start", K_GAMEPAD_BUTTON_START},
+				{"Back", K_GAMEPAD_BUTTON_BACK},
+				{"D-Pad Up", K_GAMEPAD_BUTTON_DPAD_UP},
+				{"D-Pad Down", K_GAMEPAD_BUTTON_DPAD_DOWN},
+				{"D-Pad Left", K_GAMEPAD_BUTTON_DPAD_LEFT},
+				{"D-Pad Right", K_GAMEPAD_BUTTON_DPAD_RIGHT},
+				{"Left Shoulder", K_GAMEPAD_BUTTON_LEFT_SHOULDER},
+				{"Right Shoulder", K_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+				{"Left Stick", K_GAMEPAD_BUTTON_LEFT_STICK},
+				{"Right Stick", K_GAMEPAD_BUTTON_RIGHT_STICK},
+				{"Guide", K_GAMEPAD_BUTTON_GUIDE},
+			};
+			const int entryCount = IM_ARRAYSIZE(gamepadButtons);
+			int gpIdx = 0;
+			for (int j = 0; j < entryCount; ++j)
+				if (b.binding == gamepadButtons[j].value) { gpIdx = j; break; }
+			ImGui::SetNextItemWidth(140.0f);
+			if (ImGui::BeginCombo("##gamepad", gamepadButtons[gpIdx].label))
+			{
+				for (int j = 0; j < entryCount; ++j)
+				{
+					bool sel = (b.binding == gamepadButtons[j].value);
+					if (ImGui::Selectable(gamepadButtons[j].label, sel))
+						b.binding = gamepadButtons[j].value;
+					if (sel)
+						ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+		}
+
+		ImGui::SameLine();
+		ImGui::TextUnformatted(bindingDisplayName(b));
+
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Remove##remove"))
+			removeIndex = i;
+
+		ImGui::PopID();
+	}
+
+	if (removeIndex >= 0)
+		is.actions.erase(is.actions.begin() + removeIndex);
+}
+
 static void drawProjectSettingsDialog(Manager *manager)
 {
 	if (!manager->showProjectSettings) return;
@@ -276,59 +491,78 @@ static void drawProjectSettingsDialog(Manager *manager)
 	ImGui::OpenPopup("Project Settings");
 	ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-	ImGui::SetNextWindowSize(ImVec2(450, 300), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(560, 400), ImGuiCond_FirstUseEver);
 
 	if (!ImGui::BeginPopupModal("Project Settings", &manager->showProjectSettings))
 		return;
 
 	Manager::PublishSettings &ps = manager->publishSettings;
 
-	inputStr("Default Game Name", ps.platforms[0].gameName);
-	// Sync to other platforms
-	for (int i = 1; i < 3; ++i)
-		ps.platforms[i].gameName = ps.platforms[0].gameName;
-
-	ImGui::Separator();
-
-	// Default level
-	ImGui::SetNextItemWidth(400.0f);
-	std::vector<fs::path> worldFiles;
-	if (manager->projectOpened)
+	if (ImGui::BeginTabBar("ProjectSettingsTabs"))
 	{
-		std::error_code ec;
-		fs::path assetsDir = manager->projectPath / "Assets";
-		if (fs::exists(assetsDir, ec))
+		// ---- General ----------------------------------------------------
+		if (ImGui::BeginTabItem("General"))
 		{
-			for (const auto &entry : fs::recursive_directory_iterator(assetsDir, ec))
-				if (entry.is_regular_file() && entry.path().extension() == ".world")
-					worldFiles.push_back(entry.path());
-		}
-	}
+			inputStr("Default Game Name", ps.platforms[0].gameName);
+			// Sync to other platforms
+			for (int i = 1; i < 3; ++i)
+				ps.platforms[i].gameName = ps.platforms[0].gameName;
 
-	if (ImGui::BeginCombo("Default Level", ps.defaultLevel.empty() ? "(none)" : ps.defaultLevel.c_str()))
-	{
-		for (const auto &wf : worldFiles)
+			ImGui::Separator();
+
+			// Default level
+			ImGui::SetNextItemWidth(400.0f);
+			std::vector<fs::path> worldFiles;
+			if (manager->projectOpened)
+			{
+				std::error_code ec;
+				fs::path assetsDir = manager->projectPath / "Assets";
+				if (fs::exists(assetsDir, ec))
+				{
+					for (const auto &entry : fs::recursive_directory_iterator(assetsDir, ec))
+						if (entry.is_regular_file() && entry.path().extension() == ".world")
+							worldFiles.push_back(entry.path());
+				}
+			}
+
+			if (ImGui::BeginCombo("Default Level", ps.defaultLevel.empty() ? "(none)" : ps.defaultLevel.c_str()))
+			{
+				for (const auto &wf : worldFiles)
+				{
+					std::string relPath = fs::relative(wf, manager->projectPath / "Assets").generic_string();
+					bool isSelected = (ps.defaultLevel == relPath);
+					if (ImGui::Selectable(relPath.c_str(), isSelected))
+						ps.defaultLevel = relPath;
+					if (isSelected)
+						ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+
+			ImGui::Separator();
+
+			browseFolder("Runtime Template Folder", ps.templateDir);
+			ImGui::TextDisabled("  Folder with the built kemena3d-runtime + its libs.");
+
+			ImGui::EndTabItem();
+		}
+
+		// ---- Key Bindings ----------------------------------------------
+		if (ImGui::BeginTabItem("Key Bindings"))
 		{
-			std::string relPath = fs::relative(wf, manager->projectPath / "Assets").generic_string();
-			bool isSelected = (ps.defaultLevel == relPath);
-			if (ImGui::Selectable(relPath.c_str(), isSelected))
-				ps.defaultLevel = relPath;
-			if (isSelected)
-				ImGui::SetItemDefaultFocus();
+			drawInputBindingsTab(manager);
+			ImGui::EndTabItem();
 		}
-		ImGui::EndCombo();
+
+		ImGui::EndTabBar();
 	}
-
-	ImGui::Separator();
-
-	browseFolder("Runtime Template Folder", ps.templateDir);
-	ImGui::TextDisabled("  Folder with the built kemena3d-runtime + its libs.");
 
 	ImGui::Separator();
 
 	if (ImGui::Button("Save", ImVec2(120, 0)))
 	{
 		manager->savePublishSettings();
+		manager->saveInputSettings();
 		ImGui::CloseCurrentPopup();
 		manager->showProjectSettings = false;
 	}
@@ -469,6 +703,7 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			if (gui->menuItem("Project Settings", "", false, manager->projectOpened))
 			{
 				manager->loadPublishSettings();
+				manager->loadInputSettings();
 				manager->showProjectSettings = true;
 			}
 			if (gui->menuItem("Preferences", ""))
@@ -627,9 +862,9 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					showPanel.project = !showPanel.project;
 				if (gui->menuItem("Console", "", showPanel.console))
 					showPanel.console = !showPanel.console;
-				if (gui->menuItem("Shader Editor", "", showPanel.shaderEditor))
+				if (gui->menuItem("Shader Graph Editor", "", showPanel.shaderEditor))
 					showPanel.shaderEditor = !showPanel.shaderEditor;
-				if (gui->menuItem("Script Editor", "", showPanel.scriptEditor))
+				if (gui->menuItem("Logic Graph Editor", "", showPanel.scriptEditor))
 					showPanel.scriptEditor = !showPanel.scriptEditor;
 				if (gui->menuItem("Game", "", showPanel.game))
 					showPanel.game = !showPanel.game;
@@ -883,6 +1118,8 @@ static void applyPanelStateLine(const char *line)
 		showPanel.project = (tmp != 0);
 	else if (sscanf_s(line, "ShaderEditorOpened=%d", &tmp) == 1)
 		showPanel.shaderEditor = (tmp != 0);
+	else if (sscanf_s(line, "ScriptEditorOpened=%d", &tmp) == 1)
+		showPanel.scriptEditor = (tmp != 0);
 	else if (sscanf_s(line, "GameOpened=%d", &tmp) == 1)
 		showPanel.game = (tmp != 0);
 	else if (sscanf_s(line, "AnimatorEditorOpened=%d", &tmp) == 1)
@@ -905,6 +1142,7 @@ void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer 
 	out_buf->appendf("ConsoleOpened=%d\n", showPanel.console ? 1 : 0);
 	out_buf->appendf("ProjectOpened=%d\n", showPanel.project ? 1 : 0);
 	out_buf->appendf("ShaderEditorOpened=%d\n", showPanel.shaderEditor ? 1 : 0);
+	out_buf->appendf("ScriptEditorOpened=%d\n", showPanel.scriptEditor ? 1 : 0);
 	out_buf->appendf("GameOpened=%d\n", showPanel.game ? 1 : 0);
 	out_buf->appendf("AnimatorEditorOpened=%d\n", showPanel.animatorEditor ? 1 : 0);
 	out_buf->appendf("AnimationEditorOpened=%d\n", showPanel.animationEditor ? 1 : 0);
@@ -924,6 +1162,7 @@ void MainMenu::savePanelStateToFile(const kString &path)
 	f << "ConsoleOpened=" << (showPanel.console ? 1 : 0) << "\n";
 	f << "ProjectOpened=" << (showPanel.project ? 1 : 0) << "\n";
 	f << "ShaderEditorOpened=" << (showPanel.shaderEditor ? 1 : 0) << "\n";
+	f << "ScriptEditorOpened=" << (showPanel.scriptEditor ? 1 : 0) << "\n";
 	f << "GameOpened=" << (showPanel.game ? 1 : 0) << "\n";
 	f << "AnimatorEditorOpened=" << (showPanel.animatorEditor ? 1 : 0) << "\n";
 	f << "AnimationEditorOpened=" << (showPanel.animationEditor ? 1 : 0) << "\n";

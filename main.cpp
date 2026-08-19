@@ -8,8 +8,8 @@
 #include "panel_hierarchy.h"
 #include "panel_project.h"
 #include "panel_console.h"
-#include "panel_shader_editor.h"
-#include "panel_script_editor.h"
+#include "panel_shadergraph.h"
+#include "panel_logicgraph.h"
 #include "panel_game.h"
 #include "panel_prefab.h"
 #include "panel_terrain.h"
@@ -107,8 +107,8 @@ int main()
 	PanelProject *panelProject = new PanelProject(gui, manager, assetManager);
 	PanelHierarchy *panelHierarchy = new PanelHierarchy(gui, manager, assetManager, world);
 	PanelConsole *panelConsole = new PanelConsole(gui, manager);
-	PanelShaderEditor *panelShaderEditor = new PanelShaderEditor(gui, manager);
-	PanelScriptEditor *panelScriptEditor = new PanelScriptEditor(gui, manager);
+	PanelShaderGraph *panelShaderGraph = new PanelShaderGraph(gui, manager);
+	PanelLogicGraph *panelLogicGraph = new PanelLogicGraph(gui, manager);
 	PanelGame *panelGame = new PanelGame(gui, manager);
 	manager->panelGame = panelGame;
 	PanelTerrain *panelTerrain = new PanelTerrain(gui, manager);
@@ -127,12 +127,12 @@ int main()
 		if (path.size() >= 7 && path.substr(path.size() - 7) == ".shader")
 		{
 			showPanel.shaderEditor = true;
-			panelShaderEditor->openFile(path);
+			panelShaderGraph->openFile(path);
 		}
 		else if (path.size() >= 6 && path.substr(path.size() - 6) == ".logic")
 		{
 			showPanel.scriptEditor = true;
-			panelScriptEditor->openFile(path);
+			panelLogicGraph->openFile(path);
 		}
 		else if (path.size() >= 7 && path.substr(path.size() - 7) == ".prefab")
 		{
@@ -681,10 +681,10 @@ int main()
 					{
 						// User is typing — let the input field consume the keystroke.
 					}
-					else if (panelScriptEditor->focused)
-						panelScriptEditor->saveCurrent();
-					else if (panelShaderEditor->focused)
-						panelShaderEditor->saveCurrent();
+					else if (panelLogicGraph->focused)
+						panelLogicGraph->saveCurrent();
+					else if (panelShaderGraph->focused)
+						panelShaderGraph->saveCurrent();
 					else if (panelAnimator->focused)
 						panelAnimator->saveCurrent();
 					else if (panelAnimation->focused)
@@ -918,6 +918,8 @@ int main()
 					!manager->prefabEditing && gameDt > 0.0f)
 				{
 					manager->stepPhysics(gameDt);
+					// Advance named input so scripts see fresh getAction()/getAxis() state.
+					manager->stepInput();
 					// Dispatch FixedUpdate() then Update()/LateUpdate() to scripts.
 					world->fixedUpdateScripts(gameDt);
 					world->updateScripts(gameDt);
@@ -1092,8 +1094,8 @@ int main()
 		panelHierarchy->draw(showPanel.hierarchy);
 		panelProject->draw(showPanel.project);
 		panelConsole->draw(showPanel.console);
-		panelShaderEditor->draw(showPanel.shaderEditor);
-		panelScriptEditor->draw(showPanel.scriptEditor);
+		panelShaderGraph->draw(showPanel.shaderEditor);
+		panelLogicGraph->draw(showPanel.scriptEditor);
 		panelGame->draw(showPanel.game);
 		panelPrefab->draw(showPanel.prefab);
 		// Consume pending Cinematic Editor open request from inspector
@@ -1132,13 +1134,13 @@ int main()
 				manager->lastFocusedPanel = Manager::FocusedPanel::Hierarchy;
 			else if (panelWorld->enabled && panelWorld->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Scene;
-			else if (panelScriptEditor->focused)
+			else if (panelLogicGraph->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Logic;
 			else if (panelAnimator->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Animator;
 			else if (panelParticle->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Particle;
-			else if (panelShaderEditor->focused)
+			else if (panelShaderGraph->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Shader;
 			else if (panelAnimation->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Animation;
