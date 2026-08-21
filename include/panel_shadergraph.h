@@ -77,6 +77,7 @@ private:
     int  selectedNode  = -1;      ///< Id of the node being moved (-1 = none).
     bool isDraggingNode= false;   ///< True while a node is being dragged.
     ImVec2 dragNodeOffset;        ///< Cursor offset within node at drag start.
+    bool isResizingComment = false; ///< True while a comment box is being resized.
 
     // Connection drag
     bool   isDraggingLink = false;            ///< True while dragging a connection link.
@@ -114,6 +115,12 @@ private:
      * @param origin Screen-space origin of the canvas.
      */
     void drawNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin);
+
+    /** @brief Draw a pass-through anchor node. */
+    void drawAnchorNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin);
+
+    /** @brief Draw a resizable, editable comment box. */
+    void drawCommentNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin);
 
     /**
      * @brief Draw all established connection links between node pins.

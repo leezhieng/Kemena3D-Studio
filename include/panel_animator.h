@@ -74,20 +74,43 @@ struct AnimTransition
 };
 
 /**
+ * @brief What a node on the animator canvas represents.
+ */
+enum class AnimStateKind
+{
+    State,    ///< A normal animation state that plays a clip.
+    Anchor,   ///< Pass-through reroute node used to tidy transition lines.
+    Comment   ///< Resizable background comment box with editable text.
+};
+
+/**
  * @brief A single animation state node on the graph canvas.
  */
 struct AnimState
 {
-    int         id            = -1;      ///< Unique state id within the animator.
-    std::string name;                    ///< Display name (e.g. "Idle", "Walk").
-    std::string animationUuid;           ///< UUID of the .animation asset to play.
-    float       speed         = 1.0f;    ///< Playback speed multiplier.
-    bool        loop          = true;    ///< Whether the animation loops.
-    bool        isDefault     = false;   ///< True if this is the entry/default state.
+    int           id            = -1;      ///< Unique state id within the animator.
+    AnimStateKind kind          = AnimStateKind::State; ///< Node kind on the canvas.
+    std::string   name;                    ///< Display name (e.g. "Idle", "Walk").
+    std::string   animationUuid;           ///< UUID of the .animation asset to play.
+    float         speed         = 1.0f;    ///< Playback speed multiplier.
+    bool          loop          = true;    ///< Whether the animation loops.
+    bool          isDefault     = false;   ///< True if this is the entry/default state.
 
     // Canvas position
     float posX = 0.0f;
     float posY = 0.0f;
+
+    // Comment-box payload (used only when kind == AnimStateKind::Comment).
+    float       sizeX   = 320.0f;          ///< Comment box width (canvas units).
+    float       sizeY   = 180.0f;          ///< Comment box height (canvas units).
+    std::string comment = "Comment";       ///< Comment text shown on the box.
+
+    /** @brief True when this is a real, playable animation state. */
+    bool isState()   const { return kind == AnimStateKind::State; }
+    /** @brief True when this is a pass-through anchor node. */
+    bool isAnchor()  const { return kind == AnimStateKind::Anchor; }
+    /** @brief True when this is a comment box. */
+    bool isComment() const { return kind == AnimStateKind::Comment; }
 };
 
 /**
@@ -239,6 +262,7 @@ private:
     int  selectedTransition  = -1;   ///< Id of the selected transition link; -1 = none.
     bool isDraggingState     = false;
     ImVec2 dragStateOffset;
+    bool isResizingComment   = false; ///< True while a comment box is being resized.
 
     // Connection drag
     bool  isDraggingLink  = false;
@@ -272,6 +296,8 @@ private:
     void drawToolbar();
     void drawCanvas();
     void drawNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
+    void drawAnchorNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
+    void drawCommentNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
     void drawLinks(ImDrawList* dl, ImVec2 origin);
     void drawDragLink(ImDrawList* dl);
     void drawStateContextMenu();

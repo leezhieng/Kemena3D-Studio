@@ -168,6 +168,7 @@ nlohmann::json AnimatorGraph::toJson() const
     {
         json sj;
         sj["id"]        = s.id;
+        sj["kind"]      = (int)s.kind;
         sj["name"]      = s.name;
         sj["animationUuid"] = s.animationUuid;
         sj["speed"]     = s.speed;
@@ -175,6 +176,9 @@ nlohmann::json AnimatorGraph::toJson() const
         sj["isDefault"] = s.isDefault;
         sj["posX"]      = s.posX;
         sj["posY"]      = s.posY;
+        sj["sizeX"]     = s.sizeX;
+        sj["sizeY"]     = s.sizeY;
+        sj["comment"]   = s.comment;
         statesArr.push_back(sj);
     }
     j["states"] = statesArr;
@@ -248,6 +252,7 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
         {
             AnimState st;
             st.id            = s.value("id", -1);
+            st.kind          = (AnimStateKind)s.value("kind", (int)AnimStateKind::State);
             st.name          = s.value("name", std::string("State"));
             st.animationUuid = s.value("animationUuid", std::string());
             st.speed         = s.value("speed", 1.0f);
@@ -255,6 +260,9 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
             st.isDefault     = s.value("isDefault", false);
             st.posX          = s.value("posX", 100.0f);
             st.posY          = s.value("posY", 100.0f);
+            st.sizeX         = s.value("sizeX", 320.0f);
+            st.sizeY         = s.value("sizeY", 180.0f);
+            st.comment       = s.value("comment", std::string("Comment"));
             states.push_back(st);
         }
     }
@@ -433,6 +441,14 @@ ImVec2 PanelAnimator::screenToCanvas(ImVec2 sp, ImVec2 origin) const
 
 ImVec2 PanelAnimator::getInputPinPos(const AnimState& state, ImVec2 origin) const
 {
+    // Anchor nodes are small pass-through circles with pins on their left/right.
+    if (state.isAnchor())
+    {
+        float zoom = canvasZoom;
+        ImVec2 tl  = canvasToScreen({ state.posX, state.posY }, origin);
+        return { tl.x, tl.y + 12.f * zoom };
+    }
+
     // Input pin: left side, vertically centered on the node body (below header)
     float zoom = canvasZoom;
     float hdrH = NODE_HEADER_H * zoom;
@@ -443,6 +459,14 @@ ImVec2 PanelAnimator::getInputPinPos(const AnimState& state, ImVec2 origin) cons
 
 ImVec2 PanelAnimator::getOutputPinPos(const AnimState& state, ImVec2 origin) const
 {
+    // Anchor nodes are small pass-through circles with pins on their left/right.
+    if (state.isAnchor())
+    {
+        float zoom = canvasZoom;
+        ImVec2 tl  = canvasToScreen({ state.posX, state.posY }, origin);
+        return { tl.x + 24.f * zoom, tl.y + 12.f * zoom };
+    }
+
     // Output pin: right side, vertically centered on the node body (below header)
     float zoom = canvasZoom;
     float nw   = NODE_WIDTH * zoom;
@@ -456,6 +480,7 @@ int PanelAnimator::hitTestInputPins(ImVec2 mouse, ImVec2 origin) const
 {
     for (const auto& s : graph.states)
     {
+        if (s.isComment()) continue;
         ImVec2 p = getInputPinPos(s, origin);
         float dx = mouse.x - p.x, dy = mouse.y - p.y;
         float r = PIN_RADIUS * canvasZoom * 2.5f;
@@ -469,6 +494,7 @@ int PanelAnimator::hitTestOutputPins(ImVec2 mouse, ImVec2 origin) const
 {
     for (const auto& s : graph.states)
     {
+        if (s.isComment()) continue;
         ImVec2 p = getOutputPinPos(s, origin);
         float dx = mouse.x - p.x, dy = mouse.y - p.y;
         float r = PIN_RADIUS * canvasZoom * 2.5f;
@@ -544,6 +570,9 @@ int PanelAnimator::hitTestLinks(ImVec2 mouse, ImVec2 origin) const
 
 void PanelAnimator::drawNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
 {
+    if (state.isAnchor())  { drawAnchorNode(dl, state, origin);  return; }
+    if (state.isComment()) { drawCommentNode(dl, state, origin); return; }
+
     const float zoom     = canvasZoom;
     const float nw       = NODE_WIDTH * zoom;
     const float hdrH     = NODE_HEADER_H * zoom;
@@ -619,6 +648,77 @@ void PanelAnimator::drawNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
         dl->AddCircleFilled(outPos, pinR, IM_COL32(255, 180, 80, 255));
         dl->AddCircle(outPos, pinR, IM_COL32(200, 200, 200, 180), 0, 1.5f);
     }
+}
+
+void PanelAnimator::drawAnchorNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
+{
+    const float zoom = canvasZoom;
+    const float r    = 12.f * zoom;
+    ImVec2 c         = canvasToScreen({ state.posX, state.posY }, origin) + ImVec2(12.f * zoom, 12.f * zoom);
+    bool  isSelected = (state.id == selectedState);
+
+    dl->AddCircleFilled(c, r, IM_COL32(72, 84, 102, 235));
+    dl->AddCircle(c, r, isSelected ? IM_COL32(255, 210, 80, 255) : IM_COL32(140, 165, 195, 255),
+                  0, isSelected ? 2.5f : 1.5f);
+    dl->AddText({ c.x - 4.f * zoom, c.y - ImGui::GetFontSize() * 0.5f },
+                IM_COL32(235, 235, 235, 255), "A");
+
+    // Pins are drawn by getInputPinPos/getOutputPinPos geometry.
+    ImVec2 inPos  = getInputPinPos(state, origin);
+    ImVec2 outPos = getOutputPinPos(state, origin);
+    dl->AddCircleFilled(inPos,  PIN_RADIUS * zoom, IM_COL32(100, 180, 255, 255));
+    dl->AddCircleFilled(outPos, PIN_RADIUS * zoom, IM_COL32(255, 180, 80, 255));
+}
+
+void PanelAnimator::drawCommentNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
+{
+    const float zoom = canvasZoom;
+    ImVec2 tl        = canvasToScreen({ state.posX, state.posY }, origin);
+    ImVec2 br        = tl + ImVec2(state.sizeX * zoom, state.sizeY * zoom);
+    bool  isSelected = (state.id == selectedState);
+
+    dl->AddRectFilled(tl, br, IM_COL32(60, 78, 105, 72), 8.f * zoom);
+    dl->AddRect(tl, br,
+                isSelected ? IM_COL32(235, 195, 90, 210) : IM_COL32(110, 138, 170, 150),
+                8.f * zoom, 0, isSelected ? 2.f : 1.f);
+
+    if (isSelected)
+    {
+        ImGui::SetCursorScreenPos({ tl.x + 6.f * zoom, tl.y + 4.f * zoom });
+        ImGui::PushID(state.id);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+        char buf[1024];
+        strncpy_s(buf, state.comment.c_str(), sizeof(buf));
+        buf[sizeof(buf) - 1] = '\0';
+        ImGui::SetNextItemWidth(state.sizeX * zoom - 12.f * zoom);
+        if (ImGui::InputTextMultiline("##animcomment", buf, sizeof(buf),
+                                      ImVec2(state.sizeX * zoom - 12.f * zoom,
+                                             state.sizeY * zoom - 8.f * zoom)))
+        {
+            state.comment = buf;
+            graph.dirty   = true;
+        }
+        ImGui::PopStyleVar();
+        ImGui::PopID();
+    }
+    else
+    {
+        std::string text = state.comment.empty() ? "Comment" : state.comment;
+        ImVec2 p         = tl + ImVec2(8.f * zoom, 6.f * zoom);
+        float  lineH     = ImGui::GetFontSize() + 2.f * zoom;
+        for (int i = 0; i < 12 && !text.empty(); ++i)
+        {
+            std::string line = text;
+            size_t nl = line.find('\n');
+            if (nl != std::string::npos) { line = line.substr(0, nl); text = text.substr(nl + 1); }
+            else                          text.clear();
+            dl->AddText(p, IM_COL32(235, 235, 235, 255), line.c_str());
+            p.y += lineH;
+        }
+    }
+
+    ImVec2 handle = { br.x - 12.f * zoom, br.y - 12.f * zoom };
+    dl->AddTriangleFilled(handle, br, { br.x, handle.y }, IM_COL32(210, 210, 220, 210));
 }
 
 void PanelAnimator::drawLinks(ImDrawList* dl, ImVec2 origin)
@@ -729,6 +829,28 @@ void PanelAnimator::drawStateContextMenu()
             graph.states.push_back(st);
             graph.dirty = true;
         }
+        if (ImGui::MenuItem("Add Anchor"))
+        {
+            AnimState st;
+            st.id   = graph.newNodeId();
+            st.kind = AnimStateKind::Anchor;
+            st.name = "Anchor";
+            st.posX = contextMenuPos.x;
+            st.posY = contextMenuPos.y;
+            graph.states.push_back(st);
+            graph.dirty = true;
+        }
+        if (ImGui::MenuItem("Add Comment"))
+        {
+            AnimState st;
+            st.id   = graph.newNodeId();
+            st.kind = AnimStateKind::Comment;
+            st.name = "Comment";
+            st.posX = contextMenuPos.x;
+            st.posY = contextMenuPos.y;
+            graph.states.push_back(st);
+            graph.dirty = true;
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Add Animation Clip Reference..."))
         {
@@ -750,6 +872,59 @@ void PanelAnimator::drawSelectedStateInspector()
     if (!state)
     {
         selectedState = -1;
+        return;
+    }
+
+    // Anchor and comment nodes have a simplified inspector.
+    if (state->isAnchor() || state->isComment())
+    {
+        ImGui::TextUnformatted(state->isAnchor() ? "Animator Anchor" : "Animator Comment");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), "   (id %d)", state->id);
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        char nameBuf[128];
+        strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
+        nameBuf[sizeof(nameBuf) - 1] = '\0';
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+        {
+            state->name = nameBuf;
+            graph.dirty = true;
+        }
+
+        if (state->isComment())
+        {
+            char textBuf[1024];
+            strncpy_s(textBuf, state->comment.c_str(), sizeof(textBuf));
+            textBuf[sizeof(textBuf) - 1] = '\0';
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputTextMultiline("Text", textBuf, sizeof(textBuf), ImVec2(-FLT_MIN, 140.f)))
+            {
+                state->comment = textBuf;
+                graph.dirty    = true;
+            }
+
+            ImGui::Spacing();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat("Width",  &state->sizeX, 1.f, 80.f, 4000.f)) graph.dirty = true;
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat("Height", &state->sizeY, 1.f, 60.f, 4000.f)) graph.dirty = true;
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.86f, 0.24f, 0.24f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.69f, 0.19f, 0.19f, 1.00f));
+        if (ImGui::Button("Delete Node", ImVec2(-1, 0)))
+        {
+            graph.removeState(state->id);
+            graph.dirty   = true;
+            selectedState = -1;
+        }
+        ImGui::PopStyleColor(2);
         return;
     }
 
@@ -1592,13 +1767,19 @@ void PanelAnimator::drawCanvas()
         canvasOffset.y += mouseCanvas.y * (1.f / prevZoom - 1.f / canvasZoom);
     }
 
+    // --- Draw comment boxes behind everything else ---
+    for (auto& state : graph.states)
+        if (state.isComment())
+            drawCommentNode(dl, state, canvasTL);
+
     // --- Draw links ---
     drawLinks(dl, canvasTL);
     drawDragLink(dl);
 
     // --- Draw nodes ---
     for (auto& state : graph.states)
-        drawNode(dl, state, canvasTL);
+        if (!state.isComment())
+            drawNode(dl, state, canvasTL);
 
     // --- Interaction ---
 
@@ -1626,27 +1807,40 @@ void PanelAnimator::drawCanvas()
         }
         else
         {
-            // Check if we hit a state node → select/move it.
+            // Comments / anchors are selected/moved by their whole body;
+            // states are selected/moved by their header + body.
             bool hitState = false;
-            // Iterate in reverse so top nodes (drawn last) are picked first
             for (int i = (int)graph.states.size() - 1; i >= 0; --i)
             {
-                auto& state = graph.states[i];
-                ImVec2 nTopLeft = canvasToScreen({ state.posX, state.posY }, canvasTL);
-                float nw = NODE_WIDTH * canvasZoom;
-                float hdrH = NODE_HEADER_H * canvasZoom;
-                float bodyH = (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f) * canvasZoom;
+                AnimState& state = graph.states[i];
+                ImVec2 nTL = canvasToScreen({ state.posX, state.posY }, canvasTL);
+                ImVec2 nBR;
+                if (state.isComment())
+                    nBR = nTL + ImVec2(state.sizeX * canvasZoom, state.sizeY * canvasZoom);
+                else if (state.isAnchor())
+                    nBR = nTL + ImVec2(24.f * canvasZoom, 24.f * canvasZoom);
+                else
+                    nBR = nTL + ImVec2(NODE_WIDTH * canvasZoom,
+                                       (NODE_HEADER_H + (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f)) * canvasZoom);
 
-                if (mouse.x >= nTopLeft.x && mouse.x <= nTopLeft.x + nw &&
-                    mouse.y >= nTopLeft.y && mouse.y <= nTopLeft.y + hdrH + bodyH)
+                if (mouse.x < nTL.x || mouse.x > nBR.x || mouse.y < nTL.y || mouse.y > nBR.y)
+                    continue;
+
+                selectedState      = state.id;
+                selectedTransition = -1;
+                if (state.isComment())
                 {
-                    selectedState      = state.id;
-                    selectedTransition = -1;
-                    isDraggingState    = true;
-                    dragStateOffset    = screenToCanvas(mouse, canvasTL) - ImVec2(state.posX, state.posY);
-                    hitState = true;
-                    break;
+                    ImVec2 handle = { nBR.x - 12.f * canvasZoom, nBR.y - 12.f * canvasZoom };
+                    isResizingComment = (mouse.x >= handle.x && mouse.y >= handle.y);
+                    isDraggingState   = !isResizingComment;
                 }
+                else
+                {
+                    isDraggingState = true;
+                }
+                dragStateOffset = screenToCanvas(mouse, canvasTL) - ImVec2(state.posX, state.posY);
+                hitState = true;
+                break;
             }
 
             if (!hitState)
@@ -1667,22 +1861,33 @@ void PanelAnimator::drawCanvas()
         }
     }
 
-    // Move selected state
-    if (isDraggingState && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.KeyAlt)
+    // Move / resize the selected state (or comment box).
+    if ((isDraggingState || isResizingComment) &&
+        ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.KeyAlt)
     {
         AnimState* st = graph.findState(selectedState);
         if (st)
         {
-            ImVec2 cp = screenToCanvas(mouse, canvasTL) - dragStateOffset;
-            st->posX = cp.x;
-            st->posY = cp.y;
+            if (isResizingComment && st->isComment())
+            {
+                ImVec2 cp = screenToCanvas(mouse, canvasTL);
+                st->sizeX = ImMax(80.f, cp.x - st->posX);
+                st->sizeY = ImMax(60.f, cp.y - st->posY);
+            }
+            else
+            {
+                ImVec2 cp = screenToCanvas(mouse, canvasTL) - dragStateOffset;
+                st->posX = cp.x;
+                st->posY = cp.y;
+            }
             graph.dirty = true;
         }
     }
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
     {
-        isDraggingState = false;
+        isDraggingState   = false;
+        isResizingComment = false;
 
         if (isDraggingLink)
         {
@@ -1745,18 +1950,23 @@ void PanelAnimator::drawCanvas()
     // Right-click on canvas → context menu (state settings moved to the Inspector panel)
     if (canvasHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !isDraggingLink)
     {
-        // Check if we right-clicked on a state → select it so its form appears in the Inspector.
+        // Check if we right-clicked on a node → select it so its form appears in the Inspector.
         bool hitState = false;
         for (int i = (int)graph.states.size() - 1; i >= 0; --i)
         {
-            auto& state = graph.states[i];
+            AnimState& state = graph.states[i];
             ImVec2 nTL = canvasToScreen({ state.posX, state.posY }, canvasTL);
-            float nw = NODE_WIDTH * canvasZoom;
-            float bodyH = (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f) * canvasZoom;
-            float totalH = NODE_HEADER_H * canvasZoom + bodyH;
+            ImVec2 nBR;
+            if (state.isComment())
+                nBR = nTL + ImVec2(state.sizeX * canvasZoom, state.sizeY * canvasZoom);
+            else if (state.isAnchor())
+                nBR = nTL + ImVec2(24.f * canvasZoom, 24.f * canvasZoom);
+            else
+                nBR = nTL + ImVec2(NODE_WIDTH * canvasZoom,
+                                   (NODE_HEADER_H + (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f)) * canvasZoom);
 
-            if (mouse.x >= nTL.x && mouse.x <= nTL.x + nw &&
-                mouse.y >= nTL.y && mouse.y <= nTL.y + totalH)
+            if (mouse.x >= nTL.x && mouse.x <= nBR.x &&
+                mouse.y >= nTL.y && mouse.y <= nBR.y)
             {
                 selectedState      = state.id;
                 selectedTransition = -1;
@@ -1783,7 +1993,7 @@ void PanelAnimator::drawCanvas()
         else if (selectedState >= 0)
         {
             AnimState* st = graph.findState(selectedState);
-            if (st && !st->isDefault)
+            if (st && (!st->isDefault || st->isAnchor() || st->isComment()))
             {
                 graph.removeState(selectedState);
                 graph.dirty    = true;

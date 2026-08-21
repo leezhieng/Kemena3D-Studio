@@ -326,6 +326,15 @@ namespace
     // Returns the screen position of a pin given the node origin.
     ImVec2 pinScreenPos(const kScriptGraphNode &n, int pinId, ImVec2 nodeScreen)
     {
+        if (n.type == kScriptNodeType::Anchor)
+        {
+            if (!n.inputs.empty() && n.inputs[0].id == pinId)
+                return ImVec2(nodeScreen.x, nodeScreen.y + 12.0f);
+            if (!n.outputs.empty() && n.outputs[0].id == pinId)
+                return ImVec2(nodeScreen.x + 24.0f, nodeScreen.y + 12.0f);
+            return nodeScreen;
+        }
+
         for (size_t i = 0; i < n.inputs.size(); ++i)
             if (n.inputs[i].id == pinId)
                 return ImVec2(nodeScreen.x,
@@ -451,6 +460,9 @@ void PanelLogicGraph::drawVariablesPanel()
 
 void PanelLogicGraph::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin)
 {
+    if (node.type == kScriptNodeType::Anchor)  { drawAnchorNode(dl, node, origin);  return; }
+    if (node.type == kScriptNodeType::Comment) { drawCommentNode(dl, node, origin); return; }
+
     int rows = (int)std::max(node.inputs.size(), node.outputs.size());
     if (rows < 1) rows = 1;
     float plRows = (float)payloadRows(node.type);
@@ -633,6 +645,124 @@ void PanelLogicGraph::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 or
 }
 
 // ---------------------------------------------------------------------------
+// Anchor + comment drawing
+// ---------------------------------------------------------------------------
+
+void PanelLogicGraph::drawAnchorNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin)
+{
+    ImVec2 c        = canvasToScreen(ImVec2(node.posX, node.posY), origin) + ImVec2(12.0f, 12.0f);
+    bool   selected = (node.id == selectedNode);
+    const float r   = 12.0f;
+
+    dl->AddCircleFilled(c, r, IM_COL32(72, 84, 102, 235));
+    dl->AddCircle(c, r, selected ? IM_COL32(255, 210, 80, 255) : IM_COL32(140, 165, 195, 255),
+                  0, selected ? 2.5f : 1.5f);
+    dl->AddText(ImVec2(c.x - 4.0f, c.y - 7.0f), IM_COL32(235, 235, 235, 255), "A");
+
+    ImGui::PushID(node.id);
+    ImGui::SetCursorScreenPos(ImVec2(c.x - r, c.y - r));
+    ImGui::InvisibleButton("##anchorbody", ImVec2(24.0f, 24.0f));
+    if (ImGui::IsItemActivated())
+    {
+        selectedNode = node.id;
+        movingNode   = node.id;
+    }
+    if (ImGui::IsItemActive() && movingNode == node.id)
+    {
+        ImVec2 d = ImGui::GetIO().MouseDelta;
+        node.posX += d.x;
+        node.posY += d.y;
+    }
+    if (ImGui::IsItemDeactivated() && movingNode == node.id)
+        movingNode = 0;
+    ImGui::PopID();
+}
+
+void PanelLogicGraph::drawCommentNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin)
+{
+    ImVec2 tl       = canvasToScreen(ImVec2(node.posX, node.posY), origin);
+    ImVec2 br       = tl + ImVec2(node.sizeX, node.sizeY);
+    bool   selected = (node.id == selectedNode);
+
+    dl->AddRectFilled(tl, br, IM_COL32(58, 76, 100, 78), 6.0f);
+    dl->AddRect(tl, br,
+                selected ? IM_COL32(230, 190, 90, 220) : IM_COL32(110, 138, 170, 160),
+                6.0f, 0, selected ? 2.0f : 1.0f);
+
+    ImGui::PushID(node.id);
+
+    // Whole box selects / moves the comment.
+    ImGui::SetCursorScreenPos(tl);
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton("##commentbody", ImVec2(node.sizeX, node.sizeY));
+    if (ImGui::IsItemActivated())
+    {
+        selectedNode = node.id;
+        movingNode   = node.id;
+    }
+    if (ImGui::IsItemActive() && movingNode == node.id)
+    {
+        ImVec2 d = ImGui::GetIO().MouseDelta;
+        node.posX += d.x;
+        node.posY += d.y;
+    }
+    if (ImGui::IsItemDeactivated() && movingNode == node.id)
+        movingNode = 0;
+
+    // Bottom-right resize handle.
+    ImVec2 hTL(br.x - 14.0f, br.y - 14.0f);
+    ImGui::SetCursorScreenPos(hTL);
+    ImGui::InvisibleButton("##commentresize", ImVec2(14.0f, 14.0f));
+    if (ImGui::IsItemActivated())
+    {
+        selectedNode    = node.id;
+        resizingComment = node.id;
+    }
+    if (ImGui::IsItemActive() && resizingComment == node.id)
+    {
+        ImVec2 d = ImGui::GetIO().MouseDelta;
+        node.sizeX = std::max(80.0f, node.sizeX + d.x);
+        node.sizeY = std::max(60.0f, node.sizeY + d.y);
+        graph.dirty = true;
+    }
+    if (ImGui::IsItemDeactivated() && resizingComment == node.id)
+        resizingComment = 0;
+    dl->AddTriangleFilled(hTL, br, ImVec2(br.x, hTL.y), IM_COL32(210, 210, 220, 210));
+
+    if (selected)
+    {
+        char buf[1024];
+        strncpy_s(buf, sizeof(buf), node.comment.c_str(), _TRUNCATE);
+        buf[sizeof(buf) - 1] = '\0';
+        ImGui::SetCursorScreenPos(ImVec2(tl.x + 6.0f, tl.y + 4.0f));
+        ImGui::SetNextItemWidth(node.sizeX - 12.0f);
+        if (ImGui::InputTextMultiline("##ctext", buf, sizeof(buf),
+                                      ImVec2(node.sizeX - 12.0f, node.sizeY - 30.0f)))
+        {
+            node.comment = buf;
+            graph.dirty  = true;
+        }
+    }
+    else
+    {
+        std::string text = node.comment.empty() ? "Comment" : node.comment;
+        ImVec2 p         = tl + ImVec2(8.0f, 6.0f);
+        float  lineH     = ImGui::GetFontSize() + 2.0f;
+        for (int i = 0; i < 12 && !text.empty(); ++i)
+        {
+            std::string line = text;
+            size_t nl = line.find('\n');
+            if (nl != std::string::npos) { line = line.substr(0, nl); text = text.substr(nl + 1); }
+            else                          text.clear();
+            dl->AddText(p, IM_COL32(235, 235, 235, 255), line.c_str());
+            p.y += lineH;
+        }
+    }
+
+    ImGui::PopID();
+}
+
+// ---------------------------------------------------------------------------
 // Link drawing
 // ---------------------------------------------------------------------------
 
@@ -772,6 +902,22 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Not", kScriptNodeType::Not},
     };
 
+    if (ImGui::MenuItem("Add Anchor"))
+    {
+        kScriptGraphNode n = graph.makeNode(kScriptNodeType::Anchor, spawn.x, spawn.y);
+        graph.nodes.push_back(n);
+        selectedNode = n.id;
+        graph.dirty  = true;
+    }
+    if (ImGui::MenuItem("Add Comment"))
+    {
+        kScriptGraphNode n = graph.makeNode(kScriptNodeType::Comment, spawn.x, spawn.y);
+        graph.nodes.push_back(n);
+        selectedNode = n.id;
+        graph.dirty  = true;
+    }
+    ImGui::Separator();
+
     submenu("Events",   events,  IM_ARRAYSIZE(events));
     submenu("Flow",     flow,    IM_ARRAYSIZE(flow));
     submenu("Actions",  actions, IM_ARRAYSIZE(actions));
@@ -814,7 +960,9 @@ void PanelLogicGraph::tryConnect(int nodeA, int pinA, int nodeB, int pinB)
     kScriptGraphPin *pb = getPin(nb, pinB, &bOut);
     if (!pa || !pb || aOut == bOut)        // need exactly one output + one input
         return;
-    if (pa->type != pb->type)              // strict type match (incl. Exec)
+    bool anchorInvolved = (na->type == kScriptNodeType::Anchor) ||
+                          (nb->type == kScriptNodeType::Anchor);
+    if (pa->type != pb->type && !anchorInvolved) // strict type match (incl. Exec)
         return;
 
     int outN, outP, inN, inP;
@@ -875,12 +1023,18 @@ void PanelLogicGraph::drawCanvas()
     bool canvasHovered = ImGui::IsItemHovered();
     bool canvasActive  = ImGui::IsItemActive();
 
+    // Comment boxes behind everything.
+    for (auto &n : graph.nodes)
+        if (n.type == kScriptNodeType::Comment)
+            drawCommentNode(dl, n, canvasOrigin);
+
     // Links beneath nodes.
     drawLinks(dl);
 
     // Nodes (also submits their ImGui widgets, drawn on top of the canvas button).
     for (auto &n : graph.nodes)
-        drawNode(dl, n, canvasOrigin);
+        if (n.type != kScriptNodeType::Comment)
+            drawNode(dl, n, canvasOrigin);
 
     // ---- Pin hit-testing ---------------------------------------------------
     ImVec2 mouse = ImGui::GetIO().MousePos;

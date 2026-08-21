@@ -326,6 +326,9 @@ static bool nodeHasInlineEditor(kShaderNodeType t)
 
 void PanelShaderGraph::drawNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin)
 {
+    if (node.type == kShaderNodeType::Anchor)  { drawAnchorNode(dl, node, origin);  return; }
+    if (node.type == kShaderNodeType::Comment) return; // Drawn in a separate background pass.
+
     const float zoom     = canvasZoom;
     const float nw       = NODE_WIDTH * zoom;
     const float hdrH     = NODE_HEADER_H * zoom;
@@ -398,8 +401,14 @@ void PanelShaderGraph::drawNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin
                 bool dirOk  = (isOut != dragFromOutput); // must be opposite direction
                 bool typeOk = false;
                 if (dirOk)
-                    typeOk = dragFromOutput ? kPinCompatible(dragPinType, p.type)
-                                            : kPinCompatible(p.type, dragPinType);
+                {
+                    kShaderNode* srcN = graph.findNode(dragFromNode);
+                    bool anchorInvolved = (srcN && srcN->type == kShaderNodeType::Anchor) ||
+                                          (node.type == kShaderNodeType::Anchor);
+                    typeOk = anchorInvolved ||
+                             (dragFromOutput ? kPinCompatible(dragPinType, p.type)
+                                             : kPinCompatible(p.type, dragPinType));
+                }
                 if (dirOk && typeOk)  isValidTarget   = true;
                 else if (dirOk)       isInvalidTarget = true;
             }
@@ -513,6 +522,88 @@ void PanelShaderGraph::drawNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin
     }
 }
 
+void PanelShaderGraph::drawAnchorNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin)
+{
+    const float zoom = canvasZoom;
+    const float r    = 12.f * zoom;
+    ImVec2 c         = canvasToScreen({ node.posX, node.posY }, origin) + ImVec2(r, r);
+    bool  isSelected = (node.id == selectedNode);
+
+    ImU32 bodyCol  = IM_COL32(72, 84, 102, 235);
+    ImU32 ringCol  = isSelected ? IM_COL32(255, 210, 80, 255) : IM_COL32(140, 165, 195, 255);
+
+    dl->AddCircleFilled(c, r, bodyCol);
+    dl->AddCircle(c, r, ringCol, 0, isSelected ? 2.5f : 1.5f);
+    dl->AddText({ c.x - 4.f * zoom, c.y - ImGui::GetFontSize() * 0.5f },
+                IM_COL32(235, 235, 235, 255), "A");
+
+    // Expose the pass-through pins for hit-testing and link drawing.
+    for (auto& p : node.inputs)  { p.uiX = c.x - r; p.uiY = c.y; }
+    for (auto& p : node.outputs) { p.uiX = c.x + r; p.uiY = c.y; }
+
+    dl->AddCircleFilled({ c.x - r, c.y }, PIN_RADIUS * zoom, IM_COL32(100, 180, 255, 255));
+    dl->AddCircleFilled({ c.x + r, c.y }, PIN_RADIUS * zoom, IM_COL32(255, 180, 80, 255));
+}
+
+void PanelShaderGraph::drawCommentNode(ImDrawList* dl, kShaderNode& node, ImVec2 origin)
+{
+    const float zoom = canvasZoom;
+    ImVec2 tl        = canvasToScreen({ node.posX, node.posY }, origin);
+    ImVec2 br        = tl + ImVec2(node.sizeX * zoom, node.sizeY * zoom);
+    bool  isSelected = (node.id == selectedNode);
+
+    ImU32 fillCol   = IM_COL32(60, 78, 105, 72);
+    ImU32 borderCol = isSelected ? IM_COL32(235, 195, 90, 210)
+                                 : IM_COL32(110, 138, 170, 150);
+
+    dl->AddRectFilled(tl, br, fillCol, 8.f * zoom);
+    dl->AddRect(tl, br, borderCol, 8.f * zoom, 0, isSelected ? 2.f : 1.f);
+
+    if (isSelected)
+    {
+        // Edit the comment text in place.
+        ImGui::SetCursorScreenPos({ tl.x + 6.f * zoom, tl.y + 4.f * zoom });
+        ImGui::PushID(node.id);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+
+        char buf[1024];
+        strncpy_s(buf, node.comment.c_str(), sizeof(buf));
+        buf[sizeof(buf) - 1] = '\0';
+        ImGui::SetNextItemWidth(node.sizeX * zoom - 12.f * zoom);
+        if (ImGui::InputTextMultiline("##comment", buf, sizeof(buf),
+                                      ImVec2(node.sizeX * zoom - 12.f * zoom,
+                                             node.sizeY * zoom - 8.f * zoom)))
+        {
+            node.comment = buf;
+            graph.dirty  = true;
+        }
+
+        ImGui::PopStyleVar(2);
+        ImGui::PopID();
+    }
+    else
+    {
+        // Render the first few lines of the comment text.
+        std::string text = node.comment.empty() ? "Comment" : node.comment;
+        ImVec2 p         = tl + ImVec2(8.f * zoom, 6.f * zoom);
+        float  lineH     = ImGui::GetFontSize() + 2.f * zoom;
+        for (int i = 0; i < 12 && !text.empty(); ++i)
+        {
+            std::string line = text;
+            size_t nl = line.find('\n');
+            if (nl != std::string::npos) { line = line.substr(0, nl); text = text.substr(nl + 1); }
+            else                          text.clear();
+            dl->AddText(p, IM_COL32(235, 235, 235, 255), line.c_str());
+            p.y += lineH;
+        }
+    }
+
+    // Bottom-right resize handle.
+    ImVec2 handle = { br.x - 12.f * zoom, br.y - 12.f * zoom };
+    dl->AddTriangleFilled(handle, br, { br.x, handle.y }, IM_COL32(210, 210, 220, 210));
+}
+
 void PanelShaderGraph::drawLinks(ImDrawList* dl, ImVec2 origin)
 {
     for (const auto& link : graph.links)
@@ -576,6 +667,10 @@ void PanelShaderGraph::drawNodeContextMenu()
                 graph.dirty = true;
             }
         };
+
+        if (ImGui::MenuItem("Add Anchor"))    addEntry("Anchor",  kShaderNodeType::Anchor);
+        if (ImGui::MenuItem("Add Comment"))   addEntry("Comment", kShaderNodeType::Comment);
+        ImGui::Separator();
 
         if (ImGui::BeginMenu("Inputs"))
         {
@@ -871,13 +966,19 @@ void PanelShaderGraph::drawCanvas()
         canvasOffset.y += mouseCanvas.y * (1.f / prevZoom - 1.f / canvasZoom);
     }
 
+    // --- Draw comment boxes behind everything else ---
+    for (auto& node : graph.nodes)
+        if (node.type == kShaderNodeType::Comment)
+            drawCommentNode(dl, node, canvasTL);
+
     // --- Draw links ---
     drawLinks(dl, canvasTL);
     drawDragLink(dl);
 
     // --- Draw nodes ---
     for (auto& node : graph.nodes)
-        drawNode(dl, node, canvasTL);
+        if (node.type != kShaderNodeType::Comment)
+            drawNode(dl, node, canvasTL);
 
     // --- Interaction ---
 
@@ -899,43 +1000,71 @@ void PanelShaderGraph::drawCanvas()
             }
             else
             {
-                // Check if we hit a node header → start move
+                // Comments and anchors are selected/moved by their full body;
+                // regular nodes are moved by their header bar.
                 bool hitNode = false;
-                for (auto& node : graph.nodes)
+                for (int i = (int)graph.nodes.size() - 1; i >= 0; --i)
                 {
-                    ImVec2 nTopLeft = canvasToScreen({ node.posX, node.posY }, canvasTL);
-                    ImVec2 nBotRight = nTopLeft + ImVec2(NODE_WIDTH * canvasZoom, NODE_HEADER_H * canvasZoom);
-                    if (mouse.x >= nTopLeft.x && mouse.x <= nBotRight.x &&
-                        mouse.y >= nTopLeft.y && mouse.y <= nBotRight.y)
+                    kShaderNode& node = graph.nodes[i];
+                    ImVec2 nTL = canvasToScreen({ node.posX, node.posY }, canvasTL);
+                    ImVec2 nBR;
+                    if (node.type == kShaderNodeType::Comment)
+                        nBR = nTL + ImVec2(node.sizeX * canvasZoom, node.sizeY * canvasZoom);
+                    else if (node.type == kShaderNodeType::Anchor)
+                        nBR = nTL + ImVec2(24.f * canvasZoom, 24.f * canvasZoom);
+                    else
+                        nBR = nTL + ImVec2(NODE_WIDTH * canvasZoom, NODE_HEADER_H * canvasZoom);
+
+                    if (mouse.x < nTL.x || mouse.x > nBR.x || mouse.y < nTL.y || mouse.y > nBR.y)
+                        continue;
+
+                    selectedNode = node.id;
+                    if (node.type == kShaderNodeType::Comment)
                     {
-                        selectedNode    = node.id;
-                        isDraggingNode  = true;
-                        dragNodeOffset  = screenToCanvas(mouse, canvasTL) - ImVec2(node.posX, node.posY);
-                        hitNode = true;
-                        break;
+                        ImVec2 handle = { nBR.x - 12.f * canvasZoom, nBR.y - 12.f * canvasZoom };
+                        isResizingComment = (mouse.x >= handle.x && mouse.y >= handle.y);
+                        isDraggingNode    = !isResizingComment;
                     }
+                    else
+                    {
+                        isDraggingNode = true;
+                    }
+                    dragNodeOffset = screenToCanvas(mouse, canvasTL) - ImVec2(node.posX, node.posY);
+                    hitNode = true;
+                    break;
                 }
                 if (!hitNode) selectedNode = -1;
             }
         }
     }
 
-    // Move selected node
-    if (isDraggingNode && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.KeyAlt)
+    // Move / resize the selected node.
+    if ((isDraggingNode || isResizingComment) &&
+        ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.KeyAlt)
     {
         kShaderNode* n = graph.findNode(selectedNode);
         if (n)
         {
-            ImVec2 cp = screenToCanvas(mouse, canvasTL) - dragNodeOffset;
-            n->posX = cp.x;
-            n->posY = cp.y;
+            if (isResizingComment && n->type == kShaderNodeType::Comment)
+            {
+                ImVec2 cp = screenToCanvas(mouse, canvasTL);
+                n->sizeX  = ImMax(80.f, cp.x - n->posX);
+                n->sizeY  = ImMax(60.f, cp.y - n->posY);
+            }
+            else
+            {
+                ImVec2 cp = screenToCanvas(mouse, canvasTL) - dragNodeOffset;
+                n->posX = cp.x;
+                n->posY = cp.y;
+            }
             graph.dirty = true;
         }
     }
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
     {
-        isDraggingNode = false;
+        isDraggingNode      = false;
+        isResizingComment   = false;
 
         if (isDraggingLink)
         {
@@ -949,9 +1078,15 @@ void PanelShaderGraph::drawCanvas()
                 // dragPinType is the type of the pin we started dragging from.
                 // When dragging from an OUTPUT we need: output-type → input-type.
                 // When dragging from an INPUT  we need: output-type (hov) → input-type (drag).
-                bool typeOk = dragFromOutput
-                    ? kPinCompatible(dragPinType, hovPin.type)
-                    : kPinCompatible(hovPin.type, dragPinType);
+                // Anchor nodes are type-agnostic pass-throughs, so they accept
+                // any wire type on either side.
+                kShaderNode* dragN = graph.findNode(dragFromNode);
+                kShaderNode* hovN  = graph.findNode(hovPin.nodeId);
+                bool anchorInvolved = (dragN && dragN->type == kShaderNodeType::Anchor) ||
+                                      (hovN && hovN->type == kShaderNodeType::Anchor);
+                bool typeOk = anchorInvolved ||
+                    (dragFromOutput ? kPinCompatible(dragPinType, hovPin.type)
+                                    : kPinCompatible(hovPin.type, dragPinType));
 
                 if (fromIsOutput != toIsOutput && typeOk)
                 {
@@ -981,15 +1116,24 @@ void PanelShaderGraph::drawCanvas()
     {
         // Right-click on a node → delete option
         bool hitNode = false;
-        for (auto& node : graph.nodes)
+        for (int i = (int)graph.nodes.size() - 1; i >= 0; --i)
         {
+            kShaderNode& node = graph.nodes[i];
             ImVec2 nTL = canvasToScreen({ node.posX, node.posY }, canvasTL);
-            float nw = NODE_WIDTH * canvasZoom;
-            int nr = (int)std::max(node.inputs.size(), node.outputs.size());
-            float nh = (NODE_HEADER_H + PIN_ROW_H * nr + 4.f) * canvasZoom;
+            ImVec2 nBR;
+            if (node.type == kShaderNodeType::Comment)
+                nBR = nTL + ImVec2(node.sizeX * canvasZoom, node.sizeY * canvasZoom);
+            else if (node.type == kShaderNodeType::Anchor)
+                nBR = nTL + ImVec2(24.f * canvasZoom, 24.f * canvasZoom);
+            else
+            {
+                int nr = (int)std::max(node.inputs.size(), node.outputs.size());
+                nBR = nTL + ImVec2(NODE_WIDTH * canvasZoom,
+                                   (NODE_HEADER_H + PIN_ROW_H * nr + 4.f) * canvasZoom);
+            }
 
-            if (mouse.x >= nTL.x && mouse.x <= nTL.x + nw &&
-                mouse.y >= nTL.y && mouse.y <= nTL.y + nh)
+            if (mouse.x >= nTL.x && mouse.x <= nBR.x &&
+                mouse.y >= nTL.y && mouse.y <= nBR.y)
             {
                 selectedNode = node.id;
                 ImGui::OpenPopup("##NodeCtxMenu");

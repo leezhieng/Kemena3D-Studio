@@ -8457,11 +8457,32 @@ static float readMeshScaleFactor(const fs::path &projectPath, const std::string 
 static AnimState *findDefaultAnimatorState(AnimatorGraph &graph)
 {
     for (auto &s : graph.states)
-        if (s.isDefault)
+        if (s.isState() && s.isDefault)
             return &s;
-    if (!graph.states.empty())
-        return &graph.states[0];
+    for (auto &s : graph.states)
+        if (s.isState())
+            return &s;
     return nullptr;
+}
+
+static AnimState *resolveAnimatorPassthrough(RuntimeAnimator &rt, AnimState *target)
+{
+    std::set<int> visited;
+    while (target && target->isAnchor() && !visited.count(target->id))
+    {
+        visited.insert(target->id);
+        AnimState *next = nullptr;
+        for (auto &t : rt.graph->transitions)
+        {
+            if (t.fromStateId != target->id)
+                continue;
+            next = rt.graph->findState(t.toStateId);
+            if (next)
+                break;
+        }
+        target = next;
+    }
+    return target;
 }
 
 static void enterAnimatorState(RuntimeAnimator &rt, AnimState *state)
@@ -8500,7 +8521,8 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
         if (conditionsMet)
         {
             AnimState *target = rt.graph->findState(t.toStateId);
-            if (target && target->id != state->id)
+            target = resolveAnimatorPassthrough(rt, target);
+            if (target && target->id != state->id && target->isState())
             {
                 // Never transition into a state with no playable clip. The
                 // graph would get stuck there (stepAnimators skips states whose
@@ -8653,7 +8675,7 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
     if (defaultState && rt.clipForState.count(defaultState->animationUuid) == 0)
     {
         for (auto &st : rt.graph->states)
-            if (rt.clipForState.count(st.animationUuid))
+            if (st.isState() && rt.clipForState.count(st.animationUuid))
             {
                 defaultState = &st;
                 break;

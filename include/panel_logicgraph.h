@@ -112,6 +112,12 @@ private:
      */
     void drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin);
 
+    /** @brief Draws a pass-through anchor (reroute) node. */
+    void drawAnchorNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin);
+
+    /** @brief Draws a resizable, editable comment box. */
+    void drawCommentNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 origin);
+
     /**
      * @brief Draws the bezier links connecting node pins.
      * @param dl Draw list to render into.
@@ -152,6 +158,9 @@ private:
 
     // Node-move state.
     int movingNode = 0;
+
+    // Comment resize state.
+    int resizingComment = 0;
 
     std::string statusLine; ///< Last save/compile result shown in the toolbar.
 };
